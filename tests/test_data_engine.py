@@ -576,6 +576,149 @@ def test_save_config_guard_and_failures():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ================= v0.5.1 新增:quota 事件驱动节流 / 本地倒计时 / 活动信号 =================
+
+def test_quota_fetch_decision():
+    """节流器决策纯函数四场景 + 整数边界(先紧后松闸门链):
+    立即查(force)/ 最短间隔 60s 硬闸 / 活跃期常态 3min / 静默期暂停。"""
+    from data_engine import quota_fetch_decision
+    now = 1_000_000.0
+    # 立即查:force 放行 —— 即使 <60s 且完全静默(启动首查/换 key 重启)
+    check("决策:force 放行(压过间隔与静默)",
+          quota_fetch_decision(now, now - 10.0, None, force=True)
+          and quota_fetch_decision(now, None, None, force=True))
+    # 兜底:last_fetch 未知 → 放行
+    check("决策:last_fetch=None 放行",
+          quota_fetch_decision(now, None, now - 30.0))
+    # 最短间隔硬闸:59.9s 拒;60s 整点过硬闸但仍 <3min 常态闸 → 拒
+    check("决策:59.9s 拒(硬闸)",
+          not quota_fetch_decision(now, now - 59.9, now - 30.0))
+    check("决策:60s 整点仍拒(硬闸过、<3min 闸拦)",
+          not quota_fetch_decision(now, now - 60.0, now - 30.0))
+    # 活跃期(过去 1h 内有活动):179.9 拒、180 整点放行、远超 3min 放行
+    check("决策:活跃 179.9s 拒",
+          not quota_fetch_decision(now, now - 179.9, now - 30.0))
+    check("决策:活跃 180s 整点放行",
+          quota_fetch_decision(now, now - 180.0, now - 30.0))
+    check("决策:活跃 600s 放行",
+          quota_fetch_decision(now, now - 600.0, now - 30.0))
+    # 静默期(>1h 无活动)暂停:恰好 3600s 仍算活跃(边界归活跃),>3600 拒
+    check("决策:活动距今 3600s 整仍算活跃",
+          quota_fetch_decision(now, now - 600.0, now - 3600.0))
+    check("决策:静默 3600.1s 拒",
+          not quota_fetch_decision(now, now - 600.0, now - 3600.1))
+    check("决策:last_activity=None 非 force 拒",
+          not quota_fetch_decision(now, now - 600.0, None))
+    # 静默期下 force 仍放行:『立即查』是最强信号
+    check("决策:静默期 force 仍放行",
+          quota_fetch_decision(now, now - 600.0, now - 7200.0, force=True))
+
+
+def test_quota_countdown_and_age():
+    """倒计时本地化与新鲜度文案(纯函数,零 API 请求):分钟向上取整、
+    过期/缺参 → None;<60s 刚刚 / <60min N分钟前 / N小时前 / None→None。"""
+    from data_engine import format_age_zh, format_countdown_hm
+    now_ms = 1_000_000_000_000
+    # 倒计时:82.5min → ceil 83min = 1h 23m;41.5min → ceil 42min
+    check("倒计时:1h 23m",
+          format_countdown_hm(now_ms + 82.5 * 60 * 1000, now_ms) == "1h 23m",
+          str(format_countdown_hm(now_ms + 82.5 * 60 * 1000, now_ms)))
+    check("倒计时:42m",
+          format_countdown_hm(now_ms + 41.5 * 60 * 1000, now_ms) == "42m",
+          str(format_countdown_hm(now_ms + 41.5 * 60 * 1000, now_ms)))
+    check("倒计时:剩 30s 进位 1m(不闪 0m)",
+          format_countdown_hm(now_ms + 30 * 1000, now_ms) == "1m")
+    check("倒计时:恰 60min 边界",
+          format_countdown_hm(now_ms + 60 * 60 * 1000, now_ms) == "1h 0m")
+    check("倒计时:已重置(过期)→ None",
+          format_countdown_hm(now_ms - 1000, now_ms) is None
+          and format_countdown_hm(now_ms, now_ms) is None)
+    check("倒计时:缺参/0/负 → None",
+          format_countdown_hm(None, now_ms) is None
+          and format_countdown_hm(0, now_ms) is None
+          and format_countdown_hm(-5, now_ms) is None)
+    check("倒计时:now_ms 缺省走本地时钟不炸",
+          format_countdown_hm(time.time() * 1000 + 3600 * 1000) == "1h 0m",
+          str(format_countdown_hm(time.time() * 1000 + 3600 * 1000)))
+    # 新鲜度(ts/now 单位为秒,与 next_reset 的毫秒不同)
+    now = 2_000_000.0
+    check("新鲜度:刚刚(<60s)", format_age_zh(now - 30.0, now) == "刚刚")
+    check("新鲜度:3分钟前", format_age_zh(now - 180.0, now) == "3分钟前")
+    check("新鲜度:59分钟前边界", format_age_zh(now - 3599.0, now) == "59分钟前")
+    check("新鲜度:1小时前(3600 整)", format_age_zh(now - 3600.0, now) == "1小时前")
+    check("新鲜度:2小时前", format_age_zh(now - 7200.0, now) == "2小时前")
+    check("新鲜度:None/非法 → None",
+          format_age_zh(None, now) is None and format_age_zh(0, now) is None)
+
+
+def test_engine_activity_signal():
+    """活动信号:completed 水位前进恰触发一次回调,不前进不触发;未接线
+    (on_activity=None)短路不查水位、不炸;坏回调不拖死调用方。引擎不
+    start、不发网络;回拨 _act_rowid 只动内存,不写用户 DB。"""
+    e = DataEngine(queue.Queue(maxsize=1))
+    calls = []
+    e.on_activity = lambda: calls.append(1)
+    e._act_rowid = 0                     # 回拨水位:下一查必视为前进
+    e._check_activity()
+    check("活动信号:水位前进回调恰一次", len(calls) == 1, str(len(calls)))
+    e._check_activity()
+    check("活动信号:水位不动不再触发", len(calls) == 1, str(len(calls)))
+    # 未接线:_check_activity 短路,连水位查询都不做(计数探针验证)
+    e.on_activity = None
+    nq = []
+    orig_max = e._max_completed_rowid
+    e._max_completed_rowid = lambda: (nq.append(1), orig_max())[1]
+    e._check_activity()
+    check("活动信号:未接线短路且不查询", not nq, str(len(nq)))
+    check("活动信号:未接线不炸", True)
+    # 坏回调:外层 Exception 兜住,绝不拖死 _db_loop
+    def boom():
+        raise RuntimeError("bad callback")
+    e2 = DataEngine(queue.Queue(maxsize=1))
+    e2.on_activity = boom
+    e2._act_rowid = 0
+    try:
+        e2._check_activity()
+        ok = True
+    except Exception:
+        ok = False
+    check("活动信号:坏回调被兜住不外抛", ok)
+    check("活动信号:坏回调后水位已推进(不重复触发)", e2._act_rowid > 0)
+
+
+def test_quota_monitor_throttle_bookkeeping():
+    """QuotaMonitor 无网络小测(不 start 线程):notify_activity 写活动
+    时间戳(显式 ts 可注入);_fetch_and_record 成功附 fetched_at 入
+    _latest,失败也推进 _last_fetch_ts —— 失败占频率预算,防 1s tick 对
+    故障端点加密重试。"""
+    from data_engine import QuotaMonitor
+    m = QuotaMonitor("sk-test")          # 仅构造,绝不 start
+    check("monitor:初始无活动/无抓取记录",
+          m._last_activity_ts is None and m._last_fetch_ts is None)
+    m.notify_activity()
+    check("monitor:notify_activity 写时间戳", m._last_activity_ts is not None)
+    m.notify_activity(ts=12345.0)
+    check("monitor:显式 ts 注入生效", m._last_activity_ts == 12345.0)
+    m._fetch_once = lambda: {"window_hours": 5.0, "used_pct": 42.0,
+                             "remaining_pct": 58.0, "next_reset_ms": 1}
+    m._fetch_and_record()
+    d = m.latest()
+    check("monitor:成功抓取 latest 可读", d is not None
+          and abs(d.get("remaining_pct", 0) - 58.0) < 1e-9)
+    check("monitor:成功抓取附加 fetched_at",
+          d is not None and isinstance(d.get("fetched_at"), float)
+          and d["fetched_at"] > 0)
+    t_ok = m._last_fetch_ts
+    check("monitor:成功抓取推进 _last_fetch_ts", t_ok is not None)
+    m._fetch_once = lambda: None         # 模拟接口失败
+    m._fetch_and_record()
+    check("monitor:失败仍推进 _last_fetch_ts(占频率预算)",
+          m._last_fetch_ts is not None and m._last_fetch_ts >= t_ok,
+          f"{m._last_fetch_ts} vs {t_ok}")
+    check("monitor:失败不覆盖上次成功结果",
+          abs(m.latest().get("remaining_pct", 0) - 58.0) < 1e-9)
+
+
 if __name__ == "__main__":
     print("== test_active_session_not_subagent =="); test_active_session_not_subagent()
     print("== test_today_usage_matches_full_scope ==");  test_today_usage_matches_full_scope()
@@ -597,6 +740,11 @@ if __name__ == "__main__":
     # ---- v0.5.0 新增(save_config,全部临时目录,不碰真实 zm_config.json) ----
     print("== test_save_config_roundtrip_and_normalize =="); test_save_config_roundtrip_and_normalize()
     print("== test_save_config_guard_and_failures ==");      test_save_config_guard_and_failures()
+    # ---- v0.5.1 新增(事件驱动节流/本地倒计时/活动信号,全部无网络) ----
+    print("== test_quota_fetch_decision ==");              test_quota_fetch_decision()
+    print("== test_quota_countdown_and_age ==");           test_quota_countdown_and_age()
+    print("== test_engine_activity_signal ==");            test_engine_activity_signal()
+    print("== test_quota_monitor_throttle_bookkeeping =="); test_quota_monitor_throttle_bookkeeping()
     if FAILED:
         print(f"\nFAILED: {FAILED}")
         sys.exit(1)

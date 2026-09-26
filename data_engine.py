@@ -1,8 +1,9 @@
 """zcode-meter 数据层:日志 tail + SQLite 轮询 + 流式估算(UI 无关,tk/Qt 共用)。
 
-v0.4.0 起另含:价格表/金额估算、多用量源(Claude 只读解析)、quota 轮询线程、
+v0.4.0 起另含:价格表/金额估算、多用量源(Claude 只读解析)、quota 刷新线程、
 预算告警状态机、5h 计费块聚合 —— 类定义都在本模块,但 QuotaMonitor 只由
 zcode_meter_qt.MeterWindow 实例化(见各类 docstring 的启动位置钉死说明)。
+v0.5.1 起 quota 由 300s 盲轮询改为事件驱动+节流(见 quota_fetch_decision)。
 """
 from __future__ import annotations
 
@@ -341,18 +342,97 @@ def parse_quota_payload(obj) -> dict | None:
         return None
 
 
+# ---- v0.5.1 事件驱动+节流:何时真发 quota 请求,判定抽成纯函数便于单测 ----
+# 三道闸(倒计时本地化对标 GLM Monitor 的已验证做法,节流档位以需求原文为准):
+# 60s 最小间隔硬闸 / 活跃期(过去 1h 内有请求)常态最长 3min 一查 / 静默期完全暂停
+QUOTA_MIN_GAP = 60.0            # 频率下限(硬闸,任何触发类型都不得快于它)
+QUOTA_ACTIVE_GAP = 180.0        # 活跃期常态间隔
+QUOTA_ACTIVE_WINDOW = 3600.0    # 活跃判定窗口(s):窗口内有请求才算活跃
+
+
+def quota_fetch_decision(now: float, last_fetch: float | None,
+                         last_activity: float | None, force: bool = False) -> bool:
+    """本次 tick 是否真的向 quota 接口发请求(纯函数,无副作用,单测钉死)。
+    判定顺序(闸门链,任一闸命中即拒):
+    ① force → 放行:启动首查/设置窗换 key 重启,对应『立即查一次』;
+    ② last_fetch 为 None → 放行:兜底(首轮记账前未知上次抓取时刻);
+    ③ now−last_fetch < QUOTA_MIN_GAP → 拒:60s 硬闸。常规路径不可达
+      (活跃被⑤的 180s 常态闸完全覆盖、静默被④拦截),作为防御性硬闸与
+      未来触发类型(手动刷新、新触发源)的频率下限保留;
+    ④ last_activity 为 None 或 now−last_activity > QUOTA_ACTIVE_WINDOW → 拒:
+      静默期(>1h 无任何请求)完全暂停;恰好 3600s 仍算活跃(边界归活跃);
+    ⑤ now−last_fetch < QUOTA_ACTIVE_GAP → 拒:活跃期常态 ≤1 次/3min;
+    ⑥ 放行。"""
+    if force:
+        return True
+    if last_fetch is None:
+        return True
+    if now - last_fetch < QUOTA_MIN_GAP:
+        return False
+    if last_activity is None or now - last_activity > QUOTA_ACTIVE_WINDOW:
+        return False
+    if now - last_fetch < QUOTA_ACTIVE_GAP:
+        return False
+    return True
+
+
+def format_countdown_hm(next_reset_ms, now_ms=None) -> str | None:
+    """重置倒计时本地化文案(对标 GLM Monitor:倒计时纯本地每分钟递减,
+    不为它发任何 API 请求):'1h 23m'/'42m'。分钟向上取整(剩 30s 显示
+    1m,不闪 '0m');已重置(≤0)或参数缺失/非法 → None,UI 自然省略该段。"""
+    if not _is_num(next_reset_ms) or next_reset_ms <= 0:
+        return None
+    if now_ms is not None and not _is_num(now_ms):
+        return None
+    now = time.time() * 1000 if now_ms is None else float(now_ms)
+    rem_s = (float(next_reset_ms) - now) / 1000.0
+    if rem_s <= 0:
+        return None
+    mins = int(-(-rem_s // 60))           # ceil 整数化:30.4s → 1m、90.5s → 2m
+    h, m = divmod(mins, 60)
+    return f"{h}h {m}m" if h else f"{m}m"
+
+
+def format_age_zh(ts, now=None) -> str | None:
+    """数据新鲜度文案(『套餐剩余 N% · 3分钟前』的尾巴),让用户知道数据
+    多新:ts 为查询完成时刻(time.time() 秒)。<60s '刚刚',<60min
+    'N分钟前',否则 'N小时前'。ts 缺失/非法/在未来(时钟回拨)→ None,
+    UI 自然省略,宁缺勿错。纯本地计算。"""
+    if not _is_num(ts) or ts <= 0:
+        return None
+    if now is not None and not _is_num(now):
+        return None
+    ref = time.time() if now is None else float(now)
+    age = ref - ts
+    if age < 0:
+        return None
+    if age < 60.0:
+        return "刚刚"
+    if age < 3600.0:
+        return f"{int(age // 60)}分钟前"
+    return f"{int(age // 3600)}小时前"
+
+
 class QuotaMonitor(threading.Thread):
-    """Coding Plan 套餐余量轮询(daemon 线程):GET quota/limit(只读,全程
+    """Coding Plan 套餐余量刷新(daemon 线程):GET quota/limit(只读,全程
     唯一允许的外部请求端点)。urllib 标准库实现 —— 不引第三方依赖,保住
     exe 打包体积。线程只产出普通 dict,Qt 调用全部留在 UI 线程(评审约定)。
+
+    调度(v0.5.1 事件驱动+节流,替代旧 300s 盲轮询):1s tick 检查
+    quota_fetch_decision —— DataEngine 监测到新 completed 请求(『有消耗』)
+    经 notify_activity 报告活跃;活跃期常态最长 3min 一查,静默期(>1h 无
+    请求)完全暂停,60s 硬闸兜底;首轮 force=启动即查(换 key 是新实例,
+    同样立即查)。重置倒计时由 UI 按本地时钟对 next_reset_ms 递减渲染,
+    不为倒计时发任何请求 —— 只有剩余%需要网络刷新。失败也推进
+    _last_fetch_ts(失败占频率预算,防 1s tick 对故障端点加密重试)。
 
     启动位置钉死(评审必改#1):类定义在本模块,但只由 zcode_meter_qt 的
     MeterWindow 实例化与启动;DataEngine.__init__/run() 及一切测试路径永不
     触碰 —— 否则源码目录放着带 key 的 zm_config.json 时,回归测试会发真实
     网络请求。解析失败首跑把响应体片段(不含 key)截断落 zm_debug.log 便于
-    修 parse,后续失败静默 debug,不崩不阻塞轮询。"""
+    修 parse,后续失败静默 debug,不崩不阻塞调度。"""
 
-    INTERVAL = 300.0                   # 5 分钟一轮
+    TICK = 1.0                         # 节流决策的检查粒度(检查≠请求)
     TIMEOUT = 10.0
 
     def __init__(self, api_key: str):
@@ -362,19 +442,47 @@ class QuotaMonitor(threading.Thread):
         self._lock = threading.Lock()
         self._latest: dict | None = None
         self._logged_parse_fail = False
+        self._last_fetch_ts: float | None = None      # 上次真实请求时刻(成败都记)
+        self._last_activity_ts: float | None = None   # 最近『有消耗』信号时刻
+
+    def notify_activity(self, ts: float | None = None):
+        """『有消耗』信号落点:DataEngine._check_activity 在 completed 水位
+        前进时回调(引擎线程),本线程 1s tick 读。写侧持既有 _lock,读侧
+        同锁对齐;ts=None 取当前时刻,显式 ts 供单测注入。"""
+        t = time.time() if ts is None else float(ts)
+        with self._lock:
+            self._last_activity_ts = t
 
     def latest(self) -> dict | None:
-        """UI 线程取最近一次解析结果(拷贝,避免跨线程共享可变 dict)。"""
+        """UI 线程取最近一次解析结果(拷贝,避免跨线程共享可变 dict);
+        fetched_at(本次查询时刻,UI 侧『N分钟前』新鲜度)由
+        _fetch_and_record 附加而非 parse 产出,UI 以 .get 读。"""
         with self._lock:
             return dict(self._latest) if self._latest else None
 
     def run(self):
+        first = True
         while not self.stop_flag.is_set():
-            data = self._fetch_once()
-            if data is not None:
-                with self._lock:
-                    self._latest = data
-            self.stop_flag.wait(self.INTERVAL)
+            with self._lock:
+                la = self._last_activity_ts
+            # first 仅首轮 True:启动即查,与旧 run() 先查后等的行为一致
+            if quota_fetch_decision(time.time(), self._last_fetch_ts, la,
+                                    force=first):
+                self._fetch_and_record()
+            first = False
+            self.stop_flag.wait(self.TICK)
+
+    def _fetch_and_record(self):
+        """一次真实请求 + 频率记账:无论成败都推进 _last_fetch_ts —— 失败
+        若不占预算,1s tick 会对故障端点每秒重试,比旧盲轮询更凶。成功时
+        把 fetched_at(数据时刻,新鲜度展示依据)随结果一并入库。"""
+        data = self._fetch_once()
+        ts = time.time()
+        self._last_fetch_ts = ts
+        if data is not None:
+            data["fetched_at"] = ts
+            with self._lock:
+                self._latest = data
 
     def _fetch_once(self) -> dict | None:
         try:
@@ -663,6 +771,13 @@ class DataEngine(threading.Thread):
         self._chars_per_token = self.CHAR_PER_TOKEN_INIT
         self._exact_out_chars = 0
         self._prev_max_rowid = self._max_usage_rowid()
+        # ---- v0.5.1:quota 活动信号。水位 = completed 行最大 rowid(全
+        # 会话全 query_source,含 subagent —— 与今日用量同宽,子代理消耗
+        # 同样算『有消耗』,刻意设计);构造时对齐现值,存量行不触发。
+        # on_activity 由 UI 接到 QuotaMonitor.notify_activity;未接线(一切
+        # 测试路径)时 _check_activity 对 None 短路,行为与旧版逐位一致 ----
+        self.on_activity = None
+        self._act_rowid = self._max_completed_rowid()
         # ---- v0.4.0:金额/燃速/多源。全部本地只读,不触网络不落盘,
         # QuotaMonitor 仍只由 MeterWindow 实例化(启动位置钉死,评审#1) ----
         cfg = load_config()
@@ -709,6 +824,38 @@ class DataEngine(threading.Thread):
             return n
         except sqlite3.Error:
             return 0
+
+    def _max_completed_rowid(self) -> int:
+        """活动水位:completed 行的最大 rowid(不筛 query_source —— 消耗
+        就是消耗;cancelled 行 status 不同,天然不计)。单次查询在真实库
+        实测 ~0.004ms,_db_loop 每秒一查可忽略。"""
+        try:
+            con = self._connect()
+            (n,) = con.execute(
+                "SELECT COALESCE(MAX(rowid),0) FROM model_usage"
+                " WHERE status='completed'").fetchone()
+            con.close()
+            return n
+        except sqlite3.Error:
+            return 0
+
+    def _check_activity(self):
+        """_db_loop 每 tick 调用:completed 水位前进 = ZCode 有新请求完成
+        = 『有消耗』→ 回调 on_activity(quota 节流的触发源)。入口先取回调
+        并对 None 短路(未接线时不查水位,测试路径零开销);先推水位再回调
+        (同一批行不重复触发);坏回调由外层 Exception 兜住,绝不拖死
+        _db_loop —— 回调是 UI 接线的外部代码,不能让它带着轮询线程陪葬。"""
+        cb = self.on_activity
+        if cb is None:
+            return
+        hi = self._max_completed_rowid()
+        if hi <= self._act_rowid:
+            return
+        self._act_rowid = hi
+        try:
+            cb()
+        except Exception:
+            pass
 
     # ---- 日志 tail ----
     def _tail_loop(self):
@@ -758,6 +905,7 @@ class DataEngine(threading.Thread):
     def _db_loop(self):
         while not self.stop_flag.is_set():
             self._poll_stats()
+            self._check_activity()          # v0.5.1:水位前进 → quota 活动信号
             if not self._running:
                 self._poll_new_completed()
             self.stop_flag.wait(self.POLL_DB)

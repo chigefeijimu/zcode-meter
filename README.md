@@ -75,7 +75,7 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
 | 燃速 / 还可撑 X 小时 | 燃速 = 最近 **60 分钟**滚动窗口内的 token（及金额）之和；`还可撑 = (日预算−今日花费) ÷ 燃速¥/h`。**活跃不足 60 分钟时窗口未满、燃速被低估、预估偏大，属窗口口径而非 bug**；燃速为 0 或未配日预算时不显示 |
 | 多源今日（卡片第二行） | 各源今日用量聚合：ZCode 同今日口径；Claude = `input_tokens + cache_read + cache_creation`（**Anthropic 口径 input 不含 cache，须补齐后才与 ZCode 可比**），含 sidechain 行（对齐 ZCode 含 subagent），按 message.id 去重但跳过零用量/error 行，时间戳 UTC 转本地定天界。**两源口径不同，合计对不上属预期，勿当 bug** |
 | 计费块（5h 页签） | 按 5 小时窗聚合 `completed` 的 **query_source 全部** in+out（同今日 token 口径）。块界对齐：已配置 quota 时按 `nextResetTime−k×5h`（平台真实计费窗，黄色高亮=当前活动块）；未配置时回退锚点=最早 completed 请求时刻，**此时块界为示意、非平台真实计费窗** |
-| 套餐剩余（quota 轨） | GET `open.bigmodel.cn/api/monitor/usage/quota/limit`（只读，5 分钟一轮）：`percentage` 为**已用**百分比，剩余 = 100−percentage，取 TOKENS_LIMIT 中 `number==5` 的条目即 5h 计费窗；接口为社区逆向的非公开文档接口，结构变化时该行不显示（首跑失败会把响应片段落 `zm_debug.log` 便于修） |
+| 套餐剩余（quota 轨） | GET `open.bigmodel.cn/api/monitor/usage/quota/limit`（只读，**事件驱动+节流**：ZCode 有新请求完成即视为「有消耗」触发刷新，活跃期（过去 1h 内有请求）常态最长 3 分钟一次，静默期（>1h 无任何请求）暂停查询，最小间隔 60s 硬闸；启动/设置界面改 key 后立即查一次）：`percentage` 为**已用**百分比，剩余 = 100−percentage，取 TOKENS_LIMIT 中 `number==5` 的条目即 5h 计费窗。只有剩余% 需要网络刷新；重置倒计时纯本地每分钟递减、不发任何请求。旁注查询时间（如「· 3分钟前」），静默期数据冻结属预期、以新鲜度标注为准。接口为社区逆向的非公开文档接口，结构变化时该行不显示（首跑失败会把响应片段落 `zm_debug.log` 便于修） |
 | 预算告警（双轨） | quota 轨 = 套餐 5h 窗剩余%；按量轨 = (日预算−今日花费 ZCode 口径) ÷ 日预算。默认阈值剩余 20% / 10% 各提醒一次，**同级别同日只提醒一次**、跨日自动重置（状态存 `zm_alerts.json`），经托盘气泡派发 |
 | 会话跟随 | 按 `part` 表最新写入行判定（排除 `sess_subagent_*`）；自动（最近活跃）或手动固定 |
 | 按天图表 | `completed` **全来源** in+out（同今日口径），本地午夜天界；柱身第二行为当日 ¥（按刊例价，同今日金额口径，含未知模型时为下限） |
@@ -103,7 +103,7 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
 }
 ```
 
-- `quota_api_key`：Coding Plan 套餐轨用。填写后每 5 分钟查询一次套餐余量，卡片显示「套餐剩余 N%」、计费块按真实 5h 窗对齐块界；不填则该轨整体不显示（优雅降级）。**该文件含密钥，已加入 `.gitignore`，切勿提交**；工具的日志与调试输出不会打印 key 明文，设置窗中该字段为密码框（掩码显示）
+- `quota_api_key`：Coding Plan 套餐轨用。填写后按**事件驱动+节流**查询套餐余量：ZCode 有新请求完成即触发刷新，活跃期（过去 1h 内有请求）常态最长 3 分钟一次，静默期（>1h 无请求）暂停查询，最小间隔 60s；启动与设置界面改 key 后立即查一次。卡片显示「套餐剩余 N% · N分钟前」与本地计算的「Xh Ym 后重置」（倒计时零请求）、计费块按真实 5h 窗对齐块界；不填则该轨整体不显示（优雅降级）。**该文件含密钥，已加入 `.gitignore`，切勿提交**；工具的日志与调试输出不会打印 key 明文，设置窗中该字段为密码框（掩码显示）
 - `daily_budget_cny`：按量付费日预算（元）。填写后显示燃速/还可撑 X 小时并启用按量告警轨
 - `alert_pct`：告警阈值（剩余百分比，降序），默认 `[20, 10]` 即 20% 与 10% 各提醒一次
 - **设置界面（右键 → 设置）保存即生效**：原子落盘（临时文件 + `os.replace`）成功后立即重启套餐轨轮询（清号/换号时旧账号数据零残留）、引擎与告警即时读新值，无需重启工具；直接手改文件仍需重启

@@ -33,8 +33,8 @@ from PySide6.QtWidgets import (
 )
 
 from data_engine import (
-    BudgetAlerts, DataEngine, QuotaMonitor, Snapshot, app_dir, dbg, load_config,
-    save_config,
+    BudgetAlerts, DataEngine, QuotaMonitor, Snapshot, app_dir, dbg,
+    format_age_zh, format_countdown_hm, load_config, save_config,
 )
 
 C_BG, C_BORDER = "#16171c", "#2c2f3a"
@@ -288,9 +288,13 @@ class SettingsDialog(QDialog):
 
 class MeterWindow(QWidget):
     # v0.4.0:新增 燃速/套餐剩余 两行 + 今日用量可能多源第二行,自然高度
-    # 实测 314(单源),CARD_H 须 ≥ 布局自然高度 —— _unset_dock/_restore_state
-    # 用它 setGeometry,偏小会静默截断(ui-verify 只打印不校验,需人工目视)
-    CARD_W, CARD_H = 250, 336          # 逻辑像素(DIP),Qt 自动做 DPI 换算
+    # 实测 314(单源)。v0.5.1 套餐剩余改两行文案(第二行重置倒计时),注入
+    # 实测:0~2 行模型 → 328/328/342,3 行模型 356 —— CARD_H 336 会把 2 行
+    # 模型(342)截断,提到 350(2 行可容、3 行起 356>350 仍截断,与旧 336
+    # 的截断点同点,无回退)。CARD_H 须 ≥ 布局自然高度 ——
+    # _unset_dock/_restore_state/_detach_to_pointer 用它 setGeometry,偏小会
+    # 静默截断(ui-verify 只打印不校验,需人工目视)
+    CARD_W, CARD_H = 250, 350          # 逻辑像素(DIP),Qt 自动做 DPI 换算
     BAR_H, BAR_V = 24, 38
     EDGE_NEAR = 30
 
@@ -322,7 +326,14 @@ class MeterWindow(QWidget):
         if cfg["quota_api_key"] and not _state_guard():
             self.quota_monitor = QuotaMonitor(cfg["quota_api_key"])
             self.quota_monitor.start()
+            # v0.5.1 事件驱动:引擎 completed 水位前进 → monitor 记活跃,
+            # 节流器据此决定何时真发 quota 请求(未配 key 不接线,零开销)
+            self.eng.on_activity = self.quota_monitor.notify_activity
         self._plan_pct: float | None = None   # quota 轨 5h 窗剩余%(UI 侧缓存)
+        # v0.5.1:查询完成时刻(新鲜度『N分钟前』)与 nextResetTime(倒计时
+        # 纯本地递减,不为它发请求);换号/清号时随三缓存一并清零
+        self._plan_fetched_at: float | None = None
+        self._plan_next_reset: float | None = None
         # 托盘:无托盘环境(远程会话等)整体跳过,不崩不影响 --verify/stress
         self.tray = TrayController.create(self)
 
@@ -821,7 +832,9 @@ class MeterWindow(QWidget):
         ①同步引擎日预算(裸写先例=quota_hint,GIL 原子,1s 内 _poll_stats
         重算 est_hours_left)→ ②就地更新告警阈值(不重建 BudgetAlerts,
         zm_alerts.json 已触发状态保留)→ ③与 self._quota_key(内存基准)
-        四分支对账:不动/启动/停+清三缓存/换号停+清+立即按新 key 重启。"""
+        四分支对账:不动/启动(含挂活动回调)/停+清套餐缓存(三缓存 +
+        v0.5.1 的 fetched_at/next_reset,并摘除活动回调)/换号停+清+立即
+        按新 key 重启(回调重挂新实例)。"""
         if not save_config(cfg):
             return
         self.daily_budget_cny = cfg["daily_budget_cny"]
@@ -835,18 +848,27 @@ class MeterWindow(QWidget):
             if not _state_guard():          # ②启用:仍过守卫闸(测试环境不发真请求)
                 self.quota_monitor = QuotaMonitor(new)
                 self.quota_monitor.start()
+                self.eng.on_activity = self.quota_monitor.notify_activity
         else:
             # ③清号 / ④换号:停旧 monitor + 清三项套餐缓存(旧账号数据零残留:
-            # 剩余% 显示、引擎 5h 块界锚点)
+            # 剩余% 显示、引擎 5h 块界锚点)+ v0.5.1 的新鲜度/倒计时缓存与
+            # 活动回调 —— 回调指向旧实例,必须先摘除(旧 monitor 已停,残留
+            # 回调无害但脏,且破坏零残留不变式)
             if self.quota_monitor is not None:
                 self.quota_monitor.stop()
                 self.quota_monitor = None
             self._plan_pct = None
+            self._plan_fetched_at = None
+            self._plan_next_reset = None
             self.snap.plan_remaining_pct = None
             self.eng.quota_hint = None
+            self.eng.on_activity = None
             if new and not _state_guard():  # ④换号:立即按新 key 重启,不停在 None
                 self.quota_monitor = QuotaMonitor(new)
                 self.quota_monitor.start()
+                # 换号必须重挂新实例的回调:漏挂则换号后只剩启动首查,
+                # quota 永不因活动刷新(比现状更糟的翻车点)
+                self.eng.on_activity = self.quota_monitor.notify_activity
         self._quota_key = new
         # dbg 只记预算/阈值/布尔,不记 key 明文(泄漏面专查项)
         dbg(f"config applied: budget={cfg['daily_budget_cny']} "
@@ -867,7 +889,9 @@ class MeterWindow(QWidget):
     def _update_quota(self):
         """quota 轨数据搬运(UI 线程):daemon 线程只产出普通 dict,这里取
         拷贝渲染并回写引擎 —— plan_remaining_pct 引擎只写 None、UI 回填
-        (引擎从不读它,跨线程无竞态);nextResetTime 给计费块对齐块界用。"""
+        (引擎从不读它,跨线程无竞态);nextResetTime 给计费块对齐块界用。
+        v0.5.1:同时缓存 fetched_at(渲染『N分钟前』新鲜度)与 next_reset_ms
+        (倒计时每 200ms 渲染 tick 本地重算,零 API 请求)。"""
         m = self.quota_monitor
         if m is None:
             return
@@ -878,8 +902,12 @@ class MeterWindow(QWidget):
         if pct is not None:
             self._plan_pct = pct
             self.snap.plan_remaining_pct = pct
+        fa = data.get("fetched_at")
+        if isinstance(fa, (int, float)) and not isinstance(fa, bool) and fa > 0:
+            self._plan_fetched_at = float(fa)
         nrt = data.get("next_reset_ms")
-        if isinstance(nrt, (int, float)) and nrt > 0:
+        if isinstance(nrt, (int, float)) and not isinstance(nrt, bool) and nrt > 0:
+            self._plan_next_reset = int(nrt)
             self.eng.quota_hint = int(nrt)
 
     def _check_alerts(self):
@@ -976,8 +1004,20 @@ class MeterWindow(QWidget):
                 else:
                     self.burn_lbl.setText("")   # 无燃速(今日尚未活跃)不显示
             if self.plan_lbl is not None:
-                self.plan_lbl.setText(
-                    f"套餐剩余 {self._plan_pct:.0f}%" if self._plan_pct is not None else "")
+                if self._plan_pct is None:
+                    self.plan_lbl.setText("")
+                else:
+                    # 两行:v0.5.1 需求点 4/3 —— 第一行带数据新鲜度(用户
+                    # 知道百分比多新,静默期冻结可见),第二行重置倒计时
+                    # 纯本地递减(缺 fetched_at/next_reset 时该段自然省略)
+                    t = f"套餐剩余 {self._plan_pct:.0f}%"
+                    age = format_age_zh(self._plan_fetched_at)
+                    if age:
+                        t += f" · {age}"
+                    cd = format_countdown_hm(self._plan_next_reset)
+                    if cd:
+                        t += f"\n{cd} 后重置"
+                    self.plan_lbl.setText(t)
         else:
             plan_on = self._plan_pct is not None
             burn_on = burn > 0

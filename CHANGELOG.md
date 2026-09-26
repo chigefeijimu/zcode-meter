@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.5.1 (2026-09-27) — quota 事件驱动+节流 / 倒计时本地化 / 数据新鲜度标注
+
+- 调度改造(`data_engine.QuotaMonitor`,仅内部调度,对外接口不变):300s 盲轮询
+  改为**事件驱动+节流** —— `DataEngine` 新增 completed 行水位监测
+  (`_max_completed_rowid`/`_check_activity`,每秒查一次水位,单次实测 ~0.004ms),
+  水位前进 = ZCode 有新请求完成 = 『有消耗』,经新回调 `on_activity` 转发到
+  `QuotaMonitor.notify_activity` 记录活跃时刻;monitor 改 1s tick 检查纯函数
+  `quota_fetch_decision(now, last_fetch, last_activity, force)` 决定是否真发请求:
+  **最短间隔 60s 硬闸**(常规路径被 180s 常态闸覆盖、不可达,作防御性下限与未来
+  触发类型保留)/ **活跃期(过去 1h 内有请求)常态最长 3min 一查** /
+  **静默期(>1h 无任何请求)完全暂停** / **启动与设置窗换 key 后立即查一次**
+  (首轮 force,与旧 run() 先查后等行为一致)。全会话全 query_source 计入
+  (含 subagent,与今日用量口径同宽,刻意设计);cancelled 不算。失败也推进
+  `_last_fetch_ts`(失败占频率预算,防 1s tick 对故障端点加密重试);成功把
+  `fetched_at` 附加进 latest() 结果(parse_quota_payload 契约不变)。频率对账:
+  旧版恒 288 次/天,新版静默 0 次、活跃上限 20 次/h,典型日(4h 活跃+20h 静默)
+  ≈80 次/天,整体显著下降
+- 倒计时本地化(对标 GLM Monitor 已验证做法):拿到 `next_reset_ms` 后重置
+  倒计时纯本地计算,不再为倒计时发任何 API 请求 —— 新纯函数
+  `format_countdown_hm`('Xh Ym'/'Ym',分钟向上取整,过期/缺参 → None)在
+  渲染 tick 每 200ms 重算(分钟粒度=每 60s 递减);卡片套餐剩余改两行文案:
+  第一行「套餐剩余 N%」+ 新鲜度(`format_age_zh`:刚刚/N分钟前/N小时前),
+  第二行「Xh Ym 后重置」(缺数据自然省略)。**条形态文案一字不动**(test_stress
+  精确断言红线),只有剩余% 仍需网络刷新
+- 数据新鲜度透明化:套餐剩余旁标注查询时间(「· 3分钟前」),静默期数据冻结
+  从不可见变为可见 —— 需求点 2/4 的明确取舍:不再每 5min 自动刷新,搁置一夜
+  后首看是陈旧百分比+「N小时前」,首次活动后最迟 3min 刷新(README 口径表已写明)
+- 设置热生效(`_apply_config`):启用/换号分支在 monitor 重启后**重挂
+  `eng.on_activity` 到新实例**(漏挂则换号后只剩启动首查、quota 永不刷新);
+  清号分支摘除回调并随三缓存一并清 `_plan_fetched_at`/`_plan_next_reset`
+  (扩展 v0.5.0『旧账号套餐数据零残留』不变式)
+- 尺寸:`CARD_H` 336→350(卡片套餐剩余第二行使 2 行模型+多源自然高度 342>336
+  被钉死几何截断;350 可容 2 行、3 行起 356>350 仍截断,与旧 336 截断点同点
+  无回退;`_restore_state`/`_detach_to_pointer`/`_unset_dock` 走常量自动跟进,
+  ui-verify 只打印尺寸不校验截断,需人工目视)
+- 兼容(全部不动):`parse_quota_payload`/`snap.plan_remaining_pct`/设置界面
+  契约不变;`ZM_NO_STATE=1` 与 `--verify` 下 monitor 不启动不写盘、未接线引擎
+  的 `_check_activity` 对 None 短路(一切现有测试路径行为与旧版逐位一致);
+  接口失败静默降级(`_fetch_once`/`_log_parse_fail`)保留
+- 测试:`test_data_engine.py` 新增四组单测(全部无网络、不 start 线程、不写盘)
+  —— 节流决策四场景+整数边界(59.9/60/179.9/180/3600 整、force、双 None)、
+  倒计时与新鲜度文案(含边界与缺参)、活动信号恰触发一次/未接线短路不查水位/
+  坏回调兜住、monitor 记账(fetched_at 附加/失败也推进 `_last_fetch_ts`);
+  README 口径表与配置节的查询频率表述同步改事件驱动口径
+
 ## v0.5.0 (2026-09-27) — 设置窗 / 图表竖柱统一 / 贴边条预算段
 
 - 设置窗：主窗右键新增「设置」（原菜单项一字未动，新项插在「历史用量图表」
