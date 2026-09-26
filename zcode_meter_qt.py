@@ -495,9 +495,16 @@ class MeterWindow(QWidget):
     def _open_history(self):
         if self._history_win is None:
             self._history_win = HistoryWindow(self.eng)   # 构造即查询
+            # 首次打开:居中于主窗所在屏 —— 不指定位置时窗口可能落在不可预期处
+            sg = self.screen().availableGeometry()
+            hw = self._history_win
+            hw.move(sg.center().x() - hw.width() // 2,
+                    sg.center().y() - hw.height() // 2)
         else:
             self._history_win.refresh()   # 再次打开也重新取数(打开与刷新同口径)
-        self._history_win.show()
+        # showNormal 而非 show:最小化态下 show 不还原窗口 —— 用户曾最小化过
+        # 历史窗口时,再点菜单"看起来没反应"(窗口只在任务栏闪一下)
+        self._history_win.showNormal()
         self._history_win.raise_()
         self._history_win.activateWindow()
 
