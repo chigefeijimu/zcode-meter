@@ -94,14 +94,6 @@ python tests/run_all.py data       # 只跑数据层单测
 2. **界面层** `zcode_meter_qt.py`：`_build_card`/`_build_bar` 加 label（竖条不显示的字段记得显式置 `None`，防悬空引用）；`_apply_snapshot` 渲染
 3. **单测** `tests/test_data_engine.py`：对着 db 手算期望值加断言（口径回归就是这么防的）
 
-### 迭代工作流
-
-本仓库配有一个 ZCode 迭代流水线（`.zcode/workflows/zcode-meter-iterate.dwf.ts`），在 ZCode 中说：
-
-> 用 zcode-meter-iterate 工作流，需求：\<要修的 bug 或要加的功能\>
-
-它会自动走五个阶段：**理解需求并分析影响面**（读口径表，bug 自动归因 zm_debug/zm_crash 日志）→ **独立评审实现计划**（对照历史踩坑记录查漏）→ **按计划实现** → **自动回归直到全绿**（跑 run_all，最多 3 轮修复）→ **产出迭代报告**（CHANGELOG 建议 + 需人工实测的验收清单）。
-
 ## 调试与故障排查
 
 | 症状 | 排查 |
