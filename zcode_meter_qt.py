@@ -674,10 +674,14 @@ class BarChart(QWidget):
                            Qt.AlignCenter, label)
 
     def _paint_h(self, p: QPainter, w: int, h: int, vmax: int):
-        """水平条:左侧标题(超长省略号),条末缩写数值;行高自适应。"""
+        """水平条:左侧标题(超长省略号),条末缩写数值;行高自适应。
+        条形最大宽度必须给数值区预留 —— 画满右缘会让数值矩形宽度为负,
+        数值被顶出窗口外不可见(最长条正落在 vmax 上)。"""
         n = len(self._items)
         lbl_w = min(190, int(w * 0.32))
         x0, right = lbl_w + 8, w - 10
+        val_w = 64                                     # 数值区预留宽度
+        bar_max = max(right - x0 - val_w - 6, 20)
         row_h = min(30, max((h - 8) / max(n, 1), 14))
         f_lbl = QFont("Microsoft YaHei UI", 8)
         f_val = QFont(C_MONO, 8)
@@ -689,14 +693,14 @@ class BarChart(QWidget):
             p.setFont(f_lbl)
             p.drawText(QRect(4, y, lbl_w, row_h), Qt.AlignVCenter | Qt.AlignRight,
                        fm.elidedText(label, Qt.ElideRight, lbl_w))
-            bw = max(val / vmax * (right - x0), 2) if val else 0
+            bw = max(val / vmax * bar_max, 2) if val else 0
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(C_ACCENT))
             bh = min(row_h * 0.5, 12)
             p.drawRect(QRectF(x0, cy - bh / 2, bw, bh))
             p.setPen(QColor(C_FG))
             p.setFont(f_val)
-            p.drawText(QRectF(x0 + bw + 6, y, right - x0 - bw - 6, row_h),
+            p.drawText(QRectF(x0 + bw + 6, y, val_w, row_h),
                        Qt.AlignVCenter | Qt.AlignLeft, fmt_k(val))
 
 
