@@ -19,8 +19,8 @@ import queue
 import sys
 import time
 
-from PySide6.QtCore import QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import QCursor, QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPoint
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
+from PySide6.QtGui import QCursor, QColor, QFont, QFontMetrics, QGuiApplication, QPainter
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QTabWidget,
     QVBoxLayout, QWidget,
