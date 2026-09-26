@@ -12,13 +12,24 @@ import sqlite3
 import sys
 import threading
 import time
-import tkinter as tk
-import tkinter.font as tkfont
 from dataclasses import dataclass, field
 
-# 崩溃追踪:pythonw 无控制台,access violation 等原生崩溃的 traceback 落盘
-_CRASH_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zm_crash.log")
-faulthandler.enable(open(_CRASH_LOG, "a", encoding="utf-8"))
+
+def app_dir() -> str:
+    """运行目录:PyInstaller frozen 时取 exe 所在目录(zm_*.log/zm_state.json
+    都落这),脚本模式取源码目录 —— dev 行为不变。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+# 崩溃追踪:pythonw 无控制台,access violation 等原生崩溃的 traceback 落盘。
+# 打不开不能连启动都崩:exe 可能被放进只读目录(如未提权的 Program Files)
+_CRASH_LOG = os.path.join(app_dir(), "zm_crash.log")
+try:
+    faulthandler.enable(open(_CRASH_LOG, "a", encoding="utf-8"))
+except Exception:
+    pass
 
 ZCODE_DIR = os.path.expanduser("~/.zcode/cli")
 DB_PATH = os.path.join(ZCODE_DIR, "db", "db.sqlite")
@@ -26,7 +37,19 @@ LOG_DIR = os.path.join(ZCODE_DIR, "log")
 ROLL_DIR = os.path.join(ZCODE_DIR, "rollout")
 
 DEBUG = os.environ.get("ZM_DEBUG") == "1"
-DBG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zm_debug.log")
+DBG_PATH = os.path.join(app_dir(), "zm_debug.log")
+
+
+def connect_ro() -> sqlite3.Connection:
+    """只读连接:引擎轮询与 UI 侧图表/菜单查询共用,统一 open 参数。"""
+    return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=2)
+
+
+def today0_ms() -> int:
+    """本地午夜毫秒时间戳:今日用量(_poll_stats)与按天图表(fetch_daily_usage)
+    必须共用同一午夜口径,否则两张图对不上账。"""
+    return int(dt.datetime.now().replace(hour=0, minute=0, second=0,
+                                         microsecond=0).timestamp() * 1000)
 
 
 def dbg(msg: str):
@@ -54,6 +77,7 @@ class Snapshot:
     session_out: int = 0
     cache_rate: float = 0.0             # cache / in
     gen_elapsed: float = 0.0
+    manual: bool = False                # 统计对象被手动固定(卡片标题前缀 📌)
     updated: float = field(default_factory=time.time)
 
 
@@ -67,6 +91,7 @@ class DataEngine(threading.Thread):
         self.out = out
         self.stop_flag = threading.Event()
         self.snap_lock = threading.RLock()         # 可重入:保护 snap 读写一致(多线程)
+        self.manual_session: str | None = None     # 手动固定统计会话;None=自动跟随
         self.session_id = self._latest_session()
         self.snap = Snapshot()
         self._running = False
@@ -105,7 +130,7 @@ class DataEngine(threading.Thread):
                 return ""
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=2)
+        return connect_ro()
 
     def _max_usage_rowid(self) -> int:
         try:
@@ -190,8 +215,7 @@ class DataEngine(threading.Thread):
                 speed_by_model = [
                     (p, m, (o / (d / 1000)) if o and d else None, o)
                     for p, m, o, d in speed_rows]
-                today0 = int(dt.datetime.now().replace(
-                    hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+                today0 = today0_ms()
                 # 今日用量=全部真实消耗(main_turn+subagent 等所有来源),
                 # 与 ZCode 自身统计口径一致;cancelled 请求 token 为 0 无影响
                 (today,) = con.execute(
@@ -283,19 +307,108 @@ class DataEngine(threading.Thread):
 
     # ---- 会话跟随:part 最新写入的会话变了 = 活跃会话切换 ----
     def _refresh_session(self):
-        new = self._latest_session()
-        if not new or new == self.session_id:
-            return
-        with self.snap_lock:                        # 与数据线程互斥,防半更新快照
+        # 整体持锁(含 manual 检查与 _latest_session 查询):否则 UI 线程
+        # set_manual_session 在「检查 manual→查最新会话」之间挤入,固定会被
+        # 一次已过检查的自动切换覆盖,且永不自愈。RLock 可重入,_switch_session
+        # 内再取锁不死锁;_latest_session 热缓存 ~1ms,持锁代价可接受。
+        with self.snap_lock:
+            if self.manual_session:                 # 手动固定期间不跟随
+                return
+            new = self._latest_session()
+            if not new or new == self.session_id:
+                return
+            self._switch_session(new)
+
+    def _switch_session(self, new: str):
+        """切到指定会话(自动跟随/手动固定共用)。序列不可乱:
+        - 先重建 Snapshot:防数据线程读到半更新快照(v0.2.0 修过的老 bug)
+        - _last_len=None:否则用两会话 part 长度差算出错误 tps_est
+        - _prev_max_rowid 重置:否则旧会话基线带进新会话,漏读/重读完成请求"""
+        with self.snap_lock:
             self.session_id = new
             self.snap = Snapshot(state=self.snap.state, model=self.snap.model,
-                                 tps_exact=self.snap.tps_exact)
+                                 tps_exact=self.snap.tps_exact,
+                                 manual=bool(self.manual_session))
             self._last_len = None
             self._prev_max_rowid = self._max_usage_rowid()
             self.snap.title = self._session_title()
             self._poll_stats()
             self._init_tps_for_session()
             self._push()
+
+    # ---- 手动固定 / 恢复自动(UI 线程调用) ----
+    def set_manual_session(self, sid: str):
+        """固定统计对象为 sid。与当前相同的会话也走完整切换:snap.manual
+        标记(📌)必须随重建生效。"""
+        with self.snap_lock:
+            if not sid:
+                return
+            self.manual_session = sid
+            self._switch_session(sid)
+
+    def clear_manual_session(self):
+        """恢复自动跟随,并立即对齐当前最新活跃会话。"""
+        with self.snap_lock:
+            self.manual_session = None
+            self._switch_session(self._latest_session() or self.session_id)
+
+    # ---- UI 侧查询(右键会话菜单 / 历史图表窗口,均只读独立连接) ----
+    def recent_sessions(self, limit: int = 8) -> list:
+        """最近会话(手动切换菜单用):按 part 每会话最新写入倒序、排除
+        subagent,与 _latest_session 跟随口径同源。LEFT JOIN 取标题:
+        标题缺失时列出空标题而非丢会话(与 _session_title 行为一致)。"""
+        try:
+            con = connect_ro()
+            rows = con.execute(
+                "SELECT p.session_id, s.title FROM"
+                " (SELECT session_id, MAX(rowid) AS mr FROM part"
+                "  WHERE session_id NOT LIKE 'sess_subagent%' GROUP BY session_id) p"
+                " LEFT JOIN session s ON s.id = p.session_id"
+                " ORDER BY p.mr DESC LIMIT ?", (limit,)).fetchall()
+            con.close()
+            return [(sid, (title or "").strip()[:16]) for sid, title in rows]
+        except sqlite3.Error:
+            return []
+
+    def fetch_daily_usage(self, days: int = 30) -> list:
+        """按天 token 用量(历史图表):completed 全来源 in+out,与今日用量
+        同口径(input 已含 cache_read 勿重复加);起点=(days-1) 天前本地午夜,
+        days=1 时与今日用量 SQL 完全同界。天界用 SQLite 'localtime',依赖
+        OS 时区设置。"""
+        try:
+            con = connect_ro()
+            rows = con.execute(
+                "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
+                " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
+                " FROM model_usage WHERE status='completed' AND started_at>=?"
+                " GROUP BY d ORDER BY d",
+                (today0_ms() - (days - 1) * 86_400_000,)).fetchall()
+            con.close()
+            return rows
+        except sqlite3.Error:
+            return []
+
+    def fetch_session_usage(self, limit: int = 20) -> list:
+        """按会话 token 用量(历史图表):completed + main_turn、排除 subagent
+        会话 —— 与卡片统计逐字对齐(README 口径表)。返回 (sid,title,tokens,
+        请求数),按会话最近请求时间倒序。注意:普通会话内也混有 compact/
+        workflow_child 等非 main_turn 来源,不加 query_source 过滤必与卡片
+        对不上而被当 bug 报。"""
+        try:
+            con = connect_ro()
+            rows = con.execute(
+                "SELECT mu.session_id, COALESCE(s.title,''),"
+                " COALESCE(SUM(mu.input_tokens),0)+COALESCE(SUM(mu.output_tokens),0),"
+                " COUNT(*)"
+                " FROM model_usage mu LEFT JOIN session s ON s.id = mu.session_id"
+                " WHERE mu.status='completed' AND mu.query_source='main_turn'"
+                " AND mu.session_id NOT LIKE 'sess_subagent%'"
+                " GROUP BY mu.session_id"
+                " ORDER BY MAX(mu.started_at) DESC LIMIT ?", (limit,)).fetchall()
+            con.close()
+            return rows
+        except sqlite3.Error:
+            return []
 
     def _session_title(self) -> str:
         try:

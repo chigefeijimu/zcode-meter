@@ -5,8 +5,12 @@
 - 竖条切换时 elapsed_lbl 持有已销毁旧对象(RuntimeError 崩溃)
 - 固定尺寸 vs 动态尺寸(必须动态:分辨率/内容变化自愈)
 """
+import os
 import sys
 from pathlib import Path
+
+# 位置记忆隔离:直接运行本文件时也不改写用户真实 zm_state.json
+os.environ.setdefault("ZM_NO_STATE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtWidgets import QApplication  # noqa: E402

@@ -2,4 +2,9 @@ __pycache__/
 *.pyc
 zm_debug.log
 zm_crash.log
+zm_state.json
 mini_tk_events.log
+# PyInstaller 打包产物
+build/
+dist/
+*.spec

@@ -116,7 +116,7 @@ const reportMd = [
 ].join("\n");
 await artifact.markdown("iteration-report", reportMd, {
   title: "zcode-meter 迭代报告",
-  description: result.summary,
+  description: result.summary.slice(0, 200),
   primary: true,
 });
 
