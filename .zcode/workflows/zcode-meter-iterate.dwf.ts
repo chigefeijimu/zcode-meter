@@ -80,10 +80,14 @@ const result = await impl.ask<ImplResult>(
 );
 
 phase("自动回归直到全绿");
+// 回归套件路径 cwd 自适应:工作流可能以 default 或 zcode-meter 为项目键运行
+const SUITE = (await files.glob("tests/run_all.py")).length > 0
+    ? "tests/run_all.py"
+    : PROJ + "/tests/run_all.py";
 let pass = false;
 let lastOutput = "";
 for (let round = 1; round <= 3; round++) {
-  const t = await world.run("python", [PROJ + "/tests/run_all.py"], { timeoutMs: 300000 });
+  const t = await world.run("python", [SUITE], { timeoutMs: 300000 });
   pass = t.exitCode === 0;
   lastOutput = (t.stdout + "\n" + t.stderr).slice(-4000);
   log("回归第 " + round + " 轮:" + (pass ? "全部通过" : "有失败"));

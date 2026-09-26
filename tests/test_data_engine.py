@@ -475,6 +475,107 @@ def test_today_by_source():
               f"src {srcs['ZCode']} today {e.snap.today_tokens}")
 
 
+# ================= v0.5.0 新增:save_config(设置窗落盘路径) =================
+
+def test_save_config_roundtrip_and_normalize():
+    """save_config:显式临时 path 写读回环;规范化与 load_config 同规则
+    (key strip / 非法 budget→None / pct 正数降序去重、非法项剔除、
+    整字段坏形回退默认)—— 写读必须得到同一结果,否则设置窗『保存后
+    下次打开变样』。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    import data_engine as de
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_cfg_"))
+    orig_path = de.CONFIG_PATH
+    try:
+        p = str(tmp / "c1.json")
+        cfg = {"quota_api_key": "  sk-test-123  ", "daily_budget_cny": 25,
+               "alert_pct": [10, 30, 10, "x", -5]}
+        check("save:显式 path 返回 True", de.save_config(cfg, path=p) is True)
+        de.CONFIG_PATH = p                   # load_config 只认模块级路径
+        back = de.load_config()
+        check("回环:key 已 strip", back["quota_api_key"] == "sk-test-123",
+              back["quota_api_key"])
+        check("回环:budget 透传", back["daily_budget_cny"] == 25.0,
+              str(back["daily_budget_cny"]))
+        check("回环:pct 正数降序去重、非法项剔除",
+              back["alert_pct"] == [30.0, 10.0], str(back["alert_pct"]))
+        # 非法字段整体规范化为默认(load_config 坏值回退的同一口径)
+        p2 = str(tmp / "c2.json")
+        check("save:坏形 cfg 仍可落盘(规范化后写)",
+              de.save_config({"quota_api_key": 123, "daily_budget_cny": -3,
+                              "alert_pct": "nope"}, path=p2) is True)
+        de.CONFIG_PATH = p2
+        back2 = de.load_config()
+        check("坏形规范化为默认",
+              back2 == {"quota_api_key": "", "daily_budget_cny": None,
+                        "alert_pct": [20.0, 10.0]}, str(back2))
+    finally:
+        de.CONFIG_PATH = orig_path
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_save_config_guard_and_failures():
+    """save_config 失败语义三分支:
+    ①守卫命中(默认路径 + _no_persist)→ False 且零文件(返回 True 会让
+      设置窗热生效+关窗而 key 从未落盘,重启即无声丢失);
+    ②temp 创建失败(目录不存在)→ False、无 .tmp 残留;
+    ③replace 失败(Windows 打开中目标抛 PermissionError⊂OSError)→
+      False、.tmp 已清理、原文件内容不变。"""
+    import os as osmod
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    import data_engine as de
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_cfg_"))
+    orig_path, orig_np = de.CONFIG_PATH, de._no_persist
+    cfg = {"quota_api_key": "sk-x", "daily_budget_cny": 5, "alert_pct": [20, 10]}
+    try:
+        # ①守卫:默认路径 + _no_persist=True → False 且不产生任何文件
+        guard = tmp / "guard.json"
+        de.CONFIG_PATH = str(guard)
+        de._no_persist = lambda: True
+        check("守卫命中:默认路径返回 False", de.save_config(cfg) is False)
+        check("守卫命中:不产生任何文件",
+              not guard.exists() and not (tmp / "guard.json.tmp").exists())
+        # ②temp 创建失败:目标目录不存在(FileNotFoundError⊂OSError)
+        ghost = str(tmp / "no_dir" / "x.json")
+        check("temp 创建失败:返回 False", de.save_config(cfg, path=ghost) is False)
+        check("temp 创建失败:无 .tmp 残留", not osmod.path.exists(ghost + ".tmp"))
+        # ③replace 失败:两条 OSError 路径里更隐蔽的一条(临时文件已写成,
+        # 清理逻辑必须执行,否则留下 zm_config.json.tmp 残骸)
+        if osmod.name == "nt":
+            held = tmp / "held.json"
+            held.write_text('{"orig": 1}', encoding="utf-8")
+            f = open(held, "r", encoding="utf-8")     # 占住目标句柄
+            try:
+                check("replace 失败(nt 打开句柄):返回 False",
+                      de.save_config(cfg, path=str(held)) is False)
+            finally:
+                f.close()
+            check("replace 失败:原文件内容不变",
+                  held.read_text(encoding="utf-8") == '{"orig": 1}')
+            check("replace 失败:.tmp 已清理",
+                  not osmod.path.exists(str(held) + ".tmp"))
+        else:
+            # POSIX 无法用句柄锁 replace,用目录占位强制走同一条 OSError 路径
+            (tmp / "as_dir").mkdir()
+            target = str(tmp / "as_dir")
+            check("replace 失败(posix 目录占位):返回 False",
+                  de.save_config(cfg, path=target) is False)
+            check("replace 失败:.tmp 已清理",
+                  not osmod.path.exists(target + ".tmp"))
+        # 守卫不拦显式 path(单测绕过守卫的既定通道)
+        de._no_persist = orig_np
+        ok = tmp / "ok.json"
+        check("守卫外显式 path 可写",
+              de.save_config(cfg, path=str(ok)) is True and ok.exists())
+    finally:
+        de.CONFIG_PATH, de._no_persist = orig_path, orig_np
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     print("== test_active_session_not_subagent =="); test_active_session_not_subagent()
     print("== test_today_usage_matches_full_scope ==");  test_today_usage_matches_full_scope()
@@ -493,6 +594,9 @@ if __name__ == "__main__":
     print("== test_parse_quota_payload ==");             test_parse_quota_payload()
     print("== test_budget_alerts_dedup_and_reset ==");   test_budget_alerts_dedup_and_reset()
     print("== test_today_by_source ==");                 test_today_by_source()
+    # ---- v0.5.0 新增(save_config,全部临时目录,不碰真实 zm_config.json) ----
+    print("== test_save_config_roundtrip_and_normalize =="); test_save_config_roundtrip_and_normalize()
+    print("== test_save_config_guard_and_failures ==");      test_save_config_guard_and_failures()
     if FAILED:
         print(f"\nFAILED: {FAILED}")
         sys.exit(1)

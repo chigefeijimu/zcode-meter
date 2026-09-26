@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.5.0 (2026-09-27) — 设置窗 / 图表竖柱统一 / 贴边条预算段
+
+- 设置窗：主窗右键新增「设置」（原菜单项一字未动，新项插在「历史用量图表」
+  之后），深色 QDialog（QSS_SET 复用 QSS_HIST 色板）编辑
+  `quota_api_key`/`daily_budget_cny`/`alert_pct` 三字段；key 用
+  `EchoMode.Password` 密码框（预填现值但任何回显均为掩码，日志/报错路径
+  不拼 key 明文）；对话框延迟到菜单模态循环返回后 `QTimer.singleShot(0)`
+  再 exec —— triggered 槽内直接弹窗会被菜单关闭的鼠标抓取吞掉（v0.3.0
+  历史窗口同款坑）。非法输入或保存失败只红字报错、不落盘不关窗；阈值
+  分隔符兼容半角/全角逗号与空白（中文输入法高频），数值判定以
+  `float(strip())` 为准（QDoubleValidator 仅做输入反馈）
+- 落盘语义（`data_engine.save_config`）：与 `load_config` 完全同规则规范化
+  后**临时文件 + `os.replace` 原子写** —— 直接 open('w') 中途崩溃会坏
+  `zm_config.json`，而 load_config 对坏文件静默回退默认，key 会无声丢失；
+  OSError（exe 只读目录等）清残留临时文件后返回 False 不抛错；默认路径
+  在 `_no_persist()` 守卫（ZM_NO_STATE=1 / --verify）下返回 False 且不写
+  —— 环境残留时设置窗仍可打开，若返回 True 会让 UI 热生效并关窗而 key
+  从未落盘、重启即无声丢失（『用户以为改了实际没改』红线）；显式 path
+  参数供单测绕过守卫
+- 保存热生效（`MeterWindow._apply_config`）：先 save_config，失败即整体
+  终止（内存与磁盘不脱节）；成功后同步 `self.daily_budget_cny` 与
+  `eng.daily_budget_cny`（裸写先例=quota_hint，GIL 原子，1s 内重算
+  est_hours_left）→ 就地更新 `alerts.thresholds`（不重建 BudgetAlerts，
+  zm_alerts.json 已触发状态保留）→ 与 `__init__` 存的 `_quota_key` 内存
+  基准（**严禁落盘后回读文件比较**）四分支对账：不动/启动/停+清
+  _plan_pct·snap.plan_remaining_pct·eng.quota_hint 三缓存/换号停+清三缓存
+  +立即按新 key 重启（清号/换号后旧账号套餐数据零残留，monitor 不停在
+  None）。注记：同日新增/调低阈值后新级别可能当日补发一次气泡（同级别
+  同日仍只提醒一次，属预期）
+- 历史图表统一竖柱：删除 `BarChart` 的 `horizontal` 参数与 `_paint_h`
+  （水平条形态不可再得 —— 三图全竖柱是需求方明确指定），新增
+  `label_angle`；会话/计费块页 45° 斜排长标签（以柱中心为锚、右端落在
+  锚点、按可用对角线长度 elide、首尾标签受边缘钳制、bot 边距按旋转投影
+  自适应并设上限），相邻标签为平行带只需法向间距≥行高 → 会话页 20 项
+  全画不抽稀；抽稀步长由硬编码 '09-26' 宽度改为实际最长标签宽度投影
+  （按天页 0° 外观与抽稀密度不变）；竖排数值/第二行 ¥/当前块 C_WARN
+  高亮与三条取数 SQL 一字不动。**取舍明示**：45°+elide 后会话页标签仅
+  剩约 6~12 个字符（对比水平条约 20 字符），信息量损失以悬停 tooltip
+  （全量 label+数值，`setMouseTracking`+`mouseMoveEvent`）补偿
+- 贴边胶囊条预算段：横条在今日组后插入『套餐剩余 N%』（warn 色）与
+  『燃速 x/h』（dim 色）带分隔线；竖条空间受限只加紧凑『套 N%』
+  （≈30px，守住 stress 的竖条宽≤90 断言）。数据缺席整段
+  `setVisible(False)`（label+分隔线），`_bar_size` 跳过 isHidden 控件
+  —— 否则隐藏 label 仍按 sizeHint 计入会让条宽虚胖、空文本 QLabel 占行
+  高会撑破『横条高≤30』断言；卡片形态维持纯文本切换不隐藏（现状）。
+  `_build_card`/`_build_bar` 设 `_bar_form`=None/'h'/'v' 与实际标签集合
+  一一对应，尾部置 None 纪律只保留真正不创建的 label（burn/plan 改由
+  各形态自行创建/置 None，防压力循环摸已销毁 QLabel 的 v0.4.0 同类 bug）
+- 测试：新增 save_config 两组单测（显式临时 path 写读回环逐字段相等 +
+  坏形规范化为默认；守卫命中零文件、temp 创建失败无残留、Windows 打开
+  中目标触发 replace 失败后原文件不变且 .tmp 已清理）；test_stress 追加
+  预算段结构（横条 plan+burn/竖条仅 plan+burn 为 None+_bar_form 对应）
+  与注入数据后的双形态显隐·尺寸稳定·高度≤30·宽度≤90、数据缺席整段
+  隐藏断言；现有测试与断言一字未改
+- README：交互表加「右键 → 设置」与图表悬停说明；配置章节『改动需重启』
+  改为『设置界面保存即生效（直接改文件仍需重启）』，注记阈值当日补发
+  气泡与保存失败报错语义
+
 ## v0.4.0 (2026-09-26) — 成本估算 / 预算告警 / 燃速 / 计费块 / 多源 / 托盘
 
 - 成本估算：内置 bigmodel 按量刊例价三档表（元/M tokens，2026-09 自官方定价文档

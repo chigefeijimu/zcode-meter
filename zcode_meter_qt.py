@@ -14,20 +14,27 @@ from __future__ import annotations
 import ctypes
 import datetime as dt
 import json
+import math
 import os
 import queue
+import re
 import sys
 import time
 
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import QCursor, QColor, QFont, QFontMetrics, QGuiApplication, QPainter
+from PySide6.QtGui import (
+    QCursor, QColor, QDoubleValidator, QFont, QFontMetrics, QGuiApplication,
+    QPainter,
+)
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QStyle,
-    QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
+    QPushButton, QStyle, QSystemTrayIcon, QTabWidget, QToolTip, QVBoxLayout,
+    QWidget,
 )
 
 from data_engine import (
     BudgetAlerts, DataEngine, QuotaMonitor, Snapshot, app_dir, dbg, load_config,
+    save_config,
 )
 
 C_BG, C_BORDER = "#16171c", "#2c2f3a"
@@ -59,6 +66,26 @@ QPushButton {{ background: #1e2027; color: {C_FG}; border: 1px solid {C_BORDER};
                border-radius: 6px; padding: 5px 16px; }}
 QPushButton:hover {{ background: #2c2f3a; }}
 QPushButton:pressed {{ background: {C_BORDER}; }}
+"""
+
+# 设置窗样式:复用 QSS_HIST 同一套深色色板,补 QDialog/QLineEdit(输入框与
+# 按钮同底色系,主按钮用主题色实底突出);err 红字用于保存失败的状态行
+QSS_SET = f"""
+QDialog {{ background: {C_BG}; }}
+QLabel {{ color: {C_FG}; background: transparent; border: none; }}
+QLabel#dim {{ color: {C_DIM}; }}
+QLabel#err {{ color: #e06c75; }}
+QLineEdit {{ background: #1e2027; color: {C_FG}; border: 1px solid {C_BORDER};
+             border-radius: 6px; padding: 5px 8px;
+             selection-background-color: {C_ACCENT}; }}
+QLineEdit:focus {{ border: 1px solid {C_ACCENT}; }}
+QPushButton {{ background: #1e2027; color: {C_FG}; border: 1px solid {C_BORDER};
+               border-radius: 6px; padding: 5px 16px; }}
+QPushButton:hover {{ background: #2c2f3a; }}
+QPushButton:pressed {{ background: {C_BORDER}; }}
+QPushButton#primary {{ background: {C_ACCENT}; color: #10241c; border: none;
+                       font-weight: 600; }}
+QPushButton#primary:hover {{ background: #6fe2b3; }}
 """
 
 # 位置记忆状态文件:与 zm_*.log 同目录(frozen 时落 exe 旁)
@@ -135,6 +162,130 @@ class TrayController:
             pass          # 专注助手抑制等系统行为不视为错误(README 注明)
 
 
+class SettingsDialog(QDialog):
+    """设置窗(v0.5.0):右键菜单「设置」打开,三字段与 zm_config.json 一一
+    对应。key 安全红线:输入框 EchoMode.Password,界面任何回显均为掩码;
+    解析/报错/日志路径一律不拼 key 明文。
+    保存 = 解析校验 → save_config 落盘 → accept();任一步失败只红字报错、
+    不落盘不关窗,成功后由调用方(MeterWindow._apply_config)热生效。
+    输入判定以 float(strip()) 为准:QDoubleValidator 只做输入反馈,空串→
+    None 等分支不依赖 validator 状态;阈值分隔符兼容半角/全角逗号与空白
+    (中文输入法高频形态)。"""
+
+    def __init__(self, cfg: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("zcode-meter · 设置")
+        self.setStyleSheet(QSS_SET)
+        self.setModal(True)
+        self.setMinimumWidth(430)
+        self._cfg = dict(cfg)                 # 保存成功后在此暂存规范化结果
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 12)
+        root.setSpacing(6)
+
+        def caption(text: str) -> QLabel:
+            lb = QLabel(text)
+            lb.setObjectName("dim")
+            return lb
+
+        root.addWidget(caption("quota API Key(Coding Plan 套餐轨)"))
+        self.key_edit = QLineEdit(str(cfg.get("quota_api_key") or ""))
+        # 密码框:预填现值但恒以掩码显示,杜绝明文回显泄漏面
+        self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        root.addWidget(self.key_edit)
+        root.addWidget(caption("仅存本机 zm_config.json(已 .gitignore);留空 = 不启用套餐轨"))
+
+        root.addWidget(caption("日预算(元,留空 = 不启用按量告警轨)"))
+        self.budget_edit = QLineEdit("")
+        dv = QDoubleValidator(0.0, 1e9, 2, self)
+        dv.setNotation(QDoubleValidator.Notation.StandardNotation)
+        self.budget_edit.setValidator(dv)     # 仅输入反馈,判定见 _parse_input
+        if cfg.get("daily_budget_cny"):
+            self.budget_edit.setText(f"{cfg['daily_budget_cny']:g}")
+        root.addWidget(self.budget_edit)
+
+        root.addWidget(caption("告警阈值(剩余百分比,逗号分隔,默认 20,10)"))
+        self.alert_edit = QLineEdit(", ".join(f"{v:g}" for v in cfg.get("alert_pct") or []))
+        root.addWidget(self.alert_edit)
+
+        self.status_lbl = QLabel("")
+        self.status_lbl.setObjectName("err")
+        self.status_lbl.setWordWrap(True)
+        root.addWidget(self.status_lbl)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("保存")
+        save.setObjectName("primary")
+        save.clicked.connect(self._on_save)
+        btns.addWidget(cancel)
+        btns.addWidget(save)
+        root.addLayout(btns)
+
+    def _err(self, text: str):
+        self.status_lbl.setText(text)
+
+    def _parse_input(self) -> dict | None:
+        """UI 输入 → 合法 cfg dict;非法返回 None(已写状态行红字)。
+        数值判定一律 float(strip())、异常文本直接判非法;空串语义:
+        key 空=不启用、预算空=None、阈值空=恢复默认 [20,10]。"""
+        key = self.key_edit.text().strip()
+        budget_txt = self.budget_edit.text().strip()
+        budget = None
+        if budget_txt:
+            try:
+                budget = float(budget_txt)
+            except ValueError:
+                self._err(f"日预算不是数字:{budget_txt}")
+                return None
+            if not (budget > 0) or math.isinf(budget):
+                self._err("日预算须为正数(留空 = 不启用)")
+                return None
+        pcts = [20.0, 10.0]                   # 阈值留空 → 默认
+        alert_txt = self.alert_edit.text().strip()
+        if alert_txt:
+            pcts = []
+            # 全角逗号『，』与任意空白都当分隔符;validator 不参与判定
+            for part in re.split(r"[,，、\s]+", alert_txt):
+                if not part:
+                    continue
+                try:
+                    v = float(part)
+                except ValueError:
+                    self._err(f"告警阈值不是数字:{part}")
+                    return None
+                if not (v > 0) or math.isinf(v):
+                    self._err("告警阈值须为正数(剩余百分比)")
+                    return None
+                pcts.append(v)
+            if not pcts:
+                self._err("告警阈值不能全为分隔符(留空恢复默认 20,10)")
+                return None
+        return {"quota_api_key": key, "daily_budget_cny": budget, "alert_pct": pcts}
+
+    def _on_save(self):
+        cfg = self._parse_input()
+        if cfg is None:
+            return                            # 非法输入:红字报错,不落盘不关窗
+        if not save_config(cfg):
+            # 落盘失败两类:守卫命中必须显式点名(否则用户以为改了实际没改,
+            # 丢的还是最敏感的 key);否则按只读目录等 OSError 语义提示
+            if _state_guard():
+                self._err("ZM_NO_STATE=1/--verify 隔离中,未落盘")
+            else:
+                self._err("保存失败:配置文件不可写(exe 目录只读?);未生效")
+            return
+        self._cfg = cfg
+        self.accept()
+
+    def result_config(self) -> dict:
+        """保存成功(accepted)后取规范化 cfg;热生效用它,而非回读文件。"""
+        return self._cfg
+
+
 class MeterWindow(QWidget):
     # v0.4.0:新增 燃速/套餐剩余 两行 + 今日用量可能多源第二行,自然高度
     # 实测 314(单源),CARD_H 须 ≥ 布局自然高度 —— _unset_dock/_restore_state
@@ -162,6 +313,10 @@ class MeterWindow(QWidget):
         # 组注入 ZM_NO_STATE=1)。
         cfg = load_config()
         self.daily_budget_cny = cfg["daily_budget_cny"]
+        # key 内存基准(v0.5.0 设置窗):设置保存后的 monitor 对账必须与它
+        # 比较 —— 严禁落盘后回读文件(恒等 → monitor 永不重启 → 残留旧账号
+        # 套餐数据)。用完即弃,只在保存成功后更新。
+        self._quota_key = cfg["quota_api_key"]
         self.alerts = BudgetAlerts(cfg["alert_pct"])
         self.quota_monitor = None
         if cfg["quota_api_key"] and not _state_guard():
@@ -358,7 +513,11 @@ class MeterWindow(QWidget):
 
     def _bar_size(self, vertical: bool) -> tuple[int, int]:
         """遍历条布局内全部控件(label+分隔线)聚合尺寸:
-        margins(8,1,8,1) + spacing 6 + 边框 2。"""
+        margins(8,1,8,1) + spacing 6 + 边框 2。
+        isHidden() 的控件跳过(v0.5.0):预算段整段隐藏后仍按隐藏 label 计
+        会让条宽虚胖、悬空一条分隔线;空文本 QLabel 本身仍占行高,也会撑破
+        stress 的『横条高度≤30』断言 —— 所以数据缺席必须走 setVisible(False)
+        而非 setText("")。"""
         lay = self.layout()
         if lay is None:
             return 60, 20
@@ -368,7 +527,7 @@ class MeterWindow(QWidget):
             max_w, total_h = 0, 2 + 2
             for i in range(lay.count()):
                 w = lay.itemAt(i).widget()
-                if w is None:
+                if w is None or w.isHidden():
                     continue
                 hs = w.sizeHint()
                 max_w = max(max_w, hs.width())
@@ -377,7 +536,7 @@ class MeterWindow(QWidget):
         total_w, max_h = 16 + 2, 0
         for i in range(lay.count()):
             w = lay.itemAt(i).widget()
-            if w is None:
+            if w is None or w.isHidden():
                 continue
             hs = w.sizeHint()
             max_h = max(max_h, hs.height() + pad)
@@ -411,6 +570,11 @@ class MeterWindow(QWidget):
 
     def _build_card(self):
         self._clear()
+        # 形态标记(v0.5.0):_apply_snapshot 的预算段渲染按它分支 —— 卡片=
+        # 纯文本切换(现状),条形态=按数据显隐;每次重建后与实际标签集合
+        # 一一对应(stress 尺寸稳定断言依赖此约定)
+        self._bar_form = None
+        self._budget_sep = None
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 10)
         root.setSpacing(4)
@@ -472,8 +636,8 @@ class MeterWindow(QWidget):
         right.addWidget(self.dur_lbl)
 
         # 卡片专属两行(有数据才显示):燃速+耗尽预估 / 套餐剩余。
-        # 横条与竖条都不创建 → _build_bar 尾部按纪律显式置 None(历史 bug:
-        # 只在竖条置 None 会让横条循环摸到已销毁 QLabel 当场 RuntimeError)。
+        # v0.5.0 起条形态也有预算段(横条 plan+burn、竖条紧凑 plan),由
+        # _build_bar 各自创建 —— 尾部置 None 纪律只保留真正不创建的 label。
         self.burn_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
         root.addWidget(self.burn_lbl)
         self.plan_lbl = self._mk_lbl("", "warn", "Microsoft YaHei UI", 8)
@@ -487,6 +651,7 @@ class MeterWindow(QWidget):
         root = QVBoxLayout(self) if vertical else QHBoxLayout(self)
         root.setContentsMargins(8, 1, 8, 1)
         root.setSpacing(6)
+        self._bar_form = "v" if vertical else "h"
         self.dot = self._mk_lbl("●", "dim", "Segoe UI", 8)
         root.addWidget(self.dot)
         if not vertical:
@@ -512,6 +677,16 @@ class MeterWindow(QWidget):
             self.today_lbl = self._mk_lbl("", "dim", C_MONO, 9)
             root.addWidget(self.today_lbl)
             root.addWidget(self._mk_sep(False))
+            # 预算段(v0.5.0):『套餐剩余 N%』(warn 色,quota 轨有数据才
+            # 可见)+『燃速 x/h』(dim 色)。数据缺席时 _apply_snapshot 把
+            # label 与 _budget_sep 整段隐藏 → 布局回落到原样(today|线|计时),
+            # _bar_size 跳过隐藏控件,条宽不虚胖
+            self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 9)
+            root.addWidget(self.plan_lbl)
+            self.burn_lbl = self._mk_lbl("", "dim", C_MONO, 9)
+            root.addWidget(self.burn_lbl)
+            self._budget_sep = self._mk_sep(False)
+            root.addWidget(self._budget_sep)
             self.elapsed_lbl = self._mk_lbl("", "warn", C_MONO, 9)
             root.addWidget(self.elapsed_lbl)
         else:
@@ -538,14 +713,21 @@ class MeterWindow(QWidget):
             self.rate_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
             self.rate_lbl.setAlignment(Qt.AlignCenter)
             root.addWidget(self.rate_lbl)
+            # 竖条预算段:空间受限只加紧凑套餐剩余(『套 N%』≈30px,竖条宽度
+            # 上限 90px 的 stress 断言卡着),无分隔线;燃速段显式置 None
+            self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 9)
+            self.plan_lbl.setAlignment(Qt.AlignCenter)
+            root.addWidget(self.plan_lbl)
+            self._budget_sep = None
             root.addStretch(1)
             # 竖条不显示 elapsed/ttft/dur:显式置 None,否则保留已销毁旧对象的悬空引用
             self.elapsed_lbl = self.ttft_lbl = self.dur_lbl = None
+            self.burn_lbl = None
         # 横条与竖条共通:卡片专属 label 两种条形态都不创建,统一置 None
-        # (v0.4.0 新增 burn/plan 同纪律;只在一种形态置 None 会让另一形态
-        #  的压力循环摸到已销毁 QLabel —— test_stress.py 的存在理由)
+        # (只在一种形态置 None 会让另一形态的压力循环摸到已销毁 QLabel
+        #  —— test_stress.py 的存在理由;burn/plan 已改由各形态自行创建)
         self.state_lbl = self.model_lbl = self.est_lbl = self.cache_lbl = None
-        self.title_lbl = self.burn_lbl = self.plan_lbl = None
+        self.title_lbl = None
 
     # ---- 菜单 ----
     def _popup_menu(self, pos):
@@ -561,6 +743,7 @@ class MeterWindow(QWidget):
             m.addAction(label, fn)
         self._add_session_menu(m)
         m.addAction("历史用量图表", self._open_history)
+        m.addAction("设置", self._open_settings)
         if self.tray is not None:          # 无托盘环境不提供收起,防"收起后找不回"
             m.addAction("收起到托盘", self.hide)
         m.addSeparator()
@@ -610,6 +793,65 @@ class MeterWindow(QWidget):
             import traceback
             with open("zm_error.log", "a", encoding="utf-8") as f:
                 f.write(time.strftime("%H:%M:%S ") + traceback.format_exc())
+
+    # ---- 设置窗(v0.5.0) ----
+    def _open_settings(self):
+        """右键「设置」:现读磁盘预填(允许用户手改 zm_config.json 后经界面
+        接管),保存成功(accepted)才热生效。对话框必须延迟到菜单 exec() 的
+        模态循环返回之后 —— 与 _open_history 同坑:triggered 槽内直接弹窗,
+        会被菜单关闭的鼠标抓取时序吞掉,症状即『点设置没反应』。"""
+        try:
+            dlg = SettingsDialog(load_config(), self)
+
+            def _exec_and_apply():
+                if dlg.exec() == QDialog.DialogCode.Accepted:
+                    self._apply_config(dlg.result_config())
+
+            QTimer.singleShot(0, _exec_and_apply)
+        except Exception:
+            import traceback
+            with open("zm_error.log", "a", encoding="utf-8") as f:
+                f.write(time.strftime("%H:%M:%S ") + traceback.format_exc())
+
+    def _apply_config(self, cfg: dict):
+        """设置保存后的热生效(全部 UI 线程):先 save_config,失败即整体
+        终止(引擎/告警/monitor 一律不动,内存态与磁盘不脱节)。正常路径下
+        设置窗已落盘过一次,这里再写一次是幂等的原子替换 —— 换来的是本方法
+        自含『未落盘不生效』不变式,不依赖调用方先save。成功后依次:
+        ①同步引擎日预算(裸写先例=quota_hint,GIL 原子,1s 内 _poll_stats
+        重算 est_hours_left)→ ②就地更新告警阈值(不重建 BudgetAlerts,
+        zm_alerts.json 已触发状态保留)→ ③与 self._quota_key(内存基准)
+        四分支对账:不动/启动/停+清三缓存/换号停+清+立即按新 key 重启。"""
+        if not save_config(cfg):
+            return
+        self.daily_budget_cny = cfg["daily_budget_cny"]
+        self.eng.daily_budget_cny = cfg["daily_budget_cny"]
+        self.alerts.thresholds = sorted(
+            {float(t) for t in (cfg["alert_pct"] or []) if t > 0}, reverse=True)
+        old, new = self._quota_key or "", cfg["quota_api_key"] or ""
+        if old == new:
+            pass                            # ①key 未变:monitor 不动
+        elif not old and new:
+            if not _state_guard():          # ②启用:仍过守卫闸(测试环境不发真请求)
+                self.quota_monitor = QuotaMonitor(new)
+                self.quota_monitor.start()
+        else:
+            # ③清号 / ④换号:停旧 monitor + 清三项套餐缓存(旧账号数据零残留:
+            # 剩余% 显示、引擎 5h 块界锚点)
+            if self.quota_monitor is not None:
+                self.quota_monitor.stop()
+                self.quota_monitor = None
+            self._plan_pct = None
+            self.snap.plan_remaining_pct = None
+            self.eng.quota_hint = None
+            if new and not _state_guard():  # ④换号:立即按新 key 重启,不停在 None
+                self.quota_monitor = QuotaMonitor(new)
+                self.quota_monitor.start()
+        self._quota_key = new
+        # dbg 只记预算/阈值/布尔,不记 key 明文(泄漏面专查项)
+        dbg(f"config applied: budget={cfg['daily_budget_cny']} "
+            f"alert={cfg['alert_pct']} monitor_on={self.quota_monitor is not None} "
+            f"key_changed={old != new}")
 
     # ---- 数据渲染 ----
     def _poll_queue(self):
@@ -718,19 +960,39 @@ class MeterWindow(QWidget):
                 if srcs and len(srcs) > 1:
                     txt += "\n" + " · ".join(f"{n} {fmt_k(t)}" for n, t in srcs)
                 self.today_lbl.setText(txt)
-        if self.burn_lbl is not None:
-            burn = s.burn_tokens_per_hour or 0.0
-            if burn > 0:
-                t = f"燃速 {fmt_k(int(burn))}/h"
-                if s.est_hours_left is not None:
-                    t += (" · 预算已超支" if s.est_hours_left <= 0
-                          else f" · 预算还可撑 {s.est_hours_left:.1f}h")
-                self.burn_lbl.setText(t)
-            else:
-                self.burn_lbl.setText("")   # 无燃速(今日尚未活跃)不显示
-        if self.plan_lbl is not None:
-            self.plan_lbl.setText(
-                f"套餐剩余 {self._plan_pct:.0f}%" if self._plan_pct is not None else "")
+        # ---- 预算段(v0.5.0 起条形态也有):卡片=纯文本切换(现状不动);
+        # 条形态=按数据显隐 —— 数据缺席整段 setVisible(False)(label+分隔线),
+        # 隐藏控件被 _bar_size 跳过,条宽不虚胖;横条 burn 不带卡片 est 后缀
+        # (一行放不下);竖条只保紧凑套餐剩余,文案压到 90px 宽度断言内。
+        burn = s.burn_tokens_per_hour or 0.0
+        if self._bar_form is None:
+            if self.burn_lbl is not None:
+                if burn > 0:
+                    t = f"燃速 {fmt_k(int(burn))}/h"
+                    if s.est_hours_left is not None:
+                        t += (" · 预算已超支" if s.est_hours_left <= 0
+                              else f" · 预算还可撑 {s.est_hours_left:.1f}h")
+                    self.burn_lbl.setText(t)
+                else:
+                    self.burn_lbl.setText("")   # 无燃速(今日尚未活跃)不显示
+            if self.plan_lbl is not None:
+                self.plan_lbl.setText(
+                    f"套餐剩余 {self._plan_pct:.0f}%" if self._plan_pct is not None else "")
+        else:
+            plan_on = self._plan_pct is not None
+            burn_on = burn > 0
+            if self.plan_lbl is not None:
+                self.plan_lbl.setVisible(plan_on)
+                if plan_on:
+                    self.plan_lbl.setText(
+                        f"套餐剩余 {self._plan_pct:.0f}%" if self._bar_form == "h"
+                        else f"套 {self._plan_pct:.0f}%")
+            if self.burn_lbl is not None:
+                self.burn_lbl.setVisible(burn_on)
+                if burn_on:
+                    self.burn_lbl.setText(f"燃速 {fmt_k(int(burn))}/h")
+            if self._budget_sep is not None:
+                self._budget_sep.setVisible(plan_on or burn_on)
         if self.ttft_lbl is not None:
             if s.last_ttft is None:
                 self.ttft_lbl.setText("--")
@@ -794,16 +1056,20 @@ class MeterWindow(QWidget):
 
 
 class BarChart(QWidget):
-    """纯 QPainter 条形图:竖柱(按天)/水平条(按会话)。
+    """纯 QPainter 竖柱图(v0.5.0 起三页签统一竖柱,水平条形态已删)。
+    x 轴标签支持旋转(label_angle):会话/计费块页标签远宽于槽位,水平摆放
+    必被矩形裁剪或重叠,统一 45° 斜排 + 按可用对角线长度省略;悬停 tooltip
+    显示全量 label+数值,补偿省略损失。
     刻意不引 matplotlib 等第三方库 —— 单文件 exe 的体积与启动速度。"""
 
-    def __init__(self, horizontal: bool = False, parent=None):
+    def __init__(self, label_angle: int = 0, parent=None):
         super().__init__(parent)
-        self._horizontal = horizontal
+        self._angle = max(0, min(int(label_angle), 90))
         self._items: list[tuple[str, int]] = []
         self._extra: list[str] = []        # 第二行数值文本(如 ¥ 金额),可空
         self._highlight = -1               # 高亮柱下标(计费块的当前块)
         self.setMinimumSize(360, 200)
+        self.setMouseTracking(True)        # 悬停 tooltip 需要 mouseMove 事件
 
     def set_items(self, items):
         """items 兼容二元组 (label, value) 与三元组 (label, value, extra):
@@ -828,26 +1094,44 @@ class BarChart(QWidget):
             p.drawText(self.rect(), Qt.AlignCenter, "无数据")
             return
         vmax = max(v for _, v in self._items) or 1
-        if self._horizontal:
-            self._paint_h(p, w, h, vmax)
-        else:
-            self._paint_v(p, w, h, vmax)
+        self._paint_v(p, w, h, vmax)
 
     def _paint_v(self, p: QPainter, w: int, h: int, vmax: int):
         """竖柱:数值沿柱身竖排(旋转-90°,每根都显示,不占横向空间);
-        日期标签过密时仍按步长抽稀 —— 横排数值一旦抽稀会让一半柱子
-        看起来"没有用量",这是要避免的。"""
+        数值一旦抽稀会让一半柱子看起来"没有用量",这是要避免的。
+        x 轴标签两种形态:
+        - angle=0(按天页):水平居中,过密按步长抽稀(保持旧版外观);
+        - angle>0(会话/计费块页):以柱中心为锚 45° 斜排,相邻标签是平行
+          带,只需法向间距≥行高(锚距×sin45°),槽宽≥行高/sin45° 即全画
+          不抽稀;按可用对角线长度 elide(首尾标签另受左缘钳制),bot 边距
+          按旋转投影自适应并设上限,防矮窗口被标签区吃光。"""
         n = len(self._items)
-        side, top, bot = 10, 34, 24
+        f_val, f_lbl = QFont(C_MONO, 8), QFont("Microsoft YaHei UI", 8)
+        fm = QFontMetrics(f_lbl)
+        line_h = fm.height()
+        w_max = max((fm.horizontalAdvance(t[0]) for t in self._items), default=0)
+        rad = math.radians(self._angle)
+        side, top = 10, 34
+        if self._angle > 0:
+            sin_r, cos_r = max(math.sin(rad), 1e-6), max(math.cos(rad), 1e-6)
+            need_dx = line_h / sin_r + 4          # 斜排防重叠的锚距下限
+            diag_cap = 120.0                      # 对角线长度上限(防 bot 失控)
+            bot = min(96, int(min(w_max, diag_cap) * sin_r) + line_h + 8)
+            diag_ok = max((bot - 8 - line_h) / sin_r, 12.0)
+        else:
+            bot = 24
         chart_h = h - top - bot
         slot = (w - side * 2) / n
         bar_w = max(min(slot * 0.62, 46.0), 3.0)
-        fm = QFontMetrics(QFont(C_MONO, 8))
-        # 抽稀步长只作用于日期标签:保证相邻被绘制的标签互不重叠
-        stride = max(1, -(-n * (fm.horizontalAdvance("09-26") + 6) // max(w - 2 * side, 1)))
+        # 抽稀步长只作用于 x 轴标签:保证相邻被绘制的标签互不重叠。
+        # angle=0 用整型公式与旧版逐位等价(仅 '09-26' 常量换成实际最长
+        # 标签宽度),防浮点噪声让按天页抽稀密度漂移
+        if self._angle > 0:
+            stride = max(1, math.ceil(need_dx / max(slot, 1e-6)))
+        else:
+            stride = max(1, -(-n * (w_max + 6) // max(w - 2 * side, 1)))
         p.setPen(QColor(C_BORDER))
         p.drawLine(side, top + chart_h, w - side, top + chart_h)   # 基线
-        f_val, f_lbl = QFont(C_MONO, 8), QFont("Microsoft YaHei UI", 8)
         for i, (label, val) in enumerate(self._items):
             x = side + i * slot + (slot - bar_w) / 2
             bh = max(val / vmax * chart_h, 2) if val else 0
@@ -869,41 +1153,44 @@ class BarChart(QWidget):
                 p.drawText(QRectF(0, 6, 64, 12), Qt.AlignLeft | Qt.AlignVCenter,
                            self._extra[i])
             p.restore()
-            if i % stride == 0:                    # 日期标签抽稀后仍从首根画起
+            if i % stride == 0:                    # 标签抽稀后仍从首根画起
                 p.setPen(QColor(C_DIM))
                 p.setFont(f_lbl)
-                p.drawText(QRectF(x - slot / 2, h - bot + 3, slot + bar_w, bot - 5),
-                           Qt.AlignCenter, label)
+                if self._angle > 0:
+                    # 斜排:文本右端落在锚点(柱中心、基线下 4px),向左下
+                    # 延伸;左缘不越界 → 可用长度另受锚点到左缘的距离钳制
+                    anchor_x = x + bar_w / 2
+                    avail = max(min(float(fm.horizontalAdvance(label)), diag_ok,
+                                    anchor_x / cos_r), 12.0)
+                    text = fm.elidedText(label, Qt.ElideRight, avail)
+                    p.save()
+                    p.translate(anchor_x, top + chart_h + 4)
+                    p.rotate(-self._angle)
+                    p.drawText(QRectF(-avail, -line_h / 2.0, avail, line_h),
+                               Qt.AlignRight | Qt.AlignVCenter, text)
+                    p.restore()
+                else:
+                    p.drawText(QRectF(x - slot / 2, h - bot + 3, slot + bar_w, bot - 5),
+                               Qt.AlignCenter, label)
 
-    def _paint_h(self, p: QPainter, w: int, h: int, vmax: int):
-        """水平条:左侧标题(超长省略号),条末缩写数值;行高自适应。
-        条形最大宽度必须给数值区预留 —— 画满右缘会让数值矩形宽度为负,
-        数值被顶出窗口外不可见(最长条正落在 vmax 上)。"""
+    def mouseMoveEvent(self, ev):
+        """悬停 tooltip:全量 label + 数值。45° 斜排的会话/计费块标签被
+        elide 截断(会话页槽宽下仅剩十来个字符,对比旧水平条约 20 字符),
+        信息量损失在这里补偿。命中判定与绘制共用同一 slot 公式。"""
+        if not self._items:
+            return
         n = len(self._items)
-        lbl_w = min(190, int(w * 0.32))
-        x0, right = lbl_w + 8, w - 10
-        val_w = 64                                     # 数值区预留宽度
-        bar_max = max(right - x0 - val_w - 6, 20)
-        row_h = min(30, max((h - 8) / max(n, 1), 14))
-        f_lbl = QFont("Microsoft YaHei UI", 8)
-        f_val = QFont(C_MONO, 8)
-        fm = QFontMetrics(f_lbl)
-        for i, (label, val) in enumerate(self._items):
-            y = 4 + i * row_h
-            cy = y + row_h / 2
-            p.setPen(QColor(C_DIM))
-            p.setFont(f_lbl)
-            p.drawText(QRect(4, y, lbl_w, row_h), Qt.AlignVCenter | Qt.AlignRight,
-                       fm.elidedText(label, Qt.ElideRight, lbl_w))
-            bw = max(val / vmax * bar_max, 2) if val else 0
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(C_ACCENT))
-            bh = min(row_h * 0.5, 12)
-            p.drawRect(QRectF(x0, cy - bh / 2, bw, bh))
-            p.setPen(QColor(C_FG))
-            p.setFont(f_val)
-            p.drawText(QRectF(x0 + bw + 6, y, val_w, row_h),
-                       Qt.AlignVCenter | Qt.AlignLeft, fmt_k(val))
+        side = 10
+        slot = (self.width() - side * 2) / n
+        if slot <= 0:
+            return
+        i = int((ev.position().x() - side) / slot)
+        if 0 <= i < n:
+            label, val = self._items[i]
+            tip = f"{label}\n{fmt_k(val)} tokens"
+            if self._extra and i < len(self._extra) and self._extra[i]:
+                tip += f"\n{self._extra[i]}"
+            QToolTip.showText(ev.globalPosition().toPoint(), tip, self)
 
 
 class HistoryWindow(QWidget):
@@ -921,9 +1208,12 @@ class HistoryWindow(QWidget):
         self.setWindowFlag(Qt.Window, True)
         self.resize(780, 460)
 
-        self.daily_chart = BarChart(horizontal=False)
-        self.sess_chart = BarChart(horizontal=True)
-        self.block_chart = BarChart(horizontal=False)
+        # v0.5.0:三图统一竖柱。按天页保持水平标签(默认 0,外观不变);
+        # 会话/计费块页标签远宽于槽位('标题… ·N次'/'09-26 14:00'),旧版
+        # 水平摆放要么矩形裁剪要么重叠,改 45° 斜排 + elide + 悬停全量 tooltip
+        self.daily_chart = BarChart()
+        self.sess_chart = BarChart(label_angle=45)
+        self.block_chart = BarChart(label_angle=45)
         self.tabs = QTabWidget()
         self.tabs.addTab(self.daily_chart, "按天(近30天)")
         self.tabs.addTab(self.sess_chart, "按会话(近20个)")

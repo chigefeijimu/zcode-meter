@@ -111,6 +111,52 @@ def load_config() -> dict:
     return cfg
 
 
+def save_config(cfg: dict, path: str | None = None) -> bool:
+    """zm_config.json 落盘(v0.5.0 设置窗路径):与 load_config 完全同规则
+    规范化(key strip / budget>0 或 None / pct 正数降序去重,坏值回退默认),
+    临时文件 + os.replace 原子替换 —— 直接 open('w') 中途崩溃会坏掉配置,
+    而 load_config 对坏文件静默回退默认,key 会无声丢失(最敏感字段,必须
+    原子写)。失败语义是返回 bool、绝不抛错:
+    - path 缺省(默认 CONFIG_PATH)且 _no_persist() 为真 → 返回 False 且不写:
+      ZM_NO_STATE=1 环境残留(README 故障排查表)下设置窗仍可打开,若这里
+      返回 True,UI 会照常热生效并关闭对话框,而 key 从未落盘、重启即无声
+      丢失(『用户以为改了实际没改』红线);显式 path 供单测绕过守卫。
+    - OSError(exe 放只读目录等)→ 清理残留临时文件后返回 False,调用方
+      (设置窗状态行)负责向用户报错,这里既不抛也不静默当成功。
+    全程不打 key 明文日志(泄漏面专查项)。"""
+    p = path if path is not None else CONFIG_PATH
+    if path is None and _no_persist():
+        return False
+    # 规范化与 load_config 同规则:保证任何来源(含 UI 输入解析外的直接调用)
+    # 落盘形状恒合法;load_config 读回同一份数据必然得到相同结果
+    key = cfg.get("quota_api_key")
+    out = {"quota_api_key": key.strip() if isinstance(key, str) else "",
+           "daily_budget_cny": None, "alert_pct": [20.0, 10.0]}
+    budget = cfg.get("daily_budget_cny")
+    if _is_num(budget) and budget > 0:
+        out["daily_budget_cny"] = float(budget)
+    pcts = cfg.get("alert_pct")
+    if isinstance(pcts, list):
+        vals = sorted({float(v) for v in pcts if _is_num(v) and v > 0}, reverse=True)
+        if vals:
+            out["alert_pct"] = vals
+    tmp = p + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, p)
+    except OSError:
+        # 两条失败路径都在这收口:临时文件创建失败(目录不存在/只读)与
+        # replace 失败(Windows 下目标被占用抛 PermissionError⊂OSError)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+    return True
+
+
 # bigmodel 按量刊例价(元/M tokens),2026-09 自官方定价文档人工转录:
 # https://docs.bigmodel.cn/cn/guide/start/pricing
 # - GLM-5.3-Flash 取标准牌价(限时 5 折期实付更低 → 宁可高估,可自行用
