@@ -493,20 +493,27 @@ class MeterWindow(QWidget):
 
     # ---- 历史用量图表窗口 ----
     def _open_history(self):
-        if self._history_win is None:
-            self._history_win = HistoryWindow(self.eng)   # 构造即查询
-            # 首次打开:居中于主窗所在屏 —— 不指定位置时窗口可能落在不可预期处
-            sg = self.screen().availableGeometry()
+        try:
+            if self._history_win is None:
+                self._history_win = HistoryWindow(self.eng)   # 构造即查询
+                # 首次打开:居中于主窗所在屏 —— 不指定位置时窗口可能落在不可预期处
+                sg = self.screen().availableGeometry()
+                hw = self._history_win
+                hw.move(sg.center().x() - hw.width() // 2,
+                        sg.center().y() - hw.height() // 2)
+            else:
+                self._history_win.refresh()   # 再次打开也重新取数(打开与刷新同口径)
             hw = self._history_win
-            hw.move(sg.center().x() - hw.width() // 2,
-                    sg.center().y() - hw.height() // 2)
-        else:
-            self._history_win.refresh()   # 再次打开也重新取数(打开与刷新同口径)
-        # showNormal 而非 show:最小化态下 show 不还原窗口 —— 用户曾最小化过
-        # 历史窗口时,再点菜单"看起来没反应"(窗口只在任务栏闪一下)
-        self._history_win.showNormal()
-        self._history_win.raise_()
-        self._history_win.activateWindow()
+            # 显示动作必须延迟到 QMenu.exec() 模态循环返回之后:
+            # 在菜单 triggered 槽里直接 show,ShowWindow 会被菜单关闭的
+            # 鼠标抓取时序吞掉 —— 窗口已创建(visible=False)但永不显示,
+            # 症状即"点击没反应"(实测窗口枚举确认:存在/位置正常/不可见)
+            QTimer.singleShot(0, lambda: (
+                hw.showNormal(), hw.raise_(), hw.activateWindow()))
+        except Exception:
+            import traceback
+            with open("zm_error.log", "a", encoding="utf-8") as f:
+                f.write(time.strftime("%H:%M:%S ") + traceback.format_exc())
 
     # ---- 数据渲染 ----
     def _poll_queue(self):
@@ -762,6 +769,9 @@ class HistoryWindow(QWidget):
 
 def main():
     app = QApplication(sys.argv)
+    # 主窗是 Qt.Tool(不参与"最后一个窗口关闭即退出"的计数),历史窗口是普通
+    # Window —— 不关掉这个默认行为,关闭历史窗口会连主窗一起退出
+    app.setQuitOnLastWindowClosed(False)
     win = MeterWindow()
     if "--verify" in sys.argv:
         QTimer.singleShot(1500, win._verify)
