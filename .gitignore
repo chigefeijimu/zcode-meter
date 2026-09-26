@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+zm_debug.log
+zm_crash.log
+mini_tk_events.log
