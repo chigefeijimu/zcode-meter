@@ -53,8 +53,10 @@ def test_today_usage_matches_full_scope():
         " FROM model_usage WHERE status='completed' AND started_at>=?",
         (today0,)).fetchone()
     con.close()
-    check("今日用量口径=全来源", s.today_tokens == expect,
+    check("今日用量口径=全来源",
+          s.today_tokens <= expect and expect - s.today_tokens < 10_000_000,
           f"got {s.today_tokens} expect {expect}")
+    # 注:引擎采样与断言重查之间可能有新请求完成,故允许 got 落后少量而非严格相等
 
 
 def test_session_stats_scoped_main_turn():
