@@ -660,14 +660,16 @@ class BarChart(QWidget):
             self._paint_v(p, w, h, vmax)
 
     def _paint_v(self, p: QPainter, w: int, h: int, vmax: int):
-        """竖柱:柱顶缩写数值,柱底日期标签;标签过密时按步长抽稀。"""
+        """竖柱:数值沿柱身竖排(旋转-90°,每根都显示,不占横向空间);
+        日期标签过密时仍按步长抽稀 —— 横排数值一旦抽稀会让一半柱子
+        看起来"没有用量",这是要避免的。"""
         n = len(self._items)
-        side, top, bot = 10, 26, 24
+        side, top, bot = 10, 34, 24
         chart_h = h - top - bot
         slot = (w - side * 2) / n
         bar_w = max(min(slot * 0.62, 46.0), 3.0)
         fm = QFontMetrics(QFont(C_MONO, 8))
-        # 抽稀步长:保证相邻被绘制的标签互不重叠(标签宽+6px 间隔)
+        # 抽稀步长只作用于日期标签:保证相邻被绘制的标签互不重叠
         stride = max(1, -(-n * (fm.horizontalAdvance("09-26") + 6) // max(w - 2 * side, 1)))
         p.setPen(QColor(C_BORDER))
         p.drawLine(side, top + chart_h, w - side, top + chart_h)   # 基线
@@ -678,11 +680,17 @@ class BarChart(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(C_ACCENT))
             p.drawRect(QRectF(x, top + chart_h - bh, bar_w, bh))
-            if i % stride == 0:                    # 抽稀后仍从首根画起
+            # 数值竖排:以柱顶中心为原点旋转,文本向图顶方向延伸
+            p.save()
+            p.translate(x + bar_w / 2, top + chart_h - bh - 3)
+            p.rotate(-90)
+            p.setFont(f_val)
+            p.setPen(QColor(C_DIM) if val else QColor(C_BORDER))
+            p.drawText(QRectF(0, -6, 56, 12), Qt.AlignLeft | Qt.AlignVCenter,
+                       fmt_k(val) if val else "0")
+            p.restore()
+            if i % stride == 0:                    # 日期标签抽稀后仍从首根画起
                 p.setPen(QColor(C_DIM))
-                p.setFont(f_val)
-                p.drawText(QRectF(x - slot / 2, top + chart_h - bh - 17,
-                                  slot + bar_w, 15), Qt.AlignCenter, fmt_k(val))
                 p.setFont(f_lbl)
                 p.drawText(QRectF(x - slot / 2, h - bot + 3, slot + bar_w, bot - 5),
                            Qt.AlignCenter, label)
