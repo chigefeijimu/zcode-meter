@@ -5,6 +5,11 @@ zm_crash.log
 zm_stdout.log
 zm_error.log
 zm_state.json
+# v0.4.0 本地配置/状态:zm_config.json 存 quota_api_key,提交即泄密,必加;
+# zm_prices.json / zm_alerts.json 为用户本地覆盖与提醒状态,建议同加
+zm_config.json
+zm_prices.json
+zm_alerts.json
 mini_tk_events.log
 # PyInstaller 打包产物
 build/

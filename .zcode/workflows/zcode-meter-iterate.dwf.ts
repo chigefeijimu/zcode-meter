@@ -5,7 +5,6 @@ args:
   request:
     type: string
     description: 本次迭代的需求描述：要修的 bug 现象（含复现步骤）、或要加的功能与期望口径
-    required: true
 */
 interface Impact {
   /** 本次改动落在哪一层:data_engine.py 数据层 / zcode_meter_qt.py 界面层 / 两者 */

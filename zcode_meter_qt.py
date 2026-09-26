@@ -22,11 +22,13 @@ import time
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QCursor, QColor, QFont, QFontMetrics, QGuiApplication, QPainter
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QTabWidget,
-    QVBoxLayout, QWidget,
+    QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QStyle,
+    QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from data_engine import DataEngine, Snapshot, app_dir
+from data_engine import (
+    BudgetAlerts, DataEngine, QuotaMonitor, Snapshot, app_dir, dbg, load_config,
+)
 
 C_BG, C_BORDER = "#16171c", "#2c2f3a"
 C_FG, C_DIM, C_ACCENT, C_WARN = "#e8eaf0", "#8b8f9c", "#5ad6a0", "#e8c268"
@@ -79,8 +81,65 @@ def fmt_k(n: int) -> str:
     return str(n)
 
 
+class TrayController:
+    """托盘模式(v0.4.0):主窗可收起到托盘,托盘菜单=显示/隐藏+退出,
+    单击托盘图标恢复主窗;预算告警经 tray.showMessage 气泡派发。
+    isSystemTrayAvailable() 为 False(无托盘/远程会话)时 create() 返回
+    None 整体跳过 —— 不崩、--verify 与 stress 回归不受影响。
+    持有者只跨线程传普通数据(告警文本),Qt 调用全部留在 UI 线程。"""
+
+    @staticmethod
+    def create(win: "MeterWindow") -> "TrayController | None":
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return None
+        try:
+            return TrayController(win)
+        except Exception:                  # 图标资源等异常也不值得拖垮主窗
+            return None
+
+    def __init__(self, win: "MeterWindow"):
+        self.win = win
+        self.tray = QSystemTrayIcon(
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon),
+            win)
+        m = QMenu()
+        m.setStyleSheet(f"QMenu {{ background: #1e2027; color: {C_FG};"
+                        f" border: 1px solid {C_BORDER}; }}"
+                        "QMenu::item { padding: 4px 18px; }"
+                        "QMenu::item:selected { background: #2c2f3a; }")
+        m.addAction("显示 / 隐藏", self.toggle)
+        m.addSeparator()
+        m.addAction("退出", QApplication.quit)
+        self.tray.setContextMenu(m)
+        self.tray.activated.connect(self._activated)
+        self.tray.show()
+        self._menu = m                     # QMenu 无父对象,显式持有防 GC
+
+    def toggle(self):
+        w = self.win
+        if w.isVisible():
+            w.hide()
+        else:
+            w.showNormal(); w.raise_(); w.activateWindow()
+
+    def _activated(self, reason):
+        # 单击(Trigger)恢复;双击/上下文菜单交给系统默认行为
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.win.showNormal(); self.win.raise_(); self.win.activateWindow()
+
+    def notify(self, title: str, text: str):
+        try:
+            self.tray.showMessage(title, text,
+                                  QSystemTrayIcon.MessageIcon.Information, 5000)
+        except Exception:
+            pass          # 专注助手抑制等系统行为不视为错误(README 注明)
+
+
 class MeterWindow(QWidget):
-    CARD_W, CARD_H = 250, 295          # 逻辑像素(DIP),Qt 自动做 DPI 换算
+    # v0.4.0:新增 燃速/套餐剩余 两行 + 今日用量可能多源第二行,自然高度
+    # 实测 314(单源),CARD_H 须 ≥ 布局自然高度 —— _unset_dock/_restore_state
+    # 用它 setGeometry,偏小会静默截断(ui-verify 只打印不校验,需人工目视)
+    CARD_W, CARD_H = 250, 336          # 逻辑像素(DIP),Qt 自动做 DPI 换算
     BAR_H, BAR_V = 24, 38
     EDGE_NEAR = 30
 
@@ -93,6 +152,24 @@ class MeterWindow(QWidget):
         self._breath = 0.0
         self._verify_done = False
         self._history_win = None            # HistoryWindow 懒创建,复用同一实例
+
+        # ---- v0.4.0:预算告警(双轨)与 quota 轮询 ----
+        # 启动位置钉死(评审必改#1):QuotaMonitor 的类定义在 data_engine,
+        # 但实例化与启动只发生在这里 —— DataEngine.__init__/run() 及一切测试
+        # 路径永不触碰;_state_guard() 为真(--verify / ZM_NO_STATE)时同样
+        # 不启动,否则用户在源码目录放了带 key 的 zm_config.json 时,ui/stress
+        # 回归会发真实网络请求。这是双闸的第一闸,第二闸在 run_all.py(data
+        # 组注入 ZM_NO_STATE=1)。
+        cfg = load_config()
+        self.daily_budget_cny = cfg["daily_budget_cny"]
+        self.alerts = BudgetAlerts(cfg["alert_pct"])
+        self.quota_monitor = None
+        if cfg["quota_api_key"] and not _state_guard():
+            self.quota_monitor = QuotaMonitor(cfg["quota_api_key"])
+            self.quota_monitor.start()
+        self._plan_pct: float | None = None   # quota 轨 5h 窗剩余%(UI 侧缓存)
+        # 托盘:无托盘环境(远程会话等)整体跳过,不崩不影响 --verify/stress
+        self.tray = TrayController.create(self)
 
         self.setWindowTitle("zcode-meter")
         self.setObjectName("root")
@@ -394,6 +471,14 @@ class MeterWindow(QWidget):
         right.addWidget(self._mk_lbl("整体耗时", "dim", "Microsoft YaHei UI", 8))
         right.addWidget(self.dur_lbl)
 
+        # 卡片专属两行(有数据才显示):燃速+耗尽预估 / 套餐剩余。
+        # 横条与竖条都不创建 → _build_bar 尾部按纪律显式置 None(历史 bug:
+        # 只在竖条置 None 会让横条循环摸到已销毁 QLabel 当场 RuntimeError)。
+        self.burn_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
+        root.addWidget(self.burn_lbl)
+        self.plan_lbl = self._mk_lbl("", "warn", "Microsoft YaHei UI", 8)
+        root.addWidget(self.plan_lbl)
+
         self.model_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 8)
         root.addWidget(self.model_lbl)
 
@@ -456,8 +541,11 @@ class MeterWindow(QWidget):
             root.addStretch(1)
             # 竖条不显示 elapsed/ttft/dur:显式置 None,否则保留已销毁旧对象的悬空引用
             self.elapsed_lbl = self.ttft_lbl = self.dur_lbl = None
+        # 横条与竖条共通:卡片专属 label 两种条形态都不创建,统一置 None
+        # (v0.4.0 新增 burn/plan 同纪律;只在一种形态置 None 会让另一形态
+        #  的压力循环摸到已销毁 QLabel —— test_stress.py 的存在理由)
         self.state_lbl = self.model_lbl = self.est_lbl = self.cache_lbl = None
-        self.title_lbl = None
+        self.title_lbl = self.burn_lbl = self.plan_lbl = None
 
     # ---- 菜单 ----
     def _popup_menu(self, pos):
@@ -473,6 +561,8 @@ class MeterWindow(QWidget):
             m.addAction(label, fn)
         self._add_session_menu(m)
         m.addAction("历史用量图表", self._open_history)
+        if self.tray is not None:          # 无托盘环境不提供收起,防"收起后找不回"
+            m.addAction("收起到托盘", self.hide)
         m.addSeparator()
         m.addAction("退出", QApplication.quit)
         m.exec(pos)
@@ -528,7 +618,50 @@ class MeterWindow(QWidget):
                 self.snap = self.q.get_nowait()
         except queue.Empty:
             pass
+        self._update_quota()
         self._apply_snapshot(self.snap)
+        self._check_alerts()
+
+    def _update_quota(self):
+        """quota 轨数据搬运(UI 线程):daemon 线程只产出普通 dict,这里取
+        拷贝渲染并回写引擎 —— plan_remaining_pct 引擎只写 None、UI 回填
+        (引擎从不读它,跨线程无竞态);nextResetTime 给计费块对齐块界用。"""
+        m = self.quota_monitor
+        if m is None:
+            return
+        data = m.latest()
+        if not data:
+            return
+        pct = data.get("remaining_pct")
+        if pct is not None:
+            self._plan_pct = pct
+            self.snap.plan_remaining_pct = pct
+        nrt = data.get("next_reset_ms")
+        if isinstance(nrt, (int, float)) and nrt > 0:
+            self.eng.quota_hint = int(nrt)
+
+    def _check_alerts(self):
+        """双轨预算告警,UI 线程评估(评审钉死:类与状态机在 data_engine,
+        评估在这里):quota 轨=套餐 5h 窗剩余%;按量轨=(日预算-今日花费
+        ZCode 口径)/日预算。命中经托盘气泡派发(无托盘环境静默降级);
+        同级别同日只提醒一次由 BudgetAlerts 保证,消息不含任何 key 明文。"""
+        today = dt.date.today().isoformat()
+        if self._plan_pct is not None:
+            lv = self.alerts.evaluate("quota", self._plan_pct, today)
+            if lv is not None:
+                self._notify(f"套餐 5h 窗剩余 {self._plan_pct:.0f}%(已过 {lv:g}% 阈值)")
+        b = self.daily_budget_cny
+        if b and self.snap.today_cost_cny is not None:
+            remain = (b - self.snap.today_cost_cny) / b * 100.0
+            lv = self.alerts.evaluate("budget", remain, today)
+            if lv is not None:
+                self._notify(f"今日已花 ≈¥{self.snap.today_cost_cny:.2f}(ZCode 口径),"
+                             f"预算剩余 {remain:.0f}%")
+
+    def _notify(self, text: str):
+        dbg(f"alert: {text}")               # 文本只有百分比/金额,无 key 明文
+        if self.tray is not None:
+            self.tray.notify("zcode-meter 预算提醒", text)
 
     def _apply_snapshot(self, s: Snapshot):
         generating = s.state == "generating"
@@ -569,10 +702,35 @@ class MeterWindow(QWidget):
                     lines.append(f"{prov}/{model} · {t} tok/s")
             self.model_lbl.setText("\n".join(lines))
         if self.today_lbl is not None:
+            # 今日用量并入金额版:partial(存在未知模型,金额为下限)带 ≈。
+            # 横条同 label 追加金额段不新增 label;竖条空间受限只保 token。
+            cost = s.today_cost_cny or 0.0
+            cost_txt = (f" · {'≈' if s.today_cost_partial else ''}¥{cost:.2f}"
+                        if self.dock in (None, "top", "bottom") and cost else "")
             if self.dock in ("top", "bottom"):
-                self.today_lbl.setText(f"今 {fmt_k(s.today_tokens)}")
-            else:
+                self.today_lbl.setText(f"今 {fmt_k(s.today_tokens)}{cost_txt}")
+            elif self.dock in ("left", "right"):
                 self.today_lbl.setText(fmt_k(s.today_tokens))
+            else:
+                txt = f"{fmt_k(s.today_tokens)}{cost_txt}"
+                # 多源聚合(>1 源才显示,避免"只有 ZCode"的噪音行)
+                srcs = s.today_by_source
+                if srcs and len(srcs) > 1:
+                    txt += "\n" + " · ".join(f"{n} {fmt_k(t)}" for n, t in srcs)
+                self.today_lbl.setText(txt)
+        if self.burn_lbl is not None:
+            burn = s.burn_tokens_per_hour or 0.0
+            if burn > 0:
+                t = f"燃速 {fmt_k(int(burn))}/h"
+                if s.est_hours_left is not None:
+                    t += (" · 预算已超支" if s.est_hours_left <= 0
+                          else f" · 预算还可撑 {s.est_hours_left:.1f}h")
+                self.burn_lbl.setText(t)
+            else:
+                self.burn_lbl.setText("")   # 无燃速(今日尚未活跃)不显示
+        if self.plan_lbl is not None:
+            self.plan_lbl.setText(
+                f"套餐剩余 {self._plan_pct:.0f}%" if self._plan_pct is not None else "")
         if self.ttft_lbl is not None:
             if s.last_ttft is None:
                 self.ttft_lbl.setText("--")
@@ -643,10 +801,20 @@ class BarChart(QWidget):
         super().__init__(parent)
         self._horizontal = horizontal
         self._items: list[tuple[str, int]] = []
+        self._extra: list[str] = []        # 第二行数值文本(如 ¥ 金额),可空
+        self._highlight = -1               # 高亮柱下标(计费块的当前块)
         self.setMinimumSize(360, 200)
 
     def set_items(self, items):
-        self._items = [(str(a), int(b or 0)) for a, b in items]
+        """items 兼容二元组 (label, value) 与三元组 (label, value, extra):
+        extra 为第二行数值文本(按天页签的 ¥);按会话页签继续传二元组。"""
+        self._items = [(str(t[0]), int(t[1] or 0)) for t in items]
+        self._extra = [str(t[2]) if len(t) > 2 and t[2] else "" for t in items]
+        self._highlight = -1
+        self.update()
+
+    def set_highlight(self, i: int):
+        self._highlight = int(i)
         self.update()
 
     def paintEvent(self, ev):
@@ -684,7 +852,8 @@ class BarChart(QWidget):
             x = side + i * slot + (slot - bar_w) / 2
             bh = max(val / vmax * chart_h, 2) if val else 0
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(C_ACCENT))
+            # 当前计费块用告警色高亮(C_WARN),其余保持主题色
+            p.setBrush(QColor(C_WARN) if i == self._highlight else QColor(C_ACCENT))
             p.drawRect(QRectF(x, top + chart_h - bh, bar_w, bh))
             # 数值竖排:以柱顶中心为原点旋转,文本向图顶方向延伸
             p.save()
@@ -694,6 +863,11 @@ class BarChart(QWidget):
             p.setPen(QColor(C_DIM) if val else QColor(C_BORDER))
             p.drawText(QRectF(0, -6, 56, 12), Qt.AlignLeft | Qt.AlignVCenter,
                        fmt_k(val) if val else "0")
+            # 第二行数值(¥ 金额):沿柱身另一侧平行竖排,暗色不抢 token 主数值
+            if self._extra and i < len(self._extra) and self._extra[i]:
+                p.setPen(QColor("#565a66"))
+                p.drawText(QRectF(0, 6, 64, 12), Qt.AlignLeft | Qt.AlignVCenter,
+                           self._extra[i])
             p.restore()
             if i % stride == 0:                    # 日期标签抽稀后仍从首根画起
                 p.setPen(QColor(C_DIM))
@@ -749,14 +923,33 @@ class HistoryWindow(QWidget):
 
         self.daily_chart = BarChart(horizontal=False)
         self.sess_chart = BarChart(horizontal=True)
+        self.block_chart = BarChart(horizontal=False)
         self.tabs = QTabWidget()
         self.tabs.addTab(self.daily_chart, "按天(近30天)")
         self.tabs.addTab(self.sess_chart, "按会话(近20个)")
+        # 计费块页签:图 + 说明(块界对齐规则与"示意"声明必须就地写明,
+        # 否则 quota 未配置时块界会被当成平台真实计费窗来对账)
+        blk = QWidget()
+        bl = QVBoxLayout(blk)
+        bl.setContentsMargins(0, 6, 0, 0)
+        bl.setSpacing(4)
+        blk_note = QLabel(
+            "块界对齐:已配置 quota(Coding Plan)时按平台 5h 计费窗对齐"
+            "(nextResetTime−k×5h,黄色=当前活动块);未配置或不可用时回退锚点="
+            "最早 completed 请求时刻,此时块界为示意、非平台真实计费窗。"
+            "聚合口径=query_source 全部 completed in+out(同今日用量)。")
+        blk_note.setObjectName("dim")
+        blk_note.setWordWrap(True)
+        bl.addWidget(blk_note)
+        bl.addWidget(self.block_chart, 1)
+        self.tabs.addTab(blk, "计费块(5h)")
 
         head = QHBoxLayout()
-        hint = QLabel("按天=全部来源 in+out(同今日口径);按会话=main_turn(与卡片一致)。"
-                      "两图口径不同,合计对不上属预期。")
+        hint = QLabel("按天=全部来源 in+out(同今日口径,含 ¥ 按刊例价估算);"
+                      "按会话=main_turn(与卡片一致);计费块=每 5h 一桶。"
+                      "三图口径不同,合计对不上属预期。")
         hint.setObjectName("dim")
+        hint.setWordWrap(True)
         btn = QPushButton("刷新")
         btn.clicked.connect(self.refresh)
         head.addWidget(hint, 1)
@@ -770,15 +963,34 @@ class HistoryWindow(QWidget):
         self.refresh()
 
     def refresh(self):
-        daily = dict(self.eng.fetch_daily_usage(30))
+        # 金额版按天(三元组):fetch_daily_usage 的二元组形状被单测与历史
+        # 依赖,金额恒走 fetch_daily_usage_cost
+        daily_cost = {}
+        for d, tok, cny in self.eng.fetch_daily_usage_cost(30):
+            daily_cost[d] = (tok, cny)
         # 补齐 30 天连续序列:无用量日画 0 高柱位,避免空档误导读图
         days = [dt.date.today() - dt.timedelta(days=29 - i) for i in range(30)]
         self.daily_chart.set_items(
-            [(d.strftime("%m-%d"), daily.get(d.isoformat(), 0)) for d in days])
+            [(d.strftime("%m-%d"),
+              daily_cost.get(d.isoformat(), (0, 0.0))[0],
+              # 第二行 ¥:仅有用量的天显示(30 天大头是 0,排 ¥0.00 会刷屏)
+              f"¥{daily_cost[d.isoformat()][1]:.2f}" if d.isoformat() in daily_cost
+              else "")
+             for d in days])
         rows = self.eng.fetch_session_usage(20)
         self.sess_chart.set_items(
             [((title or sid[:12]) + f" ·{cnt}次", tok)
              for sid, title, tok, cnt in rows])
+        blocks = self.eng.fetch_billing_blocks(29)
+        cur = -1
+        items = []
+        for i, (start_ms, tok, is_cur) in enumerate(blocks):
+            if is_cur:
+                cur = i
+            items.append((dt.datetime.fromtimestamp(start_ms / 1000)
+                          .strftime("%m-%d %H:%M"), tok))
+        self.block_chart.set_items(items)
+        self.block_chart.set_highlight(cur)
 
 
 def main():

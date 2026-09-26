@@ -1,4 +1,9 @@
-"""zcode-meter 数据层:日志 tail + SQLite 轮询 + 流式估算(UI 无关,tk/Qt 共用)。"""
+"""zcode-meter 数据层:日志 tail + SQLite 轮询 + 流式估算(UI 无关,tk/Qt 共用)。
+
+v0.4.0 起另含:价格表/金额估算、多用量源(Claude 只读解析)、quota 轮询线程、
+预算告警状态机、5h 计费块聚合 —— 类定义都在本模块,但 QuotaMonitor 只由
+zcode_meter_qt.MeterWindow 实例化(见各类 docstring 的启动位置钉死说明)。
+"""
 from __future__ import annotations
 
 import ctypes
@@ -12,6 +17,7 @@ import sqlite3
 import sys
 import threading
 import time
+import urllib.request
 from dataclasses import dataclass, field
 
 
@@ -57,6 +63,504 @@ def dbg(msg: str):
         with open(DBG_PATH, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} {msg}\n")
 
+
+# ---------------------------------------------------- 配置/价格/守卫(v0.4.0) ---
+
+CONFIG_PATH = os.path.join(app_dir(), "zm_config.json")
+PRICES_PATH = os.path.join(app_dir(), "zm_prices.json")
+ALERTS_PATH = os.path.join(app_dir(), "zm_alerts.json")
+
+
+def _no_persist() -> bool:
+    """数据层自备的状态守卫:与 zcode_meter_qt._state_guard 同语义,但刻意
+    不 import UI 模块(反向依赖会让数据层测试拖起整个 Qt)。为真时:
+    QuotaMonitor 不启动、zm_alerts.json 不写 —— 回归测试(--verify 自检或
+    ZM_NO_STATE=1 注入)绝不发真实网络请求、绝不出测试污染文件。"""
+    return os.environ.get("ZM_NO_STATE") == "1" or "--verify" in sys.argv
+
+
+def _is_num(x) -> bool:
+    """宽松数值判定:bool 是 int 子类,须显式排除(价格/阈值里 true 是坏值)。"""
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def load_config() -> dict:
+    """zm_config.json(用户本地文件,已 .gitignore,防 key 随仓库提交):
+    quota_api_key(str)、daily_budget_cny(>0 数字)、alert_pct(正数列表)。
+    缺文件/坏 JSON/字段类型不对一律回退默认,不抛错。任何日志与调试路径
+    都不得打印 key 明文(泄漏面专查项)。"""
+    cfg = {"quota_api_key": "", "daily_budget_cny": None, "alert_pct": [20.0, 10.0]}
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            obj = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return cfg
+    if not isinstance(obj, dict):
+        return cfg
+    key = obj.get("quota_api_key")
+    if isinstance(key, str) and key.strip():
+        cfg["quota_api_key"] = key.strip()
+    budget = obj.get("daily_budget_cny")
+    if _is_num(budget) and budget > 0:
+        cfg["daily_budget_cny"] = float(budget)
+    pcts = obj.get("alert_pct", obj.get("alert_thresholds"))
+    if isinstance(pcts, list):
+        vals = sorted({float(v) for v in pcts if _is_num(v) and v > 0}, reverse=True)
+        if vals:
+            cfg["alert_pct"] = vals
+    return cfg
+
+
+# bigmodel 按量刊例价(元/M tokens),2026-09 自官方定价文档人工转录:
+# https://docs.bigmodel.cn/cn/guide/start/pricing
+# - GLM-5.3-Flash 取标准牌价(限时 5 折期实付更低 → 宁可高估,可自行用
+#   zm_prices.json 调低);免费模型三档全 0。
+# - 官方按上下文长度分档计费的模型(GLM-5.1/5-Turbo/5/4.7/4.5-Air)静态表
+#   只能取一档,统一取最高档保守估算(同"宁可高估"原则),同样可覆盖。
+# - 非 bigmodel 模型(deepseek-* 等)不在此表 → 未知模型口径:计 ¥0 + partial。
+DEFAULT_PRICES: dict = {
+    "GLM-5.3":           {"in": 8.0, "in_cache": 2.0,   "out": 28.0},
+    "GLM-5.3-Flash":     {"in": 0.8, "in_cache": 0.23,  "out": 2.8},
+    "GLM-5.3-FlashX":    {"in": 2.0, "in_cache": 0.57,  "out": 7.0},
+    "GLM-5.2":           {"in": 8.0, "in_cache": 2.0,   "out": 28.0},
+    # ↓ 分档计费模型,取最高档(保守)
+    "GLM-5.1":           {"in": 8.0, "in_cache": 2.0,   "out": 28.0},
+    "GLM-5-Turbo":       {"in": 7.0, "in_cache": 1.8,   "out": 26.0},
+    "GLM-5":             {"in": 6.0, "in_cache": 1.5,   "out": 22.0},
+    "GLM-4.7":           {"in": 4.0, "in_cache": 0.8,   "out": 16.0},
+    "GLM-4.5-Air":       {"in": 1.2, "in_cache": 0.24,  "out": 8.0},
+    "GLM-4.7-FlashX":    {"in": 0.5, "in_cache": 0.1,   "out": 3.0},
+    "GLM-4.7-Flash":     {"in": 0.0, "in_cache": 0.0,   "out": 0.0},   # 免费
+    "GLM-4-Plus":        {"in": 5.0, "in_cache": 2.5,   "out": 5.0},
+    "GLM-4-Air-250414":  {"in": 0.5, "in_cache": 0.25,  "out": 0.5},
+    "GLM-4-Long":        {"in": 1.0, "in_cache": 0.5,   "out": 1.0},
+    "GLM-Z1-Air":        {"in": 0.5, "in_cache": 0.5,   "out": 0.5},
+    "GLM-Z1-AirX":       {"in": 5.0, "in_cache": 5.0,   "out": 5.0},
+    "GLM-Z1-FlashX":     {"in": 0.1, "in_cache": 0.1,   "out": 0.1},
+    "GLM-4-FlashX-250414": {"in": 0.1, "in_cache": 0.05, "out": 0.1},
+}
+
+
+def load_prices() -> dict:
+    """DEFAULT_PRICES 深拷贝 + zm_prices.json 模型级 merge。
+    坏文件(缺文件/坏 JSON/非 dict)整体忽略回退默认;单个模型条目非 dict、
+    或缺 in/out 必备档、或档位值非数值 → 跳过该条目(不污染默认表)。
+    对默认表内已有模型支持只覆盖给出的档位(如只改 in_cache)。"""
+    prices = {m: dict(t) for m, t in DEFAULT_PRICES.items()}
+    try:
+        with open(PRICES_PATH, encoding="utf-8") as f:
+            obj = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return prices
+    if not isinstance(obj, dict):
+        return prices
+    for model, tiers in obj.items():
+        if not isinstance(model, str) or not isinstance(tiers, dict):
+            continue
+        merged = dict(prices.get(model, {}))
+        for k in ("in", "in_cache", "out"):
+            if k in tiers and _is_num(tiers[k]):
+                merged[k] = float(tiers[k])
+        if _is_num(merged.get("in")) and _is_num(merged.get("out")):
+            prices[model] = merged
+    return prices
+
+
+def cost_of(prices: dict, model: str, in_tok: int, out_tok: int,
+            cache_read: int) -> tuple:
+    """一组用量的按刊例价金额(元)。两条口径钉死(混用会静默错价一个
+    数量级 —— cache_read 实测占 input ~98%,单测是唯一防线):
+    1. 已知模型缺 in_cache 档 → cache_read 按 in 全价计(宁可高估,不置 partial);
+    2. 未知模型(in 或 out 档缺失同理)→ 计 ¥0 并置 partial(UI 显示 ≈)。
+    注意:ZCode 的 input_tokens 已含 cache_read,未命中部分 = in - cache_read,
+    切勿再叠加。返回 (cny, partial)。"""
+    p = prices.get(model) if isinstance(prices, dict) else None
+    if not isinstance(p, dict):
+        return 0.0, True
+    p_in, p_out = p.get("in"), p.get("out")
+    if not _is_num(p_in) or not _is_num(p_out):
+        return 0.0, True
+    p_cache = p.get("in_cache")
+    if not _is_num(p_cache):
+        p_cache = p_in                     # 规则 1:缺缓存档按 in 全价
+    in_tok, out_tok, cache_read = in_tok or 0, out_tok or 0, max(cache_read or 0, 0)
+    miss = max(in_tok - cache_read, 0)     # 数据异常(cache>in)时钳到 0,不产负价
+    cny = (miss * p_in + cache_read * p_cache + out_tok * p_out) / 1_000_000
+    return cny, False
+
+
+def est_hours_left(daily_budget_cny, today_cost_cny, burn_cny_per_hour):
+    """按当前燃速,日预算还能撑几小时 = (预算-今日花费)/燃速¥/h。
+    燃速为 0(除零)或未配日预算时返回 None;负值透传(UI 显示"已超支")。"""
+    if not daily_budget_cny or not burn_cny_per_hour or burn_cny_per_hour <= 0:
+        return None
+    return (daily_budget_cny - (today_cost_cny or 0)) / burn_cny_per_hour
+
+
+# ------------------------------------------------------ 预算告警(双轨共芯) ---
+
+class BudgetAlerts:
+    """双轨(quota/按量)预算告警的纯状态机,UI 线程调用:
+    - 级别 = 剩余百分比阈值(默认 [20,10] 降序):跌破某级别当日提醒一次;
+    - 同级别同日只提醒一次(不重复骚扰),跨日自动重置(日期变了自然失效);
+    - 一轮内把所有已跌入且未提醒的级别都标记,只返回最深的那个(浅级别
+      属旧闻不再补报);回升不重置已提醒标记(防反复横跳刷屏)。
+    状态持久化到独立的 zm_alerts.json —— zm_state.json 的 _load_state 有
+    严格键类型校验,混入会破坏位置记忆;守卫环境下不写防测试污染。"""
+
+    def __init__(self, thresholds=(20.0, 10.0), state_path: str | None = None):
+        self.thresholds = sorted({float(t) for t in thresholds if t > 0}, reverse=True)
+        self.state_path = state_path or ALERTS_PATH
+        self._fired: dict = {}            # f"{track}|{level}" -> 提醒日 YYYY-MM-DD
+        self._load()
+
+    def _load(self):
+        try:
+            with open(self.state_path, encoding="utf-8") as f:
+                obj = json.load(f)
+            if isinstance(obj, dict) and isinstance(obj.get("fired"), dict):
+                self._fired = {str(k): str(v) for k, v in obj["fired"].items()}
+        except (OSError, json.JSONDecodeError, ValueError):
+            self._fired = {}
+
+    def _save(self):
+        if _no_persist():
+            return
+        try:
+            with open(self.state_path, "w", encoding="utf-8") as f:
+                json.dump({"fired": self._fired}, f, ensure_ascii=False)
+        except OSError:
+            pass                    # 状态保存失败不影响运行(同 zm_state 语义)
+
+    def evaluate(self, track: str, remaining_pct, today: str):
+        """评估某轨剩余百分比:有新命中的级别返回最深的级别值,否则 None。
+        track 仅作状态隔离键("quota"/"budget"),today 由调用方传入便于测试。"""
+        if remaining_pct is None or not self.thresholds:
+            return None
+        deepest_new = None
+        for lv in self.thresholds:                # 降序:浅 → 深,循环结束停在最深
+            if remaining_pct > lv:
+                continue
+            key = f"{track}|{lv:g}"
+            if self._fired.get(key) != today:
+                self._fired[key] = today
+                deepest_new = lv
+        if deepest_new is not None:
+            self._save()
+        return deepest_new
+
+
+# ------------------------------------------------ quota 轨(Coding Plan 余量) ---
+
+QUOTA_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
+
+
+def _as_number(x):
+    """quota 载荷的字段兼容数字与字符串双形态(社区逆向接口,两形态都见过)。"""
+    if _is_num(x):
+        return float(x)
+    if isinstance(x, str):
+        try:
+            return float(x.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def parse_quota_payload(obj) -> dict | None:
+    """quota 接口载荷 → {'window_hours':5, 'used_pct', 'remaining_pct',
+    'next_reset_ms'}。结构(2026-09 实测逆向,非官方文档):
+    data.limits[].type∈{TOKENS_LIMIT,CREDIT_LIMIT,MCP_LIMIT,TIME_LIMIT};
+    percentage 为**已用**百分比 → remaining = 100 - percentage;
+    在 TOKENS_LIMIT 里选 number==5 的条目作 5h 计费窗,并透出 nextResetTime(ms)。
+    结构对不上/没有 5h 窗 → None(该轨优雅降级为不显示,绝不抛错)。"""
+    try:
+        limits = obj["data"]["limits"]
+        if not isinstance(limits, list):
+            return None
+        best = None
+        for it in limits:
+            if not isinstance(it, dict) or it.get("type") != "TOKENS_LIMIT":
+                continue
+            num = _as_number(it.get("number"))
+            pct = _as_number(it.get("percentage"))
+            if num == 5 and pct is not None:
+                nrt = _as_number(it.get("nextResetTime"))
+                best = {"window_hours": 5.0,
+                        "used_pct": pct,
+                        "remaining_pct": 100.0 - pct,
+                        "next_reset_ms": int(nrt) if nrt is not None else None}
+        return best
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+class QuotaMonitor(threading.Thread):
+    """Coding Plan 套餐余量轮询(daemon 线程):GET quota/limit(只读,全程
+    唯一允许的外部请求端点)。urllib 标准库实现 —— 不引第三方依赖,保住
+    exe 打包体积。线程只产出普通 dict,Qt 调用全部留在 UI 线程(评审约定)。
+
+    启动位置钉死(评审必改#1):类定义在本模块,但只由 zcode_meter_qt 的
+    MeterWindow 实例化与启动;DataEngine.__init__/run() 及一切测试路径永不
+    触碰 —— 否则源码目录放着带 key 的 zm_config.json 时,回归测试会发真实
+    网络请求。解析失败首跑把响应体片段(不含 key)截断落 zm_debug.log 便于
+    修 parse,后续失败静默 debug,不崩不阻塞轮询。"""
+
+    INTERVAL = 300.0                   # 5 分钟一轮
+    TIMEOUT = 10.0
+
+    def __init__(self, api_key: str):
+        super().__init__(daemon=True, name="zm-quota")
+        self.api_key = api_key
+        self.stop_flag = threading.Event()
+        self._lock = threading.Lock()
+        self._latest: dict | None = None
+        self._logged_parse_fail = False
+
+    def latest(self) -> dict | None:
+        """UI 线程取最近一次解析结果(拷贝,避免跨线程共享可变 dict)。"""
+        with self._lock:
+            return dict(self._latest) if self._latest else None
+
+    def run(self):
+        while not self.stop_flag.is_set():
+            data = self._fetch_once()
+            if data is not None:
+                with self._lock:
+                    self._latest = data
+            self.stop_flag.wait(self.INTERVAL)
+
+    def _fetch_once(self) -> dict | None:
+        try:
+            req = urllib.request.Request(
+                QUOTA_URL,
+                # 实测该接口 Authorization 头放原始 key,不带 Bearer 前缀
+                headers={"Authorization": self.api_key})
+            with urllib.request.urlopen(req, timeout=self.TIMEOUT) as resp:
+                body = resp.read(65536).decode("utf-8", "replace")
+        except Exception as exc:       # URLError/超时/HTTP 错误一律降级,不崩
+            dbg(f"quota fetch failed: {type(exc).__name__}")
+            return None
+        try:
+            data = parse_quota_payload(json.loads(body))
+        except Exception:
+            data = None
+        if data is None:
+            self._log_parse_fail(body)
+        return data
+
+    def _log_parse_fail(self, body: str):
+        if self._logged_parse_fail:
+            dbg("quota parse failed again (raw not repeated)")
+            return
+        self._logged_parse_fail = True
+        # 响应体不含 API key(请求头才带),可安全落盘;只截片段防巨型刷屏
+        try:
+            with open(DBG_PATH, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%H:%M:%S')} quota parse failed, "
+                        f"raw[:800]: {body[:800]}\n")
+        except OSError:
+            pass
+
+    def stop(self):
+        self.stop_flag.set()
+
+
+# ------------------------------------------------------------ 多用量源抽象 ---
+
+class UsageSource:
+    """用量源接口(v0.4.0 多 CLI 聚合):ZCode 为默认实现,Claude Code 为
+    v1 的额外源(本地 jsonl 只读解析)。金额/燃速口径钉死 ZCode-DB-only,
+    其他源只进 today_by_source 聚合展示 —— DEFAULT_PRICES 无 Claude 模型,
+    计入金额会把 ≈ 永久点亮(评审钉死的口径边界)。"""
+
+    name = "source"
+
+    def is_available(self) -> bool:
+        return True
+
+    def today_usage(self) -> int:
+        raise NotImplementedError
+
+    def daily_usage(self, days: int = 30) -> list:
+        raise NotImplementedError
+
+
+class ZCodeSource(UsageSource):
+    """默认源:包装现有 ZCode SQLite 口径。today_usage 的 SQL 与 _poll_stats
+    的今日用量完全同 WHERE 同天界(全来源 completed in+out)—— 两处刻意
+    保持同文,单测 test_today_by_source 对账防漂移。"""
+
+    name = "ZCode"
+
+    def is_available(self) -> bool:
+        return os.path.exists(DB_PATH)
+
+    def today_usage(self) -> int:
+        try:
+            con = connect_ro()
+            (t,) = con.execute(
+                "SELECT COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
+                " FROM model_usage WHERE status='completed' AND started_at>=?",
+                (today0_ms(),)).fetchone()
+            con.close()
+            return t or 0
+        except sqlite3.Error:
+            return 0
+
+    def daily_usage(self, days: int = 30) -> list:
+        try:
+            con = connect_ro()
+            rows = con.execute(
+                "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
+                " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
+                " FROM model_usage WHERE status='completed' AND started_at>=?"
+                " GROUP BY d ORDER BY d",
+                (today0_ms() - (days - 1) * 86_400_000,)).fetchall()
+            con.close()
+            return rows
+        except sqlite3.Error:
+            return []
+
+
+def _claude_ts_local(s):
+    """Claude jsonl 的 timestamp(ISO-UTC,如 2026-07-21T02:33:00.699Z)→
+    本地时区 aware datetime;坏值返回 None。天界必须转本地再定,直接取
+    UTC 日期会把本地 0 点前的用量算进前一天(CN 时区恒差 8 小时)。"""
+    if not isinstance(s, str) or not s:
+        return None
+    try:
+        d = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))  # py3.10 不认 Z
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=dt.timezone.utc)               # 裸时间按 UTC
+        return d.astimezone()
+    except ValueError:
+        return None
+
+
+class ClaudeSource(UsageSource):
+    """Claude Code 源:只读解析 ~/.claude/projects/**/*.jsonl。
+    口径(实测 1921 条 assistant 行验证):
+    - 只取 type=='assistant' 行的 message.usage;含 isSidechain 行
+      (与 ZCode 今日用量含 subagent 对齐);
+    - in = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+      —— Anthropic 口径 input_tokens 不含 cache,ZCode 口径已含,补齐后两源
+      才可比(README 口径表已写明,两源合计口径不同勿当 bug);
+    - 按 message.id 全局去重,但 isApiErrorMessage 行与 usage 全零行先跳过
+      再去重 —— keep-last 会让后到的零用量 error 行清零真实用量(实测存在);
+    - 解析结果按 (path, mtime, size) 缓存;另有 15s 扫描 TTL —— 引擎 1s 一轮
+      的 _poll_stats 也调它,不节流会把 jsonl 目录扫成热点。"""
+
+    name = "Claude"
+    SCAN_TTL = 15.0
+    # 文件级缓存放类属性:单测一轮会 new 多个 DataEngine(每个带一个源实例),
+    # 共享缓存避免把同一批 jsonl 反复解析;键含 (mtime,size) 保证不读过期内容,
+    # 条目解析后只读,跨实例共享安全(GIL 下最坏重复解析一次,结果相同)。
+    _file_cache: dict = {}              # path -> ((mtime, size), [(ts,in,out,mid)])
+
+    def __init__(self, projects_dir: str | None = None):
+        self.projects_dir = projects_dir or os.path.expanduser("~/.claude/projects")
+        self._entries: list | None = None
+        self._scanned_at = 0.0
+
+    def is_available(self) -> bool:
+        return os.path.isdir(self.projects_dir)
+
+    def _parse_file(self, path: str) -> list:
+        """单文件 → [(ts_local, in_tok, out_tok, message_id)]。跳过规则
+        (isApiErrorMessage / usage 全零)在这里做,先于全局去重 —— 这是
+        「keep-last 会清零真实用量」教训的钉死顺序。"""
+        out = []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(obj, dict) or obj.get("type") != "assistant":
+                        continue
+                    if obj.get("isApiErrorMessage"):
+                        continue
+                    msg = obj.get("message")
+                    usage = msg.get("usage") if isinstance(msg, dict) else None
+                    if not isinstance(usage, dict):
+                        continue
+                    vals = {}
+                    for k in ("input_tokens", "cache_read_input_tokens",
+                              "cache_creation_input_tokens", "output_tokens"):
+                        v = usage.get(k)
+                        vals[k] = v if isinstance(v, int) and v > 0 else 0
+                    if sum(vals.values()) == 0:
+                        continue                      # 零用量行(残留 error 等)
+                    ts = _claude_ts_local(obj.get("timestamp"))
+                    if ts is None:
+                        continue
+                    mid = msg.get("id")
+                    out.append((ts,
+                                vals["input_tokens"] + vals["cache_read_input_tokens"]
+                                + vals["cache_creation_input_tokens"],
+                                vals["output_tokens"],
+                                mid if isinstance(mid, str) else None))
+        except OSError:
+            return []
+        return out
+
+    def _scan(self) -> list:
+        now = time.time()
+        if self._entries is not None and now - self._scanned_at < self.SCAN_TTL:
+            return self._entries
+        seen, entries = set(), []
+        for root, _dirs, files in os.walk(self.projects_dir):
+            for fn in files:
+                if not fn.endswith(".jsonl"):
+                    continue
+                p = os.path.join(root, fn)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                key = (st.st_mtime, st.st_size)
+                cached = self._file_cache.get(p)
+                if cached is not None and cached[0] == key:
+                    per_file = cached[1]
+                else:
+                    per_file = self._parse_file(p)
+                    self._file_cache[p] = (key, per_file)
+                for ts, i, o, mid in per_file:
+                    # message.id 去重跨文件全局做(流式响应同 id 多行只计一次);
+                    # 无 id 的行不参与去重(无法识别身份,宁多勿漏)
+                    if mid is not None:
+                        if mid in seen:
+                            continue
+                        seen.add(mid)
+                    entries.append((ts, i, o))
+        self._entries = entries
+        self._scanned_at = now
+        return entries
+
+    def today_usage(self) -> int:
+        if not self.is_available():
+            return 0
+        today = dt.date.today()
+        return sum(i + o for ts, i, o in self._scan() if ts.date() == today)
+
+    def daily_usage(self, days: int = 30) -> list:
+        if not self.is_available():
+            return []
+        lo = dt.date.today() - dt.timedelta(days=days - 1)
+        agg: dict = {}
+        for ts, i, o in self._scan():
+            d = ts.date()
+            if d < lo:
+                continue
+            agg[d.isoformat()] = agg.get(d.isoformat(), 0) + i + o
+        return sorted(agg.items())
+
+
 # ---------------------------------------------------------------- 数据层 ---
 
 @dataclass
@@ -70,6 +574,18 @@ class Snapshot:
     tps_avg: float | None = None        # 主力模型的会话平均 tok/s
     speed_by_model: list = None         # [(provider, model, tps, out_tokens)] 按用量降序
     today_tokens: int = 0               # 今日全部会话 token 总用量(in+out)
+    # ---- v0.4.0 新增(口径见 README):金额/燃速/多源均 ZCode-DB-only ----
+    today_cost_cny: float = 0.0         # 今日金额(元,按刊例价;订阅套餐内
+                                        # 实际不按量扣费,此为等值成本估算)
+    today_cost_partial: bool = False    # 含未知模型 → 金额为下限(UI 加 ≈)
+    burn_tokens_per_hour: float = 0.0   # 燃速 = trailing 60min 窗口 token 和
+    burn_cny_per_hour: float = 0.0      # 燃速金额版(元/h,同窗口)
+    est_hours_left: float | None = None # (日预算-今日花费)/燃速;未配预算或
+                                        # 燃速 0 → None(活跃不足 60min 会低估)
+    today_by_source: list = None        # [(源名, 今日token)] 聚合展示;今日用量
+                                        # 本体 today_tokens 仍钉死 ZCode-DB-only
+    plan_remaining_pct: float | None = None  # quota 轨 5h 窗剩余%,由 UI 线程
+                                             # 从 QuotaMonitor 回填(引擎不触碰)
     last_ttft: float | None = None      # 最近完成请求的首字等待(s)
     last_duration: float | None = None  # 最近完成请求的整体耗时(s)
     session_in: int = 0                 # 总输入(input_tokens 已含缓存命中,勿再加 cache)
@@ -101,6 +617,13 @@ class DataEngine(threading.Thread):
         self._chars_per_token = self.CHAR_PER_TOKEN_INIT
         self._exact_out_chars = 0
         self._prev_max_rowid = self._max_usage_rowid()
+        # ---- v0.4.0:金额/燃速/多源。全部本地只读,不触网络不落盘,
+        # QuotaMonitor 仍只由 MeterWindow 实例化(启动位置钉死,评审#1) ----
+        cfg = load_config()
+        self.prices = load_prices()
+        self.daily_budget_cny = cfg["daily_budget_cny"]
+        self.sources: list = [ZCodeSource(), ClaudeSource()]
+        self.quota_hint = None           # UI 线程回写的 nextResetTime(ms),纯数据
 
     def _latest_session(self) -> str:
         """活跃会话 = part 表最新写入行的 session(part 是流式实时写的,
@@ -222,7 +745,47 @@ class DataEngine(threading.Thread):
                     "SELECT COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
                     " FROM model_usage WHERE status='completed' AND started_at>=?",
                     (today0,)).fetchone()
+                # ---- v0.4.0 追加 SQL(上方三条原样不动):金额按 提供商+模型
+                # 分组计价(与 today_tokens 完全同 WHERE 同天界);燃速取
+                # trailing 60 分钟窗口(同 WHERE)。金额口径钉死 ZCode-DB-only:
+                # Claude 等其他源只进 today_by_source,绝不进金额与燃速
+                # (DEFAULT_PRICES 无 Claude 模型,计入会永久点亮 ≈)。----
+                cost_rows = con.execute(
+                    "SELECT provider_id, model_id, SUM(input_tokens),"
+                    " SUM(cache_read_input_tokens), SUM(output_tokens)"
+                    " FROM model_usage WHERE status='completed' AND started_at>=?"
+                    " GROUP BY provider_id, model_id",
+                    (today0,)).fetchall()
+                win0 = int(time.time() * 1000) - 3_600_000
+                burn_rows = con.execute(
+                    "SELECT provider_id, model_id, SUM(input_tokens),"
+                    " SUM(cache_read_input_tokens), SUM(output_tokens)"
+                    " FROM model_usage WHERE status='completed' AND started_at>=?"
+                    " GROUP BY provider_id, model_id",
+                    (win0,)).fetchall()
                 con.close()
+                cost_cny, cost_partial = 0.0, False
+                for _prov, model, i_, c_, o_ in cost_rows:
+                    v_, p_ = cost_of(self.prices, model, i_ or 0, o_ or 0, c_ or 0)
+                    cost_cny += v_
+                    cost_partial = cost_partial or p_
+                burn_tok, burn_cny = 0, 0.0
+                for _prov, model, i_, c_, o_ in burn_rows:
+                    burn_tok += (i_ or 0) + (o_ or 0)
+                    v_, _p = cost_of(self.prices, model, i_ or 0, o_ or 0, c_ or 0)
+                    burn_cny += v_
+                self.snap.today_cost_cny = round(cost_cny, 4)
+                self.snap.today_cost_partial = cost_partial
+                # trailing 60min 之和即每小时燃速(窗口宽恰为 1h)
+                self.snap.burn_tokens_per_hour = float(burn_tok)
+                self.snap.burn_cny_per_hour = round(burn_cny, 6)
+                self.snap.est_hours_left = est_hours_left(
+                    self.daily_budget_cny, cost_cny, burn_cny)
+                # 多源聚合(只读、TTL 缓存);新字段与本批同批填充,
+                # _switch_session 重建 Snapshot 后经 _poll_stats 立即补全不闪空
+                self.snap.today_by_source = [
+                    (s.name, s.today_usage()) for s in self.sources
+                    if s.is_available()]
                 self.snap.session_in, self.snap.session_cache, self.snap.session_out = sums
                 self.snap.speed_by_model = speed_by_model
                 self.snap.tps_avg = speed_by_model[0][2] if speed_by_model else None
@@ -371,10 +934,12 @@ class DataEngine(threading.Thread):
             return []
 
     def fetch_daily_usage(self, days: int = 30) -> list:
-        """按天 token 用量(历史图表):completed 全来源 in+out,与今日用量
+        """按天 token 用量(二元组):completed 全来源 in+out,与今日用量
         同口径(input 已含 cache_read 勿重复加);起点=(days-1) 天前本地午夜,
         days=1 时与今日用量 SQL 完全同界。天界用 SQLite 'localtime',依赖
-        OS 时区设置。"""
+        OS 时区设置。v0.4.0 起历史图表改用金额版 fetch_daily_usage_cost(三元
+        组),本方法保留二元组形状不动 —— HistoryWindow 的 dict() 转换与单测
+        test_daily_usage_matches_today_scope 双双依赖此形状。"""
         try:
             con = connect_ro()
             rows = con.execute(
@@ -387,6 +952,78 @@ class DataEngine(threading.Thread):
             return rows
         except sqlite3.Error:
             return []
+
+    def fetch_daily_usage_cost(self, days: int = 30) -> list:
+        """按天 (date, tokens, cny):token 口径与 fetch_daily_usage 完全一致。
+        该方法的二元组形状被 HistoryWindow.refresh 的 dict() 转换与单测
+        test_daily_usage_matches_today_scope 双双依赖,金额版必须走本方法,
+        改旧方法返回元数会直接崩图表。金额需按模型分组计价后在 Python 侧
+        聚合(unknown 模型计 ¥0,partial 不在此体现 —— 天级 ¥ 图表恒为下限,
+        卡片上的 ≈ 标记才是 partial 的展示位)。"""
+        try:
+            con = connect_ro()
+            rows = con.execute(
+                "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
+                " model_id, COALESCE(SUM(input_tokens),0),"
+                " COALESCE(SUM(cache_read_input_tokens),0),"
+                " COALESCE(SUM(output_tokens),0)"
+                " FROM model_usage WHERE status='completed' AND started_at>=?"
+                " GROUP BY d, model_id ORDER BY d",
+                (today0_ms() - (days - 1) * 86_400_000,)).fetchall()
+            con.close()
+        except sqlite3.Error:
+            return []
+        agg = {}
+        for d, model, i_, c_, o_ in rows:
+            tok, cny = agg.get(d, (0, 0.0))
+            v, _partial = cost_of(self.prices, model, i_ or 0, o_ or 0, c_ or 0)
+            agg[d] = (tok + (i_ or 0) + (o_ or 0), cny + v)
+        return [(d, t, round(c, 4)) for d, (t, c) in sorted(agg.items())]
+
+    BLOCK_MS = 5 * 3600 * 1000            # 5h 计费块宽(ms)
+
+    def fetch_billing_blocks(self, blocks: int = 29) -> list:
+        """5 小时计费块(历史图表第三页签):返回 [(block_start_ms, tokens,
+        is_current)],当前块由 now 落桶判定。
+        块界对齐:quota 轨可用时(nextResetTime 已由 UI 回写到 self.quota_hint)
+        用 nextResetTime-k*5h 对齐平台真实计费窗;否则回退锚点=completed 的
+        最早 started_at(query_source 全部 —— 措辞刻意区别于跨产品的"全来源"),
+        此时块界为示意、非平台真实计费窗(UI 页签内已声明)。
+        聚合口径同今日 token:completed 全部 query_source 的 in+out(input 已含
+        cache_read 勿重复加)。"""
+        try:
+            con = connect_ro()
+            anchor = self.quota_hint
+            if not _is_num(anchor) or anchor <= 0:
+                row = con.execute(
+                    "SELECT MIN(started_at) FROM model_usage"
+                    " WHERE status='completed'").fetchone()
+                anchor = row[0] if row and row[0] else None
+            if not _is_num(anchor) or anchor <= 0:
+                con.close()
+                return []
+            anchor = int(anchor)
+            now_ms = int(time.time() * 1000)
+            # floor 除法:quota 锚点在未来时 now-anchor 为负,向负取整恰好把
+            # now 归入上一块(k=-1),与"当前块=[reset-5h, reset)"一致
+            k_cur = (now_ms - anchor) // self.BLOCK_MS
+            first = k_cur - blocks + 1
+            base = anchor + first * self.BLOCK_MS
+            if base < 0:
+                con.close()
+                return []
+            rows = con.execute(
+                "SELECT (started_at-?)/? AS b,"
+                " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
+                " FROM model_usage WHERE status='completed' AND started_at>=?"
+                " AND started_at<? GROUP BY b",
+                (base, self.BLOCK_MS, base, base + blocks * self.BLOCK_MS)).fetchall()
+            con.close()
+        except sqlite3.Error:
+            return []
+        buckets = {int(b): (t or 0) for b, t in rows}
+        return [(base + i * self.BLOCK_MS, buckets.get(i, 0), first + i == k_cur)
+                for i in range(blocks)]
 
     def fetch_session_usage(self, limit: int = 20) -> list:
         """按会话 token 用量(历史图表):completed + main_turn、排除 subagent

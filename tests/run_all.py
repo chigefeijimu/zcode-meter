@@ -19,8 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # UI 相关子进程禁用位置记忆:防回归测试改写用户真实 zm_state.json
-# (拦 _set_dock/_unset_dock 即时保存与 aboutToQuit 落盘两条写脏路径;
-#  data 组无 UI 不需要)
+# (拦 _set_dock/_unset_dock 即时保存与 aboutToQuit 落盘两条写脏路径)。
+# v0.4.0 起 data 组同样注入:兼作 QuotaMonitor/zm_alerts.json 的网络与
+# 落盘守卫(见 main() 内注释)。
 STATE_OFF = dict(os.environ, ZM_NO_STATE="1")
 
 
@@ -48,7 +49,12 @@ def main() -> int:
     results = []
 
     if "data" in groups:
-        results.append(run("data-engine", [sys.executable, str(ROOT / "tests" / "test_data_engine.py")]))
+        # v0.4.0:data 组也注入 STATE_OFF —— 第二道闸(评审必改#1):data_engine
+        # 的 QuotaMonitor/BudgetAlerts 守卫读 ZM_NO_STATE,补注入保证带 key 的
+        # zm_config.json 存在时,data 单测路径同样绝不发网络请求、不写
+        # zm_alerts.json。仅加环境变量,断言与超时一字未动。
+        results.append(run("data-engine", [sys.executable, str(ROOT / "tests" / "test_data_engine.py")],
+                           env=STATE_OFF))
 
     if "ui" in groups:
         results.append(run("ui-verify", [sys.executable, str(ROOT / "zcode_meter_qt.py"), "--verify"],
