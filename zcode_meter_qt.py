@@ -20,7 +20,7 @@ import sys
 import time
 
 from PySide6.QtCore import QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import QCursor, QColor, QFont, QFontMetrics, QGuiApplication, QPainter
+from PySide6.QtGui import QCursor, QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPoint
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QTabWidget,
     QVBoxLayout, QWidget,
@@ -227,15 +227,21 @@ class MeterWindow(QWidget):
         self._save_state()               # 拖离贴边也是形态变化,同样即时落盘
 
     # ---- 贴边判定(全 Qt 逻辑坐标,无 DPI 手算) ----
+    def _pointer_pos(self):
+        """松手时的指针位置(封装成方法便于自检时 override)。"""
+        return QCursor.pos()
+
     def _settle(self):
-        g = self.geometry()
+        """贴边判定按【鼠标触边】:指针怼到屏幕边缘即贴对应边,
+        不再要求窗口本体侧边接近 —— 拖着窗口让鼠标碰一下屏边松手即可。"""
         sg = self.screen().availableGeometry()
-        near = self.EDGE_NEAR
+        pos = self._pointer_pos()
+        edge = 6                              # 指针距屏边的判定阈值(px)
         want = None
-        if abs(g.top() - sg.top()) < near: want = "top"
-        elif abs(g.bottom() - sg.bottom()) < near: want = "bottom"
-        elif abs(g.left() - sg.left()) < near: want = "left"
-        elif abs(g.right() - sg.right()) < near: want = "right"
+        if pos.y() <= sg.top() + edge: want = "top"
+        elif pos.y() >= sg.bottom() - edge + 1: want = "bottom"
+        elif pos.x() <= sg.left() + edge: want = "left"
+        elif pos.x() >= sg.right() - edge + 1: want = "right"
         if want and want != self.dock:
             self._set_dock(want)
         elif not want and self.dock:
@@ -616,14 +622,14 @@ class MeterWindow(QWidget):
         self._apply_snapshot(self.snap)
         n = sum(1 for c in self.findChildren(QLabel))
         print(f"window: {self.width()}x{self.height()} labels={n}")
+        # 模拟鼠标触底边(真实 QCursor 不受测试控制,override _pointer_pos)
         sg = self.screen().availableGeometry()
-        self.setGeometry(sg.left() + 100, sg.bottom() - self.height() - 5,
-                         self.width(), self.height())
+        self._pointer_pos = lambda: QPoint(sg.center().x(), sg.bottom())
         QTimer.singleShot(120, self._verify_dock)
 
     def _verify_dock(self):
         self._settle()
-        print(f"dock after settle near bottom -> {self.dock}",
+        print(f"dock after pointer-at-bottom -> {self.dock}",
               "PASS" if self.dock == "bottom" else "FAIL")
         self.eng.stop()
         QApplication.quit()
