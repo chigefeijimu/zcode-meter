@@ -503,11 +503,11 @@ class MeterWindow(QWidget):
         self._apply_snapshot(self.snap)          # 先填文字
         w, h = self._bar_size(vertical)
         if vertical:
-            cy = g.center().y()
+            cy = sg.center().y()                 # 贴边自动沿边轴居中(用户指定)
             y = max(min(cy - h // 2, sg.bottom() - h - 2), sg.top() + 2)
             x = sg.left() if side == "left" else sg.right() - w + 1
         else:
-            cx = g.center().x()
+            cx = sg.center().x()
             x = max(min(cx - w // 2, sg.right() - w - 2), sg.left() + 2)
             y = sg.top() if side == "top" else sg.bottom() - h + 1
         self.setGeometry(x, y, w, h)     # 不锁死:_refit_dock 周期校验,自愈任何几何漂移
