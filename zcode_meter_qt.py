@@ -1097,14 +1097,15 @@ class MeterWindow(QWidget):
 
 
 class BarChart(QWidget):
-    """纯 QPainter 竖柱图(v0.5.0 起三页签统一竖柱,水平条形态已删)。
-    x 轴标签支持旋转(label_angle):会话/计费块页标签远宽于槽位,水平摆放
-    必被矩形裁剪或重叠,统一 45° 斜排 + 按可用对角线长度省略;悬停 tooltip
-    显示全量 label+数值,补偿省略损失。
+    """纯 QPainter 条形图:horizontal=True 水平条(v0.5.2 起三页签统一水平,
+    用户实测竖柱不便阅读;竖柱形态保留供未来切换)。
+    水平条左侧标签超长省略,悬停 tooltip 显示全量 label+数值补偿;
+    数值区预留防顶出窗口,extra(¥金额)拼在数值后,高亮下标条变警示色。
     刻意不引 matplotlib 等第三方库 —— 单文件 exe 的体积与启动速度。"""
 
-    def __init__(self, label_angle: int = 0, parent=None):
+    def __init__(self, horizontal: bool = True, label_angle: int = 0, parent=None):
         super().__init__(parent)
+        self._horizontal = bool(horizontal)
         self._angle = max(0, min(int(label_angle), 90))
         self._items: list[tuple[str, int]] = []
         self._extra: list[str] = []        # 第二行数值文本(如 ¥ 金额),可空
@@ -1135,7 +1136,45 @@ class BarChart(QWidget):
             p.drawText(self.rect(), Qt.AlignCenter, "无数据")
             return
         vmax = max(v for _, v in self._items) or 1
-        self._paint_v(p, w, h, vmax)
+        if self._horizontal:
+            self._paint_h(p, w, h, vmax)
+        else:
+            self._paint_v(p, w, h, vmax)
+
+    def _paint_h(self, p: QPainter, w: int, h: int, vmax: int):
+        """水平条:左侧标题(超长省略号),条末缩写数值(+¥);行高自适应。
+        条形最大宽度必须给数值区预留 —— 画满右缘会让数值矩形宽度为负,
+        数值被顶出窗口外不可见(最长条正落在 vmax 上)。"""
+        n = len(self._items)
+        lbl_w = min(230, int(w * 0.38))
+        x0, right = lbl_w + 8, w - 10
+        val_w = 96                                     # 数值区预留(token+¥)
+        bar_max = max(right - x0 - val_w - 6, 20)
+        row_h = min(26, max((h - 8) / max(n, 1), 13))
+        f_lbl = QFont("Microsoft YaHei UI", 8)
+        f_val = QFont(C_MONO, 8)
+        fm = QFontMetrics(f_lbl)
+        fm_val = QFontMetrics(f_val)
+        for i, (label, val) in enumerate(self._items):
+            y = 4 + i * row_h
+            cy = y + row_h / 2
+            p.setPen(QColor(C_DIM))
+            p.setFont(f_lbl)
+            p.drawText(QRect(4, y, lbl_w, row_h), Qt.AlignVCenter | Qt.AlignRight,
+                       fm.elidedText(label, Qt.ElideRight, lbl_w))
+            bw = max(val / vmax * bar_max, 2) if val else 0
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(C_WARN) if i == self._highlight else QColor(C_ACCENT))
+            bh = min(row_h * 0.5, 12)
+            p.drawRect(QRectF(x0, cy - bh / 2, bw, bh))
+            p.setPen(QColor(C_FG))
+            p.setFont(f_val)
+            txt = fmt_k(val)
+            extra = self._extra[i] if i < len(self._extra) else ""
+            if extra:
+                txt = f"{txt} {extra}"
+            p.drawText(QRectF(x0 + bw + 6, y, val_w, row_h),
+                       Qt.AlignVCenter | Qt.AlignLeft, txt)
 
     def _paint_v(self, p: QPainter, w: int, h: int, vmax: int):
         """竖柱:数值沿柱身竖排(旋转-90°,每根都显示,不占横向空间);
@@ -1221,11 +1260,15 @@ class BarChart(QWidget):
         if not self._items:
             return
         n = len(self._items)
-        side = 10
-        slot = (self.width() - side * 2) / n
-        if slot <= 0:
-            return
-        i = int((ev.position().x() - side) / slot)
+        if self._horizontal:
+            row_h = min(26, max((self.height() - 8) / max(n, 1), 13))
+            i = int((ev.position().y() - 4) / row_h)
+        else:
+            side = 10
+            slot = (self.width() - side * 2) / n
+            if slot <= 0:
+                return
+            i = int((ev.position().x() - side) / slot)
         if 0 <= i < n:
             label, val = self._items[i]
             tip = f"{label}\n{fmt_k(val)} tokens"
@@ -1252,9 +1295,9 @@ class HistoryWindow(QWidget):
         # v0.5.0:三图统一竖柱。按天页保持水平标签(默认 0,外观不变);
         # 会话/计费块页标签远宽于槽位('标题… ·N次'/'09-26 14:00'),旧版
         # 水平摆放要么矩形裁剪要么重叠,改 45° 斜排 + elide + 悬停全量 tooltip
-        self.daily_chart = BarChart()
-        self.sess_chart = BarChart(label_angle=45)
-        self.block_chart = BarChart(label_angle=45)
+        self.daily_chart = BarChart(horizontal=True)
+        self.sess_chart = BarChart(horizontal=True)
+        self.block_chart = BarChart(horizontal=True)
         self.tabs = QTabWidget()
         self.tabs.addTab(self.daily_chart, "按天(近30天)")
         self.tabs.addTab(self.sess_chart, "按会话(近20个)")
