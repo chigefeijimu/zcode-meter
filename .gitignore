@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
+# v0.6.0 src 布局注:以下 zm_* 条目均为 basename 模式,移动文件后仍全部命中;
+# 且 app_dir() 在开发模式锚定仓库根 —— 六个 zm_* 用户文件(配置/状态/日志)
+# 固定落仓库根不进包目录,与本 gitignore 互为锚定,勿在 src/ 下另设规则
 zm_debug.log
 zm_crash.log
 zm_stdout.log

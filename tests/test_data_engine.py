@@ -13,8 +13,8 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from data_engine import DB_PATH, DataEngine  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from zcode_meter.data_engine import DB_PATH, DataEngine  # noqa: E402
 
 FAILED = []
 
@@ -205,7 +205,7 @@ def test_cost_three_paths():
     """金额三路径(纯函数,合成价格表):已知全档 / 已知缺 in_cache 按 in
     全价 / 未知模型 ¥0+partial。cache_read 实测占 input ~98%,三条规则
     混淆会静默错价一个数量级 —— 本测是唯一防线,数值全部手算。"""
-    from data_engine import cost_of
+    from zcode_meter.data_engine import cost_of
     prices = {
         "M-A": {"in": 8.0, "in_cache": 2.0, "out": 28.0},
         "M-B": {"in": 4.0, "out": 16.0},            # 已知但缺 in_cache 档
@@ -225,7 +225,7 @@ def test_cost_three_paths():
 def test_today_cost_matches_grouped_sql():
     """卡片今日金额 = 今日分组 SQL × DEFAULT_PRICES 手算对账(公式在测试里
     重写,不调 cost_of,防实现自证);partial 与是否存在未知模型一致。"""
-    import data_engine as de
+    from zcode_meter import data_engine as de
     e = DataEngine(queue.Queue(maxsize=1))
     # 钉死默认表:开发机若有 zm_prices.json 覆盖会导致对账漂移
     e.prices = {m: dict(t) for m, t in de.DEFAULT_PRICES.items()}
@@ -262,7 +262,7 @@ def test_today_cost_matches_grouped_sql():
 def test_burn_window_and_est_hours():
     """燃速 = trailing-60min 窗口手算;est_hours_left 纯函数口径
     (燃速 0 → None、未配预算 → None,除零是历史雷区)。"""
-    from data_engine import est_hours_left
+    from zcode_meter.data_engine import est_hours_left
     check("est:常规公式", abs(est_hours_left(20.0, 5.0, 2.5) - 6.0) < 1e-9,
           f"{est_hours_left(20.0, 5.0, 2.5)}")
     check("est:燃速 0 → None", est_hours_left(20.0, 5.0, 0.0) is None)
@@ -327,7 +327,7 @@ def test_claude_source_synthetic():
     import os as osmod
     import shutil
     import tempfile
-    from data_engine import ClaudeSource
+    from zcode_meter.data_engine import ClaudeSource
 
     root = tempfile.mkdtemp(prefix="zm_claude_")
     try:
@@ -398,7 +398,7 @@ def test_parse_quota_payload():
     """quota 载荷解析(社区逆向结构,文档样例):percentage=已用%、
     remaining=100-percentage、number 兼容字符串/数字、选 number==5 的 5h 窗、
     nextResetTime 透传;坏载荷一律 None。"""
-    from data_engine import parse_quota_payload
+    from zcode_meter.data_engine import parse_quota_payload
     sample = {"code": 200, "data": {"limits": [
         {"type": "TOKENS_LIMIT", "number": "5", "percentage": "42.5",
          "nextResetTime": 1760000000000},
@@ -429,7 +429,7 @@ def test_budget_alerts_dedup_and_reset():
     _save 会被守卫拦下,测试内显式 patch 为 False 验证真实写读路径)。"""
     import shutil
     import tempfile
-    import data_engine as de
+    from zcode_meter import data_engine as de
     from pathlib import Path as _Path
     tmp = _Path(tempfile.mkdtemp(prefix="zm_alerts_"))
     a = de.BudgetAlerts([20, 10], state_path=str(tmp / "a.json"))
@@ -485,7 +485,7 @@ def test_save_config_roundtrip_and_normalize():
     import shutil
     import tempfile
     from pathlib import Path as _Path
-    import data_engine as de
+    from zcode_meter import data_engine as de
     tmp = _Path(tempfile.mkdtemp(prefix="zm_cfg_"))
     orig_path = de.CONFIG_PATH
     try:
@@ -527,7 +527,7 @@ def test_save_config_guard_and_failures():
     import shutil
     import tempfile
     from pathlib import Path as _Path
-    import data_engine as de
+    from zcode_meter import data_engine as de
     tmp = _Path(tempfile.mkdtemp(prefix="zm_cfg_"))
     orig_path, orig_np = de.CONFIG_PATH, de._no_persist
     cfg = {"quota_api_key": "sk-x", "daily_budget_cny": 5, "alert_pct": [20, 10]}
@@ -581,7 +581,7 @@ def test_save_config_guard_and_failures():
 def test_quota_fetch_decision():
     """节流器决策纯函数四场景 + 整数边界(先紧后松闸门链):
     立即查(force)/ 最短间隔 60s 硬闸 / 活跃期常态 3min / 静默期暂停。"""
-    from data_engine import quota_fetch_decision
+    from zcode_meter.data_engine import quota_fetch_decision
     now = 1_000_000.0
     # 立即查:force 放行 —— 即使 <60s 且完全静默(启动首查/换 key 重启)
     check("决策:force 放行(压过间隔与静默)",
@@ -617,7 +617,7 @@ def test_quota_fetch_decision():
 def test_quota_countdown_and_age():
     """倒计时本地化与新鲜度文案(纯函数,零 API 请求):分钟向上取整、
     过期/缺参 → None;<60s 刚刚 / <60min N分钟前 / N小时前 / None→None。"""
-    from data_engine import format_age_zh, format_countdown_hm
+    from zcode_meter.data_engine import format_age_zh, format_countdown_hm
     now_ms = 1_000_000_000_000
     # 倒计时:82.5min → ceil 83min = 1h 23m;41.5min → ceil 42min
     check("倒计时:1h 23m",
@@ -691,7 +691,7 @@ def test_quota_monitor_throttle_bookkeeping():
     时间戳(显式 ts 可注入);_fetch_and_record 成功附 fetched_at 入
     _latest,失败也推进 _last_fetch_ts —— 失败占频率预算,防 1s tick 对
     故障端点加密重试。"""
-    from data_engine import QuotaMonitor
+    from zcode_meter.data_engine import QuotaMonitor
     m = QuotaMonitor("sk-test")          # 仅构造,绝不 start
     check("monitor:初始无活动/无抓取记录",
           m._last_activity_ts is None and m._last_fetch_ts is None)

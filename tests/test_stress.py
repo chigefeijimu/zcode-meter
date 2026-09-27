@@ -12,10 +12,10 @@ from pathlib import Path
 # 位置记忆隔离:直接运行本文件时也不改写用户真实 zm_state.json
 os.environ.setdefault("ZM_NO_STATE", "1")
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-import zcode_meter_qt as m  # noqa: E402
+import zcode_meter.app as m  # noqa: E402
 
 FAILED = []
 

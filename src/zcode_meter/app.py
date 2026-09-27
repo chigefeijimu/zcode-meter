@@ -5,9 +5,9 @@
 天然支持 Aero Snap),从根上消除 tkinter 版的迟滞/吞点击/互操作崩溃。
 数据层复用 data_engine.py(tk 版同源)。
 
-用法:
-  pythonw zcode_meter_qt.py          正常启动
-  python zcode_meter_qt.py --verify  自检:渲染/贴边判定,打印报告后退出
+用法(v0.6.0 起 src 布局;根目录 zcode_meter.py 为兼容 shim,同样可用):
+  pythonw src/zcode_meter/app.py          正常启动
+  python src/zcode_meter/app.py --verify  自检:渲染/贴边判定,打印报告后退出
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ import queue
 import re
 import sys
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import (
@@ -32,7 +33,15 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from data_engine import (
+# 脚本直跑(python src/zcode_meter/app.py)时 __package__ 为空:补 src 进
+# sys.path 再走同一 continue 执行,本文件既是包模块 zcode_meter.app、也可作
+# __main__ 直跑 —— 刻意不做「re-import 自身为 zcode_meter.app」,__main__ 副本
+# 与测试导入的包模块会是两套类对象(常量/样式双份、isinstance 失配)。
+# frozen(exe)时 PyInstaller 已内置包,无需引导。
+if __package__ in (None, "") and not getattr(sys, "frozen", False):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # .../src
+
+from zcode_meter.data_engine import (
     BudgetAlerts, DataEngine, QuotaMonitor, Snapshot, app_dir, dbg,
     format_age_zh, format_countdown_hm, load_config, save_config,
 )

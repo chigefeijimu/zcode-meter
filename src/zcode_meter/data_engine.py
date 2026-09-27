@@ -24,10 +24,23 @@ from dataclasses import dataclass, field
 
 def app_dir() -> str:
     """运行目录:PyInstaller frozen 时取 exe 所在目录(zm_*.log/zm_state.json
-    都落这),脚本模式取源码目录 —— dev 行为不变。"""
+    都落这);脚本模式(src 布局,包在 src/zcode_meter/ 下)向上找含 README.md
+    的祖先目录 = 仓库根。**这是路径不变式**:v0.5.x 及以前扁平布局时 CONFIG_PATH/
+    PRICES_PATH/ALERTS_PATH/_CRASH_LOG/DBG_PATH 与 UI 侧 STATE_PATH 全落仓库根,
+    若改成包目录,用户现有 zm_config.json(含 quota key)会无声失配 ——
+    load_config 吞 OSError 静默回退默认,属最隐蔽的回归,故以仓库根为锚。
+    裸拷贝包目录等找不到锚点时回退包目录(行为等价旧扁平布局)。"""
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.abspath(__file__))
+    d = here
+    for _ in range(3):                     # src/zcode_meter 距仓库根两级,留裕量;防越出仓库无限爬
+        d = os.path.dirname(d)
+        if d == os.path.dirname(d):        # 已到盘根仍未命中锚点
+            break
+        if os.path.isfile(os.path.join(d, "README.md")):
+            return d
+    return here
 
 
 # 崩溃追踪:pythonw 无控制台,access violation 等原生崩溃的 traceback 落盘。

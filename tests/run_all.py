@@ -7,6 +7,7 @@
 
 组:
   data  数据层单测(口径/会话切换/subagent排除) —— 无 UI,快
+  pkg   包结构守卫(v0.6.0 src 布局:包可导入/版本号/app_dir 仓库根锚定/shim 链路)
   ui    界面自检(--verify 封装:渲染/绑定/贴边判定)
   stress 布局切换压力测试(横条<->竖条<->卡片 + 动态refit)
 """
@@ -45,7 +46,7 @@ def run(name: str, cmd: list[str], timeout: int = 90,
 
 
 def main() -> int:
-    groups = sys.argv[1:] or ["data", "ui", "stress"]
+    groups = sys.argv[1:] or ["data", "pkg", "ui", "stress"]
     results = []
 
     if "data" in groups:
@@ -56,8 +57,14 @@ def main() -> int:
         results.append(run("data-engine", [sys.executable, str(ROOT / "tests" / "test_data_engine.py")],
                            env=STATE_OFF))
 
+    if "pkg" in groups:
+        # v0.6.0:src 布局迁移守卫 —— 不在默认组里加这条命令,「全绿」会静默漏跑
+        results.append(run("pkg", [sys.executable, str(ROOT / "tests" / "test_package.py")],
+                           env=STATE_OFF))
+
     if "ui" in groups:
-        results.append(run("ui-verify", [sys.executable, str(ROOT / "zcode_meter_qt.py"), "--verify"],
+        results.append(run("ui-verify",
+                           [sys.executable, str(ROOT / "src" / "zcode_meter" / "app.py"), "--verify"],
                            env=STATE_OFF))
 
     if "stress" in groups:

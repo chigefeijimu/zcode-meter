@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.6.0 (2026-09-27) — 项目结构标准化:src 布局迁移(仅移动与引用修复,零行为变更)
+
+- **src 布局**:三个核心文件移入 `src/zcode_meter/` 包(git mv 保历史)——
+  `data_engine.py` 原位更名不变;`zcode_meter_qt.py` → **`app.py`**(UI 入口);
+  旧 tkinter 版 `zcode_meter.py` → **`legacy_tk.py`**(仅留档,自包含零 import
+  改动,其调试日志落包目录属预期);新增 `__init__.py`(仅 docstring +
+  `__version__ = "0.6.0"`,**零副作用**:不 import 包内模块 —— data_engine 一被
+  导入就启用 faulthandler 写 zm_crash.log,`import zcode_meter` 必须保持可无开销
+  用于版本探测)。根目录 `__pycache__/` 残留清除
+- **向后兼容 shim**:根目录保留 3 行 `zcode_meter.py`,把 `src/` 插到
+  sys.path[0](必须先于脚本目录,否则 `import zcode_meter` 解析到 shim 自身即崩)
+  后转发 `zcode_meter.app.main()`;v0.5.x 旧命令(`pythonw zcode_meter.py`)继续
+  可用,README 已标注新入口为 `pythonw src/zcode_meter/app.py`
+- **app_dir() 路径不变式**(本次唯一数据层逻辑改动,目的恰是保持行为不变):
+  脚本分支从包目录向上找含 `README.md` 的祖先目录=仓库根(找不到回退包目录),
+  frozen 分支逐字未动。否则六个用户文件(`zm_config.json`/`zm_prices.json`/
+  `zm_alerts.json`/`zm_state.json`/`zm_debug.log`/`zm_crash.log`)会随文件移动
+  无声搬到 `src/zcode_meter/` —— quota key 失配(load_config 吞 OSError 静默回退
+  默认)、位置记忆清零、燃速/告警口径数据断档,全部无报错,属最隐蔽回归
+- **import 修复**(全部改为包路径,禁止 `src/zcode_meter` 与根目录双路径共存 ——
+  那会让 data_engine 加载成两个独立模块实例,QuotaMonitor/缓存身份分裂):
+  app.py 头部加脚本引导(直跑时补 src 进 sys.path 后同一 continue 执行,刻意
+  不 re-import 自身,防 __main__ 副本与包模块两套类对象);tests/test_data_engine.py
+  12 处、test_stress.py 1 处、run_all.py ui 组命令改 `src/zcode_meter/app.py`。
+  **现有全部测试断言一字未改,只改 import/路径行**(tests/debug/ 经核实零处引用,
+  不动)
+- **测试**:新增 `tests/test_package.py` 五项守卫(包可导入/版本号/`zcode_meter.app`
+  可导入/`app_dir()==仓库根` 钉死落点不变式/shim `--verify` 链路),run_all.py
+  新增 pkg 组并纳入默认组列表(漏加则「全绿」静默漏跑)
+- **文档**:README「快速开始」/自检/开机自启注册表命令/打包命令(改
+  `pyinstaller --onefile --noconsole --name zcode-meter --paths src
+  --exclude-module tkinter src/zcode_meter/app.py`,`--paths src` 缺了会打包成功
+  但 exe 启动即 ImportError;`--exclude-module tkinter` 红线保留)/架构树/开发指南
+  全部同步;「配置」章节注明 zm_* 文件落点(开发模式=仓库根,frozen=exe 目录);
+  .gitignore 补锚定说明(现有 basename 模式移动后仍全部命中,无需改规则)
+- 口径红线:除 app_dir 路径解析外不碰任何 SQL/统计/渲染逻辑,「显示指标与口径」
+  表全部不受影响;以迁移前后 run_all 全组输出逐组对照验收
+
 ## v0.5.1 (2026-09-27) — quota 事件驱动+节流 / 倒计时本地化 / 数据新鲜度标注
 
 - 调度改造(`data_engine.QuotaMonitor`,仅内部调度,对外接口不变):300s 盲轮询

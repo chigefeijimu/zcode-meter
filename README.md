@@ -34,16 +34,20 @@ A Windows desktop widget that floats beside your ZCode sessions, showing token u
 ```bash
 git clone git@github.com:chigefeijimu/zcode-meter.git
 cd zcode-meter
-pythonw zcode_meter_qt.py        # 日常使用(无控制台)
-python zcode_meter_qt.py         # 调试(带控制台)
-python zcode_meter_qt.py --verify    # 自检:渲染/绑定/贴边判定
+pythonw src/zcode_meter/app.py        # 日常使用(无控制台,新入口)
+python src/zcode_meter/app.py         # 调试(带控制台)
+python src/zcode_meter/app.py --verify    # 自检:渲染/绑定/贴边判定
 ```
+
+> v0.6.0 起采用 src 布局,新入口为 `src/zcode_meter/app.py`。根目录保留了一个
+> 3 行兼容 shim `zcode_meter.py`,v0.5.x 的旧命令(`pythonw zcode_meter.py`)仍然
+> 可用 —— 等价转发到新入口,仅作过渡,文档与脚本请逐步改用新路径。
 
 开机自启（可选）：
 
 ```powershell
 Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zcode-meter `
-  -Value '"C:\Windows\py.exe" -w "<你的路径>\zcode-meter\zcode_meter_qt.py"'
+  -Value '"C:\Windows\py.exe" -w "<你的路径>\zcode-meter\src\zcode_meter\app.py"'
 ```
 
 ## 交互
@@ -93,6 +97,11 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
 
 ## 配置（可选，放本工具同目录）
 
+> 「本工具同目录」的落点：**开发模式（脚本运行）一律落仓库根**（即 `README.md`
+> 所在目录,`app_dir()` 向上锚定,不随 v0.6.0 的 src 布局搬到 `src/zcode_meter/`）;
+> **frozen（exe）模式落 exe 同目录**。六个文件共用同一落点：`zm_config.json` /
+> `zm_prices.json` / `zm_alerts.json` / `zm_state.json` / `zm_debug.log` / `zm_crash.log`。
+
 ### `zm_config.json` — 预算与告警
 
 ```json
@@ -131,14 +140,17 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --noconsole --name zcode-meter --exclude-module tkinter zcode_meter_qt.py
+pyinstaller --onefile --noconsole --name zcode-meter --paths src --exclude-module tkinter src/zcode_meter/app.py
 ```
+
+- `--paths src` 必须带上:PyInstaller 静态分析要能解析 `zcode_meter` 包,缺了会打包成功但 exe 一启动即 `ImportError`
+- 入口文件为 `src/zcode_meter/app.py`
 
 产物：`dist/zcode-meter.exe`。体积量级 **约 40–70MB**（PySide6 运行时打包的正常水平，与"轻量"无关）。
 
 frozen 模式（exe）注意事项：
 
-- `zm_crash.log` / `zm_debug.log` / `zm_state.json` 落在 **exe 同目录**，不再是源码目录；exe 放只读目录（如未提权的 Program Files）时崩溃日志会静默放弃（不致启动失败），建议放可写目录
+- `zm_crash.log` / `zm_debug.log` / `zm_state.json` 落在 **exe 同目录**，不再是仓库根（开发模式落点）；exe 放只读目录（如未提权的 Program Files）时崩溃日志会静默放弃（不致启动失败），建议放可写目录
 - 开机自启注册表值应改为直接指向 exe：
 
 ```powershell
@@ -146,27 +158,33 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
   -Value '"<你的路径>\zcode-meter.exe"'
 ```
 
-- `--exclude-module tkinter` 必须保留：数据层已移除 tkinter 依赖（`zcode_meter_qt.py` 不再经 `data_engine` 间接引入），不排除则体积翻倍；反之若未来恢复 tk 依赖而仍排除，exe 一启动即 `ImportError`
+- `--exclude-module tkinter` 必须保留：数据层已移除 tkinter 依赖（`src/zcode_meter/app.py` 不再经 `data_engine` 间接引入），不排除则体积翻倍；反之若未来恢复 tk 依赖而仍排除，exe 一启动即 `ImportError`
 
 ## 架构
 
 ```
 zcode-meter/
-├── data_engine.py       # 数据层(无 UI 依赖):日志tail + SQLite轮询 + 流式估算 + 会话跟随
-│                        #   + 价格表/金额 + 多用量源(ZCode/Claude) + quota 轮询线程
-│                        #   + 预算告警状态机 + 5h 计费块(QuotaMonitor 仅由 UI 实例化)
-├── zcode_meter_qt.py    # Qt UI(PySide6):原生拖动/贴边胶囊/动态尺寸 + 托盘/告警派发
-├── zcode_meter.py       # 旧 tkinter 版(弃用,留档)
+├── src/zcode_meter/
+│   ├── __init__.py      # 包标识 + 版本号(零副作用,不 import 包内模块)
+│   ├── data_engine.py   # 数据层(无 UI 依赖):日志tail + SQLite轮询 + 流式估算 + 会话跟随
+│   │                    #   + 价格表/金额 + 多用量源(ZCode/Claude) + quota 轮询线程
+│   │                    #   + 预算告警状态机 + 5h 计费块(QuotaMonitor 仅由 UI 实例化)
+│   ├── app.py           # Qt UI 入口(原 zcode_meter_qt.py):原生拖动/贴边胶囊/动态尺寸
+│   │                    #   + 托盘/告警派发
+│   └── legacy_tk.py     # 旧 tkinter 版(弃用,仅留档)
+├── zcode_meter.py       # 兼容 shim:旧命令转发到 src/zcode_meter/app.py(v0.6.0 过渡)
+├── README.md / CHANGELOG.md / LICENSE / .gitignore
 └── tests/
     ├── run_all.py            # 一键回归
     ├── test_data_engine.py   # 口径/切换/subagent 排除 + 金额/燃速/计费块/多源/quota/告警单测
+    ├── test_package.py       # src 布局守卫:包可导入/版本号/app_dir 落点/shim 链路
     ├── test_stress.py        # 布局切换压力测试
     └── debug/                # 历史调试工具(窗口定位/hit-test/注入拖动)
 ```
 
 ## 开发指南
 
-### 回归测试（改代码后必跑）
+### 回归测试（改代码后必跑，在仓库根运行）
 
 ```bash
 python tests/run_all.py            # 全部
@@ -175,8 +193,8 @@ python tests/run_all.py data       # 只跑数据层单测
 
 ### 新增一个统计指标（三步）
 
-1. **数据层** `data_engine.py`：`Snapshot` 加字段；在 `_poll_stats`（轮询）或 `_on_request_done`（请求完成瞬间）的 SQL 里取数赋值
-2. **界面层** `zcode_meter_qt.py`：`_build_card`/`_build_bar` 加 label（竖条不显示的字段记得显式置 `None`，防悬空引用）；`_apply_snapshot` 渲染
+1. **数据层** `src/zcode_meter/data_engine.py`：`Snapshot` 加字段；在 `_poll_stats`（轮询）或 `_on_request_done`（请求完成瞬间）的 SQL 里取数赋值
+2. **界面层** `src/zcode_meter/app.py`：`_build_card`/`_build_bar` 加 label（竖条不显示的字段记得显式置 `None`，防悬空引用）；`_apply_snapshot` 渲染
 3. **单测** `tests/test_data_engine.py`：对着 db 手算期望值加断言（口径回归就是这么防的）
 
 ## 调试与故障排查
