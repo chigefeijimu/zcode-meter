@@ -108,6 +108,88 @@ def main() -> int:
           not win.plan_lbl.isVisible() and not win.burn_lbl.isVisible()
           and not win._budget_sep.isVisible())
 
+    # ---- v0.7 T-A:卡片信息层级重排(today/plan 两级 hero + timing 合并单格)----
+    # 结构:卡片建 timing/today_src/plan_sub 三新 label 且不再建 ttft/dur;
+    # 两种条形态三者都不建(置 None 纪律:漏一处即形态循环摸已销毁 QLabel)
+    win._build_card(); win.dock = None
+    win._apply_snapshot(win.snap)
+    check("卡片构建:timing/today_src/plan_sub 非 None 且 ttft/dur 为 None",
+          win.timing_lbl is not None and win.today_src_lbl is not None
+          and win.plan_sub_lbl is not None
+          and win.ttft_lbl is None and win.dur_lbl is None)
+    win._build_bar()
+    check("横条构建:timing/today_src/plan_sub 均为 None",
+          win.timing_lbl is None and win.today_src_lbl is None
+          and win.plan_sub_lbl is None)
+    win._build_bar(vertical=True)
+    check("竖条构建:timing/today_src/plan_sub 均为 None",
+          win.timing_lbl is None and win.today_src_lbl is None
+          and win.plan_sub_lbl is None)
+
+    # D3 钉死表:卡片 timing 合并单格逐串断言(分段占位,整串结构恒保留)
+    win.snap.last_ttft, win.snap.last_duration = 0.8, 12.4
+    win._build_card(); win.dock = None
+    win._apply_snapshot(win.snap)
+    check("卡片 timing:双值", win.timing_lbl.text() == "⏱ 首字 0.8s · 总 12.4s",
+          win.timing_lbl.text())
+    win.snap.last_ttft = None
+    win._apply_snapshot(win.snap)
+    check("卡片 timing:缺 ttft", win.timing_lbl.text() == "⏱ 首字 -- · 总 12.4s",
+          win.timing_lbl.text())
+    win.snap.last_ttft, win.snap.last_duration = 0.8, None
+    win._apply_snapshot(win.snap)
+    check("卡片 timing:缺 dur", win.timing_lbl.text() == "⏱ 首字 0.8s · 总 --",
+          win.timing_lbl.text())
+    win.snap.last_ttft = None
+    win._apply_snapshot(win.snap)
+    check("卡片 timing:双 None", win.timing_lbl.text() == "⏱ 首字 -- · 总 --",
+          win.timing_lbl.text())
+
+    # D3 钉死表:plan 两级 hero/sub 逐串断言(180s 龄→3分钟前,90min→1h 30m)
+    win._plan_pct = 42.0
+    win._plan_fetched_at = time.time() - 180
+    win._plan_next_reset = time.time() * 1000 + 90 * 60_000
+    win._apply_snapshot(win.snap)
+    check("卡片 plan hero", win.plan_lbl.text() == "套餐剩余 42%",
+          win.plan_lbl.text())
+    check("卡片 plan sub:age+cd 双在场",
+          win.plan_sub_lbl.text() == "· 3分钟前 · 1h 30m 后重置",
+          win.plan_sub_lbl.text())
+    win._plan_next_reset = None
+    win._apply_snapshot(win.snap)
+    check("卡片 plan sub:仅 age", win.plan_sub_lbl.text() == "· 3分钟前",
+          win.plan_sub_lbl.text())
+    win._plan_next_reset = time.time() * 1000 + 90 * 60_000
+    win._plan_fetched_at = None
+    win._apply_snapshot(win.snap)
+    check("卡片 plan sub:仅 cd", win.plan_sub_lbl.text() == "· 1h 30m 后重置",
+          win.plan_sub_lbl.text())
+    win._plan_pct = None
+    win._apply_snapshot(win.snap)
+    check("卡片 plan:pct=None → hero/sub 双空",
+          win.plan_lbl.text() == "" and win.plan_sub_lbl.text() == "",
+          f"{win.plan_lbl.text()!r}/{win.plan_sub_lbl.text()!r}")
+
+    # 卡片 today hero/多源副文本:『今日』前缀 + cost=0 省金额段 + partial ≈
+    # 口径 + >1 源才显示(口径红线,搬动中弄丢即新一轮口径 bug)
+    win.snap.today_tokens = 1_234_567
+    win.snap.today_cost_cny = 12.34
+    win.snap.today_cost_partial = True
+    win.snap.today_by_source = [("ZCode", 1_234_567), ("Claude", 456_789)]
+    win._apply_snapshot(win.snap)
+    check("卡片 today hero:partial ≈ + 金额段",
+          win.today_lbl.text() == "今日 1.2M · ≈¥12.34", win.today_lbl.text())
+    check("卡片 today 多源副文本",
+          # 456_789 经 fmt_k 的 :.1f 缩写为 456.8K(join 文案不变的红线)
+          win.today_src_lbl.text() == "ZCode 1.2M · Claude 456.8K",
+          win.today_src_lbl.text())
+    win.snap.today_cost_cny = None
+    win.snap.today_by_source = [("ZCode", 1_234_567)]
+    win._apply_snapshot(win.snap)
+    check("卡片 today:cost=0 省金额段 + ≤1 源置空",
+          win.today_lbl.text() == "今日 1.2M" and win.today_src_lbl.text() == "",
+          f"{win.today_lbl.text()!r}/{win.today_src_lbl.text()!r}")
+
     # ---- 数据新鲜度视觉化:贴边条形态 + 套餐数据龄超 15min → 半透明 ----
     # 纯函数边界用整值参数(100.0/1000.0):拿浮点时刻做『恰 900』断言会有
     # 舍入噪声;窗口侧只注入 dock/_plan_fetched_at 两状态,不启 monitor

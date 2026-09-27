@@ -52,6 +52,10 @@ from zcode_meter.data_engine import (
 C_BG, C_BORDER = "#16171c", "#2c2f3a"
 C_FG, C_DIM, C_ACCENT, C_WARN = "#e8eaf0", "#8b8f9c", "#5ad6a0", "#e8c268"
 C_MONO = "Consolas"
+# T-B 间距标度(8pt 栅格半步档):替换全部布局魔法间距,语义就近映射
+# (内容行间=xs/s,分组间=m/l,区块边距=l/xl);豁免点就地注释标明
+SP = {"xs": 4, "s": 6, "m": 8, "l": 12, "xl": 16}
+C_BORDER_SUB = "#232631"   # 次分节符(弱于 C_BORDER 主分节,层级可辨)
 
 QSS = f"""
 QWidget#root {{ background: {C_BG}; border: 1px solid {C_BORDER}; border-radius: 10px; }}
@@ -261,8 +265,8 @@ class SettingsDialog(QDialog):
         self._cfg = dict(cfg)                 # 保存成功后在此暂存规范化结果
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 12)
-        root.setSpacing(6)
+        root.setContentsMargins(SP["xl"], SP["l"], SP["xl"], SP["l"])
+        root.setSpacing(SP["s"])
 
         def caption(text: str) -> QLabel:
             lb = QLabel(text)
@@ -403,8 +407,13 @@ class MeterWindow(QWidget):
     # 模型(342)截断,提到 350(2 行可容、3 行起 356>350 仍截断,与旧 336
     # 的截断点同点,无回退)。CARD_H 须 ≥ 布局自然高度 ——
     # _unset_dock/_restore_state/_detach_to_pointer 用它 setGeometry,偏小会
-    # 静默截断(ui-verify 只打印不校验,需人工目视)
-    CARD_W, CARD_H = 250, 350          # 逻辑像素(DIP),Qt 自动做 DPI 换算
+    # 静默截断(ui-verify 只打印不校验,需人工目视)。
+    # v0.7 T-A 信息层级重排(today/plan 两级 hero + timing 合并单格):grid
+    # 少了 今日/首字/整体 三组 caption 行,新增两级 hero 反而更矮,注入实测
+    # (findings/measure_card_baseline.py,原生平台+processEvents):满载
+    # 0~4 行模型 → 303/303/317/331/345,全矩阵 max=345 <400 全容纳,按
+    # ceil(max/2)*2 规则 350→346(多源/plan_sub 行常驻不再撑高,0/1 行同高)。
+    CARD_W, CARD_H = 250, 346          # 逻辑像素(DIP),Qt 自动做 DPI 换算
     BAR_H, BAR_V = 24, 38
     EDGE_NEAR = 30
 
@@ -707,8 +716,8 @@ class MeterWindow(QWidget):
         self._bar_form = None
         self._budget_sep = None
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 10)
-        root.setSpacing(4)
+        root.setContentsMargins(SP["l"], SP["m"], SP["l"], SP["s"])
+        root.setSpacing(SP["xs"])
 
         head = QHBoxLayout()
         self.dot = self._mk_lbl("●", "dim", "Segoe UI", 9)
@@ -731,12 +740,23 @@ class MeterWindow(QWidget):
         big.addWidget(self.elapsed_lbl)
         root.addLayout(big)
 
+        # ---- v0.7 T-A(提案#3):today 从 grid 搬出到 big 行正下方,升为
+        # 第二主数字。hero 显式传 cls="normal"(空 objectName → QSS 基础
+        # QLabel 色 C_FG;_mk_lbl 缺省 dim,漏传会落灰字);字体两步写与
+        # 上方 tps_lbl 同款(先 _mk_lbl 带字号、再 setFont 补 Bold 权重)
+        self.today_lbl = self._mk_lbl("--", "normal", C_MONO, 13)
+        self.today_lbl.setFont(QFont(C_MONO, 13, QFont.Bold))
+        root.addWidget(self.today_lbl)
+        # 多源拆分行:>1 源才有文案(8pt 副文本),文案口径沿旧 today 第二行
+        self.today_src_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
+        root.addWidget(self.today_src_lbl)
+
         sep = QFrame(); sep.setObjectName("sep")
         root.addWidget(sep)
 
         grid = QHBoxLayout()
         left = QVBoxLayout(); right = QVBoxLayout()
-        left.setSpacing(2); right.setSpacing(2)
+        left.setSpacing(2); right.setSpacing(2)   # 豁免:字段矩阵行距刻意<xs,密度优先
         self.in_lbl = self._mk_lbl("--", "", C_MONO, 9)
         left.addWidget(self._mk_lbl("输入", "dim", "Microsoft YaHei UI", 8))
         left.addWidget(self.in_lbl)
@@ -747,41 +767,52 @@ class MeterWindow(QWidget):
         left.addWidget(self._mk_lbl("输出", "dim", "Microsoft YaHei UI", 8))
         left.addWidget(self.out_lbl)
         self.rate_lbl = self._mk_lbl("--", "", C_MONO, 9)
-        right.addWidget(self._mk_lbl("命中率", "dim", "Microsoft YaHai UI".replace("Yahai", "YaHei"), 8))
+        right.addWidget(self._mk_lbl("命中率", "dim", "Microsoft YaHei UI", 8))
         right.addWidget(self.rate_lbl)
         self.avg_lbl = self._mk_lbl("--", "", C_MONO, 9)
         left.addWidget(self._mk_lbl("平均速度", "dim", "Microsoft YaHei UI", 8))
         left.addWidget(self.avg_lbl)
+        # ttft/dur 合并单格:右列第 3 槽与左列 3 行配平,无 caption;分段
+        # 占位、整串结构恒保留(缺数据显示 --,不做整行隐藏)—— ⏱ 字形
+        # Consolas 缺字时走 Qt 字体回退(Segoe UI Symbol)
+        self.timing_lbl = self._mk_lbl("⏱ 首字 -- · 总 --", "", C_MONO, 9)
+        right.addWidget(self.timing_lbl)
         grid.addLayout(left, 1)
         grid.addLayout(right, 1)
         root.addLayout(grid)
 
-        self.today_lbl = self._mk_lbl("--", "", C_MONO, 9)
-        left.addWidget(self._mk_lbl("今日用量", "dim", "Microsoft YaHei UI", 8))
-        left.addWidget(self.today_lbl)
-        self.ttft_lbl = self._mk_lbl("--", "", C_MONO, 9)
-        left.addWidget(self._mk_lbl("首字等待", "dim", "Microsoft YaHei UI", 8))
-        left.addWidget(self.ttft_lbl)
-        self.dur_lbl = self._mk_lbl("--", "", C_MONO, 9)
-        right.addWidget(self._mk_lbl("整体耗时", "dim", "Microsoft YaHei UI", 8))
-        right.addWidget(self.dur_lbl)
-
         # 卡片专属两行(有数据才显示):燃速+耗尽预估 / 套餐剩余。
         # v0.5.0 起条形态也有预算段(横条 plan+burn、竖条紧凑 plan),由
         # _build_bar 各自创建 —— 尾部置 None 纪律只保留真正不创建的 label。
+        # v0.7 T-A:plan 两级化 —— hero 主数字(warn 色,C_MONO 13 Bold,
+        # 基线宽度按 Consolas 13 Bold 量得)+ faint 副文本(比 dim 更淡);
+        # burn 文案与样式不动,仅随新序移到 plan 两级之后
+        self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 13)
+        self.plan_lbl.setFont(QFont(C_MONO, 13, QFont.Bold))
+        root.addWidget(self.plan_lbl)
+        self.plan_sub_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 8)
+        root.addWidget(self.plan_sub_lbl)
         self.burn_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
         root.addWidget(self.burn_lbl)
-        self.plan_lbl = self._mk_lbl("", "warn", "Microsoft YaHei UI", 8)
-        root.addWidget(self.plan_lbl)
+
+        # 次分节:内联样式自诞生即渲染(D4 裁决)—— 零 QSS/objectName 依赖,
+        # 与 _mk_sep 的内联机制同款;T-B 仅把 C_BORDER 字面换成分级色,
+        # 跨 ticket 无中间态(主 sep 维持 QSS #sep 现机制不动)
+        sep2 = QFrame()
+        sep2.setStyleSheet(f"background: {C_BORDER_SUB}; border: none; max-height: 1px;")
+        root.addWidget(sep2)
 
         self.model_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 8)
         root.addWidget(self.model_lbl)
+        # 卡片不再建 ttft/dur(已并入 timing_lbl):显式置 None —— 残留上次
+        # 布局的已销毁对象引用会让 is-not-None 分支摸炸(v0.4.0 None 纪律)
+        self.ttft_lbl = self.dur_lbl = None
 
     def _build_bar(self, vertical: bool = False):
         self._clear()
         root = QVBoxLayout(self) if vertical else QHBoxLayout(self)
-        root.setContentsMargins(8, 1, 8, 1)
-        root.setSpacing(6)
+        root.setContentsMargins(SP["m"], 1, SP["m"], 1)   # 垂直 1px 豁免:横条高度≤30 红线
+        root.setSpacing(SP["s"])
         self._bar_form = "v" if vertical else "h"
         self.dot = self._mk_lbl("●", "dim", "Segoe UI", 8)
         root.addWidget(self.dot)
@@ -859,6 +890,9 @@ class MeterWindow(QWidget):
         #  —— test_stress.py 的存在理由;burn/plan 已改由各形态自行创建)
         self.state_lbl = self.model_lbl = self.est_lbl = self.cache_lbl = None
         self.title_lbl = None
+        # v0.7 T-A 新增的三个卡片专属 label(今日多源副文本/计时合并单格/
+        # 套餐副文本)同样两形态都不建,同点显式置 None
+        self.today_src_lbl = self.timing_lbl = self.plan_sub_lbl = None
 
     # ---- 菜单 ----
     def _popup_menu(self, pos):
@@ -1194,12 +1228,16 @@ class MeterWindow(QWidget):
             elif self.dock in ("left", "right"):
                 self.today_lbl.setText(fmt_k(s.today_tokens))
             else:
-                txt = f"{fmt_k(s.today_tokens)}{cost_txt}"
-                # 多源聚合(>1 源才显示,避免"只有 ZCode"的噪音行)
-                srcs = s.today_by_source
-                if srcs and len(srcs) > 1:
-                    txt += "\n" + " · ".join(f"{n} {fmt_k(t)}" for n, t in srcs)
-                self.today_lbl.setText(txt)
+                # v0.7 T-A:卡片 today 升 hero —— 加『今日』前缀;金额段守卫
+                # (cost=0 整段省略)与 partial ≈ 口径逐字沿旧实现
+                self.today_lbl.setText(f"今日 {fmt_k(s.today_tokens)}{cost_txt}")
+                # 多源聚合(>1 源才显示,避免"只有 ZCode"的噪音行)从 hero
+                # 第二行拆到独立 8pt 副文本,join 文案不变
+                if self.today_src_lbl is not None:
+                    srcs = s.today_by_source
+                    self.today_src_lbl.setText(
+                        " · ".join(f"{n} {fmt_k(t)}" for n, t in srcs)
+                        if srcs and len(srcs) > 1 else "")
         # ---- 预算段(v0.5.0 起条形态也有):卡片=纯文本切换(现状不动);
         # 条形态=按数据显隐 —— 数据缺席整段 setVisible(False)(label+分隔线),
         # 隐藏控件被 _bar_size 跳过,条宽不虚胖;横条 burn 不带卡片 est 后缀
@@ -1219,17 +1257,23 @@ class MeterWindow(QWidget):
                 if self._plan_pct is None:
                     self.plan_lbl.setText("")
                 else:
-                    # 两行:v0.5.1 需求点 4/3 —— 第一行带数据新鲜度(用户
-                    # 知道百分比多新,静默期冻结可见),第二行重置倒计时
-                    # 纯本地递减(缺 fetched_at/next_reset 时该段自然省略)
-                    t = f"套餐剩余 {self._plan_pct:.0f}%"
+                    # v0.7 T-A 两级化:hero 只留主数字,新鲜度/重置倒计时降
+                    # 为 plan_sub_lbl 副文本(faint 色,明显弱于正文)
+                    self.plan_lbl.setText(f"套餐剩余 {self._plan_pct:.0f}%")
+            if self.plan_sub_lbl is not None:
+                if self._plan_pct is None:
+                    self.plan_sub_lbl.setText("")
+                else:
+                    # 副文本拼段规则(D3 钉死表):对在场段各拼『· 』前缀、段
+                    # 间以空格相连 —— 双在场『· 3分钟前 · 1h 30m 后重置』,
+                    # 仅 age『· 3分钟前』,仅 cd『· 1h 30m 后重置』;缺
+                    # fetched_at/next_reset 该段自然省略;pct 缺席则整行置空
+                    # (与 hero 同语义,v0.5.1 单 label 置空语义同源)
                     age = format_age_zh(self._plan_fetched_at)
-                    if age:
-                        t += f" · {age}"
                     cd = format_countdown_hm(self._plan_next_reset)
-                    if cd:
-                        t += f"\n{cd} 后重置"
-                    self.plan_lbl.setText(t)
+                    self.plan_sub_lbl.setText(" ".join(
+                        f"· {seg}" for seg in
+                        (age, f"{cd} 后重置" if cd else None) if seg))
         else:
             plan_on = self._plan_pct is not None
             burn_on = burn > 0
@@ -1268,6 +1312,13 @@ class MeterWindow(QWidget):
                 self.dur_lbl.setText(f"总 {s.last_duration:.1f}s")
             else:
                 self.dur_lbl.setText(f"{s.last_duration:.1f}s")
+        if self.timing_lbl is not None:
+            # v0.7 T-A 卡片专属合并单格:分段占位、整串结构恒保留 —— 卡片
+            # 不做整行隐藏,缺数据显示 --(与条形态 ttft/dur 各自『--』同
+            # 语义);⏱ 字形 Consolas 缺字走 Qt 字体回退
+            tt = f"{s.last_ttft:.1f}s" if s.last_ttft is not None else "--"
+            du = f"{s.last_duration:.1f}s" if s.last_duration is not None else "--"
+            self.timing_lbl.setText(f"⏱ 首字 {tt} · 总 {du}")
         self._refit_dock()
 
     def _refit_dock(self):
@@ -1566,8 +1617,8 @@ class HistoryWindow(QWidget):
         # 否则 quota 未配置时块界会被当成平台真实计费窗来对账)
         blk = QWidget()
         bl = QVBoxLayout(blk)
-        bl.setContentsMargins(0, 6, 0, 0)
-        bl.setSpacing(4)
+        bl.setContentsMargins(0, SP["s"], 0, 0)
+        bl.setSpacing(SP["xs"])
         blk_note = QLabel(
             "每根柱=一个 5 小时窗口:标签为窗口起点~终点,柱高是该时段内的用量"
             "(即上一时刻到终点时刻之间)。块界对齐:已配置 quota(Coding Plan)时"
@@ -1598,8 +1649,8 @@ class HistoryWindow(QWidget):
         head.addWidget(btn)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 10, 12, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(SP["l"], SP["m"], SP["l"], SP["m"])
+        root.setSpacing(SP["m"])
         root.addLayout(head)
         root.addWidget(self.tabs, 1)
         self.refresh()
