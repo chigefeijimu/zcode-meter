@@ -1146,7 +1146,7 @@ class BarChart(QWidget):
         条形最大宽度必须给数值区预留 —— 画满右缘会让数值矩形宽度为负,
         数值被顶出窗口外不可见(最长条正落在 vmax 上)。"""
         n = len(self._items)
-        lbl_w = min(230, int(w * 0.38))
+        lbl_w = min(130, int(w * 0.24))
         x0, right = lbl_w + 8, w - 10
         val_w = 96                                     # 数值区预留(token+¥)
         bar_max = max(right - x0 - val_w - 6, 20)
@@ -1160,7 +1160,7 @@ class BarChart(QWidget):
             cy = y + row_h / 2
             p.setPen(QColor(C_DIM))
             p.setFont(f_lbl)
-            p.drawText(QRect(4, y, lbl_w, row_h), Qt.AlignVCenter | Qt.AlignRight,
+            p.drawText(QRect(4, y, lbl_w, row_h), Qt.AlignVCenter | Qt.AlignLeft,
                        fm.elidedText(label, Qt.ElideRight, lbl_w))
             bw = max(val / vmax * bar_max, 2) if val else 0
             p.setPen(Qt.NoPen)
