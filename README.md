@@ -112,11 +112,14 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
 
 ### `zm_prices.json` — 价格表覆盖（按模型合并）
 
+**多数情况不需要这个文件** —— 内置表已覆盖 bigmodel 全系模型且随官方价目更新。
+需要它的场景：① 官方调价/限时折扣（把新价写进来，如 Flash 五折期）；② 你走私有
+代理/网关，实际单价与刊例不同；③ 内置表缺失的新模型。
+
 ```json
 {
-  "GLM-5.3": {"in": 8, "in_cache": 2, "out": 28},
-  "GLM-4.7-Flash": {"in": 0, "in_cache": 0, "out": 0},
-  "my-proxy-model": {"in": 4, "out": 16}
+  "GLM-5.3-Flash": {"in": 0.4, "in_cache": 0.115, "out": 1.4},
+  "my-proxy-model": {"in": 4, "in_cache": 0.8, "out": 16}
 }
 ```
 
