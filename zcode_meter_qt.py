@@ -1150,8 +1150,8 @@ class BarChart(QWidget):
         # 避免短标签(日期 70px)被 130px 固定列推远柱子
         f_lbl0 = QFont("Microsoft YaHei UI", 8)
         fm0 = QFontMetrics(f_lbl0)
-        longest = max((fm0.horizontalAdvance(t[0]) for t in self._items), default=60)
-        lbl_w = min(150, max(60, longest + 6))
+        longest = max((fm0.horizontalAdvance(t[0]) for t in self._items), default=40)
+        lbl_w = min(150, max(30, longest + 4))   # 紧贴:只留 4px 呼吸,短标签窄列
         x0, right = lbl_w + 3, w - 10          # 标签与条形仅 3px 间距
         val_w = 96                                     # 数值区预留(token+¥)
         bar_max = max(right - x0 - val_w - 6, 20)
