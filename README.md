@@ -55,7 +55,7 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
 | 操作 | 效果 |
 |---|---|
 | 任意位置按住拖动 | 移动窗口（系统原生拖动，跨显示器自由） |
-| 拖到屏幕边缘松手 | 变胶囊条（宽高恰好包住内容，位置跟随松手点） |
+| 拖到屏幕边缘松手 | 变胶囊条（宽高恰好包住内容，沿边自动居中；判定按**鼠标触边**而非窗口侧边） |
 | 按住胶囊条拖离边缘 | 恢复卡片 |
 | 右键 → 贴边/恢复卡片 | 直达四边 / 恢复卡片（形态变化即时保存，重启恢复） |
 | 右键 → 会话 | 列出最近 8 个会话（按 part 最新写入倒序）手动固定统计对象（卡片标题前缀 📌）；「自动跟随(最近活跃)」恢复自动 |
@@ -209,9 +209,7 @@ python tests/run_all.py data       # 只跑数据层单测
 | 告警气泡不弹 | Windows 专注助手开启时系统会抑制托盘气泡（系统行为非本工具 bug）；确认托盘图标存在；同级别同日只提醒一次（看 `zm_alerts.json`） |
 | 燃速/还可撑偏大 | 刚启动或今日活跃不足 60 分钟时窗口未满、燃速被低估，属口径而非 bug（见口径表"燃速"行） |
 | 两源今日对不上 | ZCode 与 Claude 口径不同（Claude 补 cache、含 sidechain），见口径表"多源今日"行 |
-| 位置不被记忆 | 环境残留 `ZM_NO_STATE=1`（回归测试隔离开关，会禁用位置保存/恢复且无提示）——检查后移除；或 `zm_state.json` 所在目录不可写 |
 | exe 版日志找不到 | frozen 模式下 `zm_crash.log`/`zm_debug.log`/`zm_state.json`/`zm_config.json`/`zm_prices.json` 落 **exe 同目录** |
-| 推送要密码 | 仓库已配 `core.sshCommand` 指向系统 OpenSSH，配合 Windows ssh-agent 服务免密 |
 
 ## 路线图
 
