@@ -1313,15 +1313,17 @@ class HistoryWindow(QWidget):
         bl.setContentsMargins(0, 6, 0, 0)
         bl.setSpacing(4)
         blk_note = QLabel(
-            "块界对齐:已配置 quota(Coding Plan)时按平台 5h 计费窗对齐"
-            "(nextResetTime−k×5h,黄色=当前活动块);未配置或不可用时回退锚点="
-            "最早 completed 请求时刻,此时块界为示意、非平台真实计费窗。"
-            "聚合口径=query_source 全部 completed in+out(同今日用量)。")
+            "每根柱=一个 5 小时窗口:标签为窗口起点~终点,柱高是该时段内的用量"
+            "(即上一时刻到终点时刻之间)。块界对齐:已配置 quota(Coding Plan)时"
+            "按平台 5h 计费窗对齐(nextResetTime−k×5h,黄色=当前活动块);"
+            "未配置或不可用时回退锚点=最早 completed 请求时刻,此时块界为示意、"
+            "非平台真实计费窗。聚合口径=query_source 全部 completed in+out"
+            "(同今日用量)。")
         blk_note.setObjectName("dim")
         blk_note.setWordWrap(True)
         bl.addWidget(blk_note)
         bl.addWidget(self.block_chart, 1)
-        self.tabs.addTab(blk, "计费块(5h)")
+        self.tabs.addTab(blk, "计费块(每5h一桶)")
 
         head = QHBoxLayout()
         hint = QLabel("按天=全部来源 in+out(同今日口径,含 ¥ 按刊例价估算);"
@@ -1366,8 +1368,11 @@ class HistoryWindow(QWidget):
         for i, (start_ms, tok, is_cur) in enumerate(blocks):
             if is_cur:
                 cur = i
-            items.append((dt.datetime.fromtimestamp(start_ms / 1000)
-                          .strftime("%m-%d %H:%M"), tok))
+            start = dt.datetime.fromtimestamp(start_ms / 1000)
+            end = start + dt.timedelta(hours=5)
+            # 区间写法:标签是窗口起点,用量属于 起点~起点+5h 之间(消除歧义)
+            items.append((start.strftime("%m-%d %H:%M") + "~"
+                          + end.strftime("%H:%M"), tok))
         self.block_chart.set_items(items)
         self.block_chart.set_highlight(cur)
 
