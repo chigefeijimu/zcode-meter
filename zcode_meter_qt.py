@@ -1060,14 +1060,15 @@ class MeterWindow(QWidget):
             return
         sg = self.screen().availableGeometry()
         g = self.geometry()
+        # 沿边轴保持屏幕居中(与 _set_dock 的居中策略一致,防止重算把居中拉回松手点)
         if self.dock == "top":
-            self.setGeometry(g.x(), sg.top(), w, h)
+            self.setGeometry(sg.center().x() - w // 2, sg.top(), w, h)
         elif self.dock == "bottom":
-            self.setGeometry(g.x(), sg.bottom() - h + 1, w, h)
+            self.setGeometry(sg.center().x() - w // 2, sg.bottom() - h + 1, w, h)
         elif self.dock == "left":
-            self.setGeometry(sg.left(), g.y(), w, h)
+            self.setGeometry(sg.left(), sg.center().y() - h // 2, w, h)
         else:
-            self.setGeometry(sg.right() - w + 1, g.y(), w, h)
+            self.setGeometry(sg.right() - w + 1, sg.center().y() - h // 2, w, h)
 
     def _tick_breath(self):
         self._breath = (self._breath + 0.08) % 1.0
