@@ -28,8 +28,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
-    QPushButton, QStyle, QSystemTrayIcon, QTabWidget, QToolTip, QVBoxLayout,
-    QWidget,
+    QPushButton, QScrollArea, QStyle, QSystemTrayIcon, QTabWidget, QToolTip,
+    QVBoxLayout, QWidget,
 )
 
 from data_engine import (
@@ -1322,7 +1322,14 @@ class HistoryWindow(QWidget):
         blk_note.setObjectName("dim")
         blk_note.setWordWrap(True)
         bl.addWidget(blk_note)
-        bl.addWidget(self.block_chart, 1)
+        # 区间标签行多(29桶),固定窗口高装不下会被裁最后一行 —— 放进滚动区,
+        # 图表按内容要足高度(scroll 里的 widget 不受窗口高压缩)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self.block_chart)
+        self.block_chart.setMinimumHeight(29 * 26 + 12)   # 29桶 × 行高26 + 边距
+        bl.addWidget(scroll, 1)
         self.tabs.addTab(blk, "计费块(每5h一桶)")
 
         head = QHBoxLayout()
