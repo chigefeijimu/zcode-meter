@@ -88,6 +88,17 @@ def main() -> int:
     check("预算段横条尺寸稳定", all(x == hs2[0] for x in hs2), str(hs2))
     check("预算段竖条尺寸稳定", all(x == vs2[0] for x in vs2), str(vs2))
     check("预算段横条高度仍<=30", hs2[0][1] <= 30, str(hs2[0]))
+    # v0.7.x:注入重置倒计时后,条形态 plan 文案应含倒计时段(横条单行/竖条两行)
+    import time as _t
+    win._plan_next_reset = _t.time() * 1000 + 90 * 60_000     # 90 分钟后
+    win._build_bar(); win._apply_snapshot(win.snap)
+    ht = win.plan_lbl.text()
+    check("横条倒计时入条", ht.startswith("套餐剩余 42% · ") and "后重置" in ht, ht)
+    check("横条仍单行(高度<=30)", "\n" not in ht)
+    win._build_bar(vertical=True); win._apply_snapshot(win.snap)
+    vt = win.plan_lbl.text()
+    check("竖条倒计时入条(两行)", vt.startswith("套 42%") and "\n" in vt and len(vt.split("\n")[1]) <= 7, vt)
+    win._plan_next_reset = None
     check("预算段竖条宽度仍<=90", vs2[0][0] <= 90, str(vs2[0]))
     # 数据缺席:整段隐藏(含分隔线),不残留空占位
     win._plan_pct = None

@@ -1235,9 +1235,18 @@ class MeterWindow(QWidget):
             if self.plan_lbl is not None:
                 self.plan_lbl.setVisible(plan_on)
                 if plan_on:
-                    self.plan_lbl.setText(
-                        f"套餐剩余 {self._plan_pct:.0f}%" if self._bar_form == "h"
-                        else f"套 {self._plan_pct:.0f}%")
+                    # 重置倒计时一并入条(纯本地计算,零请求);无数据自然省略
+                    cd = format_countdown_hm(self._plan_next_reset)
+                    if self._bar_form == "h":
+                        t = f"套餐剩余 {self._plan_pct:.0f}%"
+                        if cd:
+                            t += f" · {cd}后重置"
+                        self.plan_lbl.setText(t)
+                    else:
+                        t = f"套 {self._plan_pct:.0f}%"
+                        if cd:
+                            t += f"\n{cd}"
+                        self.plan_lbl.setText(t)
             if self.burn_lbl is not None:
                 self.burn_lbl.setVisible(burn_on)
                 if burn_on:
