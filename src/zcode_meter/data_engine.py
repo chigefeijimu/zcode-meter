@@ -840,6 +840,7 @@ class DataEngine(threading.Thread):
             (sid,) = con.execute(
                 "SELECT session_id FROM part"
                 " WHERE session_id NOT LIKE 'sess_subagent%'"
+                "   AND session_id NOT LIKE 'sess_dwf-%'"
                 " ORDER BY rowid DESC LIMIT 1").fetchone()
             con.close()
             return sid or ""
@@ -1163,7 +1164,8 @@ class DataEngine(threading.Thread):
             rows = con.execute(
                 "SELECT p.session_id, s.title FROM"
                 " (SELECT session_id, MAX(rowid) AS mr FROM part"
-                "  WHERE session_id NOT LIKE 'sess_subagent%' GROUP BY session_id) p"
+                "  WHERE session_id NOT LIKE 'sess_subagent%'"
+                "    AND session_id NOT LIKE 'sess_dwf-%' GROUP BY session_id) p"
                 " LEFT JOIN session s ON s.id = p.session_id"
                 " ORDER BY p.mr DESC LIMIT ?", (limit,)).fetchall()
             con.close()
@@ -1322,6 +1324,7 @@ class DataEngine(threading.Thread):
                 " FROM model_usage mu LEFT JOIN session s ON s.id = mu.session_id"
                 " WHERE mu.status='completed' AND mu.query_source='main_turn'"
                 " AND mu.session_id NOT LIKE 'sess_subagent%'"
+                " AND mu.session_id NOT LIKE 'sess_dwf-%'"
                 " AND mu.rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
                 " GROUP BY mu.session_id"
                 " ORDER BY MAX(mu.started_at) DESC LIMIT ?",

@@ -34,6 +34,10 @@ def test_active_session_not_subagent():
     sid = e._latest_session()
     check("活跃会话非空", bool(sid), sid)
     check("活跃会话不是 subagent", not sid.startswith("sess_subagent"), sid)
+    # v0.7.x:工作流会话(sess_dwf-dwfrun-*)同样不得劫持 —— 实测其 part 最新行
+    # 在工作流运行期间持续抢占,而其 query_source=workflow_child 在会话统计
+    # (main_turn)下一行不中,导致出入/缓存/均速全掉零
+    check("活跃会话不是 dwf 工作流会话", not sid.startswith("sess_dwf-"), sid)
     e.stop()
 
 
