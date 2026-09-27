@@ -1146,7 +1146,12 @@ class BarChart(QWidget):
         条形最大宽度必须给数值区预留 —— 画满右缘会让数值矩形宽度为负,
         数值被顶出窗口外不可见(最长条正落在 vmax 上)。"""
         n = len(self._items)
-        lbl_w = min(130, int(w * 0.24))
+        # 标签列按内容自适应:取最长标签的实际渲染宽度(上限 150,下限 60),
+        # 避免短标签(日期 70px)被 130px 固定列推远柱子
+        f_lbl0 = QFont("Microsoft YaHei UI", 8)
+        fm0 = QFontMetrics(f_lbl0)
+        longest = max((fm0.horizontalAdvance(t[0]) for t in self._items), default=60)
+        lbl_w = min(150, max(60, longest + 6))
         x0, right = lbl_w + 3, w - 10          # 标签与条形仅 3px 间距
         val_w = 96                                     # 数值区预留(token+¥)
         bar_max = max(right - x0 - val_w - 6, 20)
