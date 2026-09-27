@@ -29,6 +29,57 @@ def db() -> sqlite3.Connection:
     return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
 
 
+def test_fetch_total_usage():
+    """全部历史总计:合成 temp 库对账 —— tokens=全库 completed in+out 之和
+    (cancelled 不计,全 query_source),金额按模型分组刊例价,未知模型
+    置 partial。硬编码手算,不调 cost_of 防自证。"""
+    import shutil, tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_tot_"))
+    orig = zsrc.DB_PATH
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute(
+            "CREATE TABLE model_usage (started_at INTEGER, model_id TEXT,"
+            " status TEXT, query_source TEXT, input_tokens INTEGER,"
+            " cache_read_input_tokens INTEGER, output_tokens INTEGER)")
+        t0 = de.today0_ms()
+        con.executemany(
+            "INSERT INTO model_usage VALUES (?,?,?,?,?,?,?)",
+            [
+                # GLM-5.3: in 2M(含 cache 1M) out 0.5M →
+                # (1M*8 + 1M*2 + 0.5M*28)/1M = ¥24.0, tokens 2.5M
+                (t0, "GLM-5.3", "completed", "main_turn",
+                 2_000_000, 1_000_000, 500_000),
+                # GLM-5.3-Flash: in 1M(含 cache 0.8M) out 0.5M →
+                # (0.2M*0.8 + 0.8M*0.23 + 0.5M*2.8)/1M = ¥1.824, tokens 1.5M
+                (t0, "GLM-5.3-Flash", "completed", "subagent",
+                 1_000_000, 800_000, 500_000),
+                # 未知模型:¥0 + partial, tokens 0.15M
+                (t0, "mystery", "completed", "main_turn",
+                 100_000, 0, 50_000),
+                # cancelled 不计
+                (t0, "GLM-5.3", "cancelled", "main_turn",
+                 9_000_000, 0, 9_000_000),
+            ])
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        e = de.DataEngine(queue.Queue(maxsize=1))
+        tok, cny, partial = e.fetch_total_usage()
+        # 手算:tokens = 2.5M + 1.5M + 0.15M = 4.15M
+        # 金额 = 24.0 + 1.824 + 0 = ¥25.824 → round(…,2)=25.82
+        check("总计 tokens=全库 in+out", tok == 4_150_000, str(tok))
+        check("总计金额=分组计价之和", cny == 25.82, str(cny))
+        check("总计 partial(含未知模型)", partial is True)
+        e.stop()
+    finally:
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_active_session_not_subagent():
     e = DataEngine(queue.Queue(maxsize=1))
     sid = e._latest_session()
@@ -1598,6 +1649,7 @@ def test_trend_forecast_hand_computed():
 
 
 if __name__ == "__main__":
+    print("== test_fetch_total_usage =="); test_fetch_total_usage()
     print("== test_active_session_not_subagent =="); test_active_session_not_subagent()
     print("== test_today_usage_matches_full_scope ==");  test_today_usage_matches_full_scope()
     print("== test_session_stats_scoped_main_turn ==");  test_session_stats_scoped_main_turn()

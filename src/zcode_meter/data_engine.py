@@ -1196,6 +1196,30 @@ class DataEngine(threading.Thread):
         except sqlite3.Error:
             return []
 
+    def fetch_total_usage(self) -> tuple:
+        """全部历史总计 (tokens, cny, partial):completed 全来源 in+out(同今日
+        口径)按模型分组计价后求和。刻意不加 MAX_SCAN_ROWS floor —— 总计的
+        语义就是完整历史(防御上限是为图表性能,不为账目截断);当前库规模
+        的分组 SUM 为毫秒级,一年后仍可接受。金额为刊例价下限(同今日口径)。"""
+        try:
+            con = connect_ro()
+            rows = con.execute(
+                "SELECT model_id, COALESCE(SUM(input_tokens),0),"
+                " COALESCE(SUM(cache_read_input_tokens),0),"
+                " COALESCE(SUM(output_tokens),0)"
+                " FROM model_usage WHERE status='completed'"
+                " GROUP BY model_id").fetchall()
+            con.close()
+        except sqlite3.Error:
+            return (0, 0.0, False)
+        tok_total, cny_total, partial = 0, 0.0, False
+        for _m, i_, c_, o_ in rows:
+            cny, p = cost_of(self.prices, _m, i_ or 0, o_ or 0, c_ or 0)
+            tok_total += (i_ or 0) + (o_ or 0)
+            cny_total += cny
+            partial = partial or p
+        return (tok_total, round(cny_total, 2), partial)
+
     def fetch_daily_usage_cost(self, days: int = 30) -> list:
         """按天 (date, tokens, cny):token 口径与 fetch_daily_usage 完全一致。
         该方法的二元组形状被 HistoryWindow.refresh 的 dict() 转换与单测

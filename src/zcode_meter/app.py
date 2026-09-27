@@ -1623,11 +1623,15 @@ class HistoryWindow(QWidget):
         # 近 7 天趋势外推:日均虚线画进按天图 + 头部 hint 追加『本月预计』。
         # 窗口零用量(空库/近 7 天没用)→ trend_forecast 返回 None,线与标注
         # 双双不出现(宁缺勿错:0 日均外推的『本月预计 ¥0.00』无信息量);
+        # 全部历史总计(全量无防御截断,总计语义即完整):top hint 恒显
+        t_tok, t_cny, t_p = self.eng.fetch_total_usage()
+        total_txt = (f" · 全部历史 {fmt_k(t_tok)} tokens · "
+                     + ("≈" if t_p else "") + f"¥{t_cny:,.0f}")
         # partial(窗口内含未知模型)时两处 ¥ 前加 ≈,金额为下限
         fc = trend_forecast(self.eng.fetch_daily_model_usage(7))
         if fc is None:
             self.daily_chart.set_reference(None, "")
-            self.hint.setText(self.HINT_BASE)
+            self.hint.setText(self.HINT_BASE + total_txt)
         else:
             self.daily_chart.set_reference(
                 fc["avg_tokens"], f"日均 {fmt_k(fc['avg_tokens'])}/天")
@@ -1635,7 +1639,7 @@ class HistoryWindow(QWidget):
             self.hint.setText(
                 self.HINT_BASE +
                 f" · 近7天日均 {approx}¥{fc['avg_cny']:.2f}/天,"
-                f"本月预计 {approx}¥{fc['forecast_cny']:.2f}")
+                f"本月预计 {approx}¥{fc['forecast_cny']:.2f}" + total_txt)
         rows = self.eng.fetch_session_usage(20)
         self.sess_chart.set_items(
             [((title or sid[:12]) + f" ·{cnt}次", tok)
