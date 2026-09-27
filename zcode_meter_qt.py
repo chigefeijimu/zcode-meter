@@ -1147,7 +1147,7 @@ class BarChart(QWidget):
         数值被顶出窗口外不可见(最长条正落在 vmax 上)。"""
         n = len(self._items)
         lbl_w = min(130, int(w * 0.24))
-        x0, right = lbl_w + 8, w - 10
+        x0, right = lbl_w + 3, w - 10          # 标签与条形仅 3px 间距
         val_w = 96                                     # 数值区预留(token+¥)
         bar_max = max(right - x0 - val_w - 6, 20)
         row_h = min(26, max((h - 8) / max(n, 1), 13))
