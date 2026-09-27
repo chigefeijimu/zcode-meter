@@ -50,6 +50,21 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
   -Value '"C:\Windows\py.exe" -w "<你的路径>\zcode-meter\src\zcode_meter\app.py"'
 ```
 
+## CLI 用量速查（无界面）
+
+不想开悬浮窗、只想在终端快速看一眼近期用量时，用 CLI 伴侣（不启动 Qt/托盘/轮询线程）：
+
+```bash
+cd src && python -m zcode_meter cost --days 30     # 模块形态（cwd 必须在 src）
+python src/zcode_meter/__main__.py cost --days 7   # 脚本直跑形态（仓库根即可）
+```
+
+输出为按天文本表（日期 / tokens / ¥）+ 合计行；窗口含价格表未覆盖的模型时金额为下限并附注脚（`≈`），口径与按天图表完全一致（ZCode-DB-only、`completed` 全部 query_source、按刊例价估算）。
+
+- `--days` 默认 30，范围 1..366，超界自动截断；非法值（如非整数）打印错误并以退出码 2 结束
+- 本仓库无 `pyproject.toml`/`setup.py`（包在 `src/` 下），模块形态必须 `cd src` 或设 `PYTHONPATH=src`；在仓库根直接 `python -m zcode_meter` 会命中根目录兼容 shim `zcode_meter.py`（同名遮蔽，会转去启动 GUI 而非 CLI）
+- CLI 只做只读查询（读 `zm_config.json`/`zm_prices.json`，不写任何 zm_* 业务/状态文件；`import` 数据层既有的 faulthandler 追加 `zm_crash.log` 属全局行为，与 GUI 一致）
+
 ## 交互
 
 | 操作 | 效果 |
@@ -59,8 +74,8 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
 | 按住胶囊条拖离边缘 | 恢复卡片 |
 | 右键 → 贴边/恢复卡片 | 直达四边 / 恢复卡片（形态变化即时保存，重启恢复） |
 | 右键 → 会话 | 列出最近 8 个会话（按 part 最新写入倒序）手动固定统计对象（卡片标题前缀 📌）；「自动跟随(最近活跃)」恢复自动 |
-| 右键 → 历史用量图表 | 打开独立窗口：按天(近30天，token+¥)/按会话(近20个)/计费块(5h) 三页签，可刷新；三图均为竖柱，会话/计费块页长标签 45° 斜排并按空间省略，**悬停柱子显示完整标签与数值** |
-| 右键 → 设置 | 打开设置窗：quota API Key（密码框，界面任何位置不回显明文）/日预算/告警阈值；保存即写入 `zm_config.json` 并热生效（套餐轨立即重启轮询、引擎与告警即时读新值），失败时窗内红字报错且不生效 |
+| 右键 → 历史用量图表 | 打开独立窗口：按天(近30天，token+¥)/按会话(近20个)/计费块(5h) 三页签，可刷新；三图均为水平条（v0.5.2 起统一，左侧长标签按空间省略），**悬停显示完整标签与数值**；按天图另有近 7 天日均虚线与头部『本月预计 ¥』标注（近 7 天零用量时不显示） |
+| 右键 → 设置 | 打开设置窗：quota API Key（密码框，界面任何位置不回显明文）/日预算/告警阈值/quota 刷新间隔；保存即写入 `zm_config.json` 并热生效（套餐轨立即重启轮询、刷新档位就地热更、引擎与告警即时读新值），失败时窗内红字报错且不生效 |
 | 右键 → 收起到托盘 | 主窗隐藏到系统托盘（无托盘环境不显示此项）；托盘菜单 显示/隐藏、退出；单击托盘图标恢复 |
 | 右键 → 退出 | 退出（退出时保存位置与形态，下次启动恢复） |
 
@@ -79,10 +94,10 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
 | 燃速 / 还可撑 X 小时 | 燃速 = 最近 **60 分钟**滚动窗口内的 token（及金额）之和；`还可撑 = (日预算−今日花费) ÷ 燃速¥/h`。**活跃不足 60 分钟时窗口未满、燃速被低估、预估偏大，属窗口口径而非 bug**；燃速为 0 或未配日预算时不显示 |
 | 多源今日（卡片第二行） | 各源今日用量聚合：ZCode 同今日口径；Claude = `input_tokens + cache_read + cache_creation`（**Anthropic 口径 input 不含 cache，须补齐后才与 ZCode 可比**），含 sidechain 行（对齐 ZCode 含 subagent），按 message.id 去重但跳过零用量/error 行，时间戳 UTC 转本地定天界。**两源口径不同，合计对不上属预期，勿当 bug** |
 | 计费块（5h 页签） | 按 5 小时窗聚合 `completed` 的 **query_source 全部** in+out（同今日 token 口径）。块界对齐：已配置 quota 时按 `nextResetTime−k×5h`（平台真实计费窗，黄色高亮=当前活动块）；未配置时回退锚点=最早 completed 请求时刻，**此时块界为示意、非平台真实计费窗** |
-| 套餐剩余（quota 轨） | GET `open.bigmodel.cn/api/monitor/usage/quota/limit`（只读，**事件驱动+节流**：ZCode 有新请求完成即视为「有消耗」触发刷新，活跃期（过去 1h 内有请求）常态最长 3 分钟一次，静默期（>1h 无任何请求）暂停查询，最小间隔 60s 硬闸；启动/设置界面改 key 后立即查一次）：`percentage` 为**已用**百分比，剩余 = 100−percentage，取 TOKENS_LIMIT 中 `number==5` 的条目即 5h 计费窗。只有剩余% 需要网络刷新；重置倒计时纯本地每分钟递减、不发任何请求。旁注查询时间（如「· 3分钟前」），静默期数据冻结属预期、以新鲜度标注为准。接口为社区逆向的非公开文档接口，结构变化时该行不显示（首跑失败会把响应片段落 `zm_debug.log` 便于修） |
+| 套餐剩余（quota 轨） | GET `open.bigmodel.cn/api/monitor/usage/quota/limit`（只读，**事件驱动+节流**：ZCode 有新请求完成即视为「有消耗」触发刷新，活跃期（过去 1h 内有请求）常态最长 3 分钟一次，静默期（>1h 无任何请求）暂停查询，最小间隔 60s 硬闸；启动/设置界面改 key 后立即查一次；可在设置窗改为**固定间隔轮询**，改档后静默期不再暂停，见配置节 `quota_refresh`）：`percentage` 为**已用**百分比，剩余 = 100−percentage，取 TOKENS_LIMIT 中 `number==5` 的条目即 5h 计费窗。只有剩余% 需要网络刷新；重置倒计时纯本地每分钟递减、不发任何请求。旁注查询时间（如「· 3分钟前」），静默期数据冻结属预期、以新鲜度标注为准（固定间隔档按设置间隔刷新、无静默冻结）。接口为社区逆向的非公开文档接口，结构变化时该行不显示（首跑失败会把响应片段落 `zm_debug.log` 便于修） |
 | 预算告警（双轨） | quota 轨 = 套餐 5h 窗剩余%；按量轨 = (日预算−今日花费 ZCode 口径) ÷ 日预算。默认阈值剩余 20% / 10% 各提醒一次，**同级别同日只提醒一次**、跨日自动重置（状态存 `zm_alerts.json`），经托盘气泡派发 |
 | 会话跟随 | 按 `part` 表最新写入行判定（排除 `sess_subagent_*`）；自动（最近活跃）或手动固定 |
-| 按天图表 | `completed` **全来源** in+out（同今日口径），本地午夜天界；柱身第二行为当日 ¥（按刊例价，同今日金额口径，含未知模型时为下限） |
+| 按天图表 | `completed` **全来源** in+out（同今日口径），本地午夜天界；柱身第二行为当日 ¥（按刊例价，同今日金额口径，含未知模型时为下限）。**历史聚合防御：仅统计最近 10 万行，超出上限的更早记录不计（当前约 78 天用量）**——历史图表查询（按天/计费块/按会话）同受此防线保护，以防未来"图表变小"被误报为 bug |
 | 按会话图表 | 该会话 `main_turn`、不含 subagent 会话（与卡片逐字对齐；**三图口径不同，合计对不上账属预期，勿当 bug**） |
 | 位置记忆 | 退出/形态变化时保存 x/y/贴边方向到 `zm_state.json`；恢复时按屏幕可视区夹取（分辨率变化/拔显示器后位置失效会被夹回，完全离屏则回主屏默认位） |
 
@@ -115,7 +130,8 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
 - `quota_api_key`：Coding Plan 套餐轨用。填写后按**事件驱动+节流**查询套餐余量：ZCode 有新请求完成即触发刷新，活跃期（过去 1h 内有请求）常态最长 3 分钟一次，静默期（>1h 无请求）暂停查询，最小间隔 60s；启动与设置界面改 key 后立即查一次。卡片显示「套餐剩余 N% · N分钟前」与本地计算的「Xh Ym 后重置」（倒计时零请求）、计费块按真实 5h 窗对齐块界；不填则该轨整体不显示（优雅降级）。**该文件含密钥，已加入 `.gitignore`，切勿提交**；工具的日志与调试输出不会打印 key 明文，设置窗中该字段为密码框（掩码显示）
 - `daily_budget_cny`：按量付费日预算（元）。填写后显示燃速/还可撑 X 小时并启用按量告警轨
 - `alert_pct`：告警阈值（剩余百分比，降序），默认 `[20, 10]` 即 20% 与 10% 各提醒一次
-- **设置界面（右键 → 设置）保存即生效**：原子落盘（临时文件 + `os.replace`）成功后立即重启套餐轨轮询（清号/换号时旧账号数据零残留）、引擎与告警即时读新值，无需重启工具；直接手改文件仍需重启
+- `quota_refresh`（可选）：quota 刷新档位。缺省 = **自动（事件驱动）**，即上面 `quota_api_key` 描述的节流语义；也可在设置窗「quota 刷新间隔」下拉改为**固定间隔轮询**（预设 3 / 5 / 15 / 30 分钟，或手写 60~86400 秒之间的任意整数）——固定档忽略活动/静默信号、到点就查（静默期不再暂停，代价是无人值守时也按间隔发只读请求），启动/换 key 后仍立即查一次。合法值仅 `"auto"` 或 60~86400 的整数秒，其他值整体忽略（视为自动）；选择「自动」保存时该键**整体省略**（不写入文件），旧三键配置文件不受影响
+- **设置界面（右键 → 设置）保存即生效**：原子落盘（临时文件 + `os.replace`）成功后立即重启套餐轨轮询（清号/换号时旧账号数据零残留）、引擎与告警即时读新值，无需重启工具；quota 刷新档位改动**就地热更**（不重启轮询线程，1 秒内生效）；直接手改文件仍需重启
 - 同一天内新增/调低告警阈值后，新级别若当日已跌破会**立即补发一次气泡**（之后同级别同日仍只提醒一次，属预期而非重复告警）
 - 保存失败（配置目录不可写，如 exe 放在只读目录）时设置窗红字报错且**不生效**，配置保持原样
 
@@ -135,6 +151,27 @@ Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zco
 - 单位：元/百万 tokens。内置表为 2026-09 从 [bigmodel 官方定价文档](https://docs.bigmodel.cn/cn/guide/start/pricing) 转录的按量刊例价（`GLM-5.3-Flash` 取标准牌价，限时折扣期实付更低；官方按上下文分档计费的模型取最高档保守估算）
 - 已有模型可只覆盖个别档位（如只改 `in_cache`）；新增模型需 `in`/`out` 必备，缺 `in_cache` 档时该模型 cache_read 按 in 全价计
 - 坏文件（非 JSON）整体忽略回退内置表；模型条目非法则跳过该条目
+
+## 隐私与安全
+
+**网络唯一出口**：全程只有一种外部请求 —— quota 轨的只读 `GET https://open.bigmodel.cn/api/monitor/usage/quota/limit`，且仅在用户配置 `quota_api_key` 后发起；其余一切统计（用量/速度/金额/图表）均来自本机文件读取，不访问任何其他网络端点。
+
+**API Key 三层防护**：
+
+- **不入库**：`zm_config.json`（存 `quota_api_key`）已加入 `.gitignore`（实测该条目在第 13 行；`.gitignore` 中 `zm_*` 条目均为 basename 模式，src 布局移动文件后仍全部命中），不会被提交；
+- **不回显**：设置窗中该字段为密码框（`QLineEdit.EchoMode.Password`，掩码显示），界面任何位置不出现明文；
+- **不落日志**：任何日志与调试路径都不得打印 key 明文（数据层红线注释，泄漏面专查项）；quota 首跑失败落 `zm_debug.log` 的是响应体片段（key 只在请求头、响应体不含 key），同样无泄漏面。
+
+**git 历史零密钥残留**（主张严格限定为下列六个文件）：六个密钥/状态文件 `zm_config.json` / `zm_prices.json` / `zm_alerts.json` / `zm_state.json` / `zm_debug.log` / `zm_crash.log` 在全部提交历史中零记录（`git log --all -- <六文件>` 输出为空）。如实注脚：`zm_stdout.log` 曾被提交 `2622bcf` 误提交（内容为空文件）并由 `08624e8` 移出跟踪，现由 `.gitignore` 规则覆盖 —— 密钥类文件从未进入仓库。
+
+**只读，不干扰被监控工具**：ZCode 数据库一律走 `sqlite3` 的 `mode=ro` 只读连接（`connect_ro`）；Claude 用量为 `~/.claude/projects/**/*.jsonl` 只读解析；本工具绝不写 ZCode 或 Claude 的任何文件。
+
+**本工具自身落盘文件**（完整清单，不止上述六个）：
+
+- `zm_config.json` / `zm_prices.json` / `zm_alerts.json` / `zm_state.json` / `zm_debug.log` / `zm_crash.log` —— 六个配置/状态/日志文件，均锚定 `app_dir()`（开发模式=仓库根，frozen=exe 同目录，见「配置」节的落点说明）；
+- `zm_usage_export.csv` —— 仅在右键「导出 CSV」时写出的用量明细（日期/模型/token/金额，无密钥），与上述六文件同锚 `app_dir()`，同样已加入 `.gitignore`（用户数据不进库）；
+- `zm_error.log` —— 仅两处 UI 异常兜底路径写入 traceback（不含密钥），落点相对启动时的工作目录（既有行为）；
+- 以上即本工具运行期写出的全部持久文件（配置保存的瞬态临时文件写完即原子改名，不残留）。
 
 ## 打包（单文件 exe）
 
@@ -167,10 +204,16 @@ zcode-meter/
 ├── src/zcode_meter/
 │   ├── __init__.py      # 包标识 + 版本号(零副作用,不 import 包内模块)
 │   ├── data_engine.py   # 数据层(无 UI 依赖):日志tail + SQLite轮询 + 流式估算 + 会话跟随
-│   │                    #   + 价格表/金额 + 多用量源(ZCode/Claude) + quota 轮询线程
-│   │                    #   + 预算告警状态机 + 5h 计费块(QuotaMonitor 仅由 UI 实例化)
+│   │                    #   + 价格表/金额 + quota 轮询线程 + 预算告警状态机
+│   │                    #   + 5h 计费块(QuotaMonitor 仅由 UI 实例化)
+│   ├── sources/         # 用量源包(Provider 配置化):base=UsageSource 接口
+│   │                    #   zcode=ZCode 源 + ZCODE_DIR/DB_PATH/connect_ro/today0_ms
+│   │                    #   唯一定义 / claude=Claude 源;__init__.discover_sources()
+│   │                    #   自动发现,data_engine re-import 保住旧导入路径
 │   ├── app.py           # Qt UI 入口(原 zcode_meter_qt.py):原生拖动/贴边胶囊/动态尺寸
 │   │                    #   + 托盘/告警派发
+│   ├── __main__.py      # CLI 伴侣(python -m zcode_meter / 脚本直跑):无界面
+│   │                    #   用量速查,零 Qt,不启轮询线程(见「CLI 用量速查」)
 │   └── legacy_tk.py     # 旧 tkinter 版(弃用,仅留档)
 ├── zcode_meter.py       # 兼容 shim:旧命令转发到 src/zcode_meter/app.py(v0.6.0 过渡)
 ├── README.md / CHANGELOG.md / LICENSE / .gitignore
@@ -197,6 +240,60 @@ python tests/run_all.py data       # 只跑数据层单测
 2. **界面层** `src/zcode_meter/app.py`：`_build_card`/`_build_bar` 加 label（竖条不显示的字段记得显式置 `None`，防悬空引用）；`_apply_snapshot` 渲染
 3. **单测** `tests/test_data_engine.py`：对着 db 手算期望值加断言（口径回归就是这么防的）
 
+### 如何贡献一个源（新 CLI 接入）
+
+用量源走 `src/zcode_meter/sources/` 包做 Provider 配置化：`DataEngine` 构造时
+`discover_sources()` 自动枚举包内源模块。**新增一个 CLI 支持只需加一个文件、
+零改动 `data_engine.py`** —— 新模块放进包即可被自动发现（源不做运行时热插拔：
+运行中新增的文件不会自动加载，重启生效）。
+
+模块模板（`src/zcode_meter/sources/mycli.py`，发现机制只认模块级 `Source`
+这个名字，类名本身随意；必须可无参构造）：
+
+```python
+from .base import UsageSource
+
+
+class MyCliSource(UsageSource):
+    """MyCLI 源:只读解析 ~/.mycli/usage.jsonl。
+
+    口径注释要求（必须写清,不写会被后人当 bug 修错方向）:
+    - in/out 各自的定义(是否含 cache 命中、是否含 subagent/子任务行);
+    - 天界时区(timestamp 是 UTC 还是本地,天界按哪个时区的午夜切)。
+    两源口径不同时卡片并列展示各自数字,合计对不上属预期(见口径表)。
+    """
+
+    name = "MyCLI"     # 卡片 today_by_source 聚合行显示名
+    order = 20         # discover_sources 排序键(order 小者在前,同 order 按
+                       # 模块名);内置 ZCode=0 / Claude=10,第三方建议 >=20
+
+    def is_available(self) -> bool:
+        ...            # 数据落点不存在等情形返回 False(优雅降级,不炸)
+
+    def today_usage(self) -> int:
+        ...            # 今日 in+out 总量(本地午夜天界)
+
+    def daily_usage(self, days: int = 30) -> list:
+        ...            # [(iso日期, tokens)] 升序,与 ZCode 源同形
+
+
+Source = MyCliSource   # 发现约定:模块级 Source 属性 = 本模块的源类
+```
+
+红线（违反即回归）：
+
+- **只读**：绝不写目标 CLI 的任何文件（ZCode 走 `connect_ro()` 的 `mode=ro`，
+  Claude 只读解析 jsonl）
+- **严禁在 sources 包内 `import data_engine`**：反向导入会造成循环导入/双模块
+  实例，`QuotaMonitor` 与缓存身份分裂（src 布局迁移踩过的同类坑）
+- **金额/燃速口径钉死 ZCode-DB-only**：新源只进 `today_by_source` 聚合展示，
+  不要并入金额（见 `sources/base.py` 的 `UsageSource` docstring）
+- **frozen（exe）包新增源必须重新打包**，且 PyInstaller 静态分析发现不了
+  pkgutil 动态导入的模块 —— 需在 `sources/__init__.py` 的字面导入行补上模块
+  名（或给打包命令加 `--hiddenimport`），否则 exe 启动即 `ImportError`
+- 新源请配单测（合成数据手算对账，参考 `test_claude_source_synthetic` /
+  `test_discover_sources`）
+
 ## 路线图
 
 - [x] 位置记忆（重启回到上次位置/形态）
@@ -205,5 +302,5 @@ python tests/run_all.py data       # 只跑数据层单测
 - [x] 打包单文件 exe（PySide6 + PyInstaller，见「打包」章节）
 - [x] 成本估算 + 双轨预算告警 + 燃速预估（v0.4.0，见「配置」与口径表）
 - [x] 5 小时计费块视角（v0.4.0）
-- [x] 多 CLI 聚合：用量源抽象 + Claude Code 源（v0.4.0，更多源按 `UsageSource` 接口扩展）
+- [x] 多 CLI 聚合：用量源抽象 + Claude Code 源（v0.4.0，更多源按 `UsageSource` 接口扩展；现走 `sources/` 包自动发现，见「如何贡献一个源」）
 - [x] 托盘模式（v0.4.0）

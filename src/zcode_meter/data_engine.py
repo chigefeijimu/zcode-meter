@@ -1,12 +1,16 @@
 """zcode-meter 数据层:日志 tail + SQLite 轮询 + 流式估算(UI 无关,tk/Qt 共用)。
 
 v0.4.0 起另含:价格表/金额估算、多用量源(Claude 只读解析)、quota 刷新线程、
-预算告警状态机、5h 计费块聚合 —— 类定义都在本模块,但 QuotaMonitor 只由
-zcode_meter_qt.MeterWindow 实例化(见各类 docstring 的启动位置钉死说明)。
+预算告警状态机、5h 计费块聚合 —— 但 QuotaMonitor 只由 zcode_meter_qt.
+MeterWindow 实例化(见各类 docstring 的启动位置钉死说明)。
 v0.5.1 起 quota 由 300s 盲轮询改为事件驱动+节流(见 quota_fetch_decision)。
+用量源已迁 sources/ 包(Provider 配置化):UsageSource/ZCodeSource/ClaudeSource
+与 ZCODE_DIR/DB_PATH/connect_ro/today0_ms 的唯一定义都在那边,本模块 re-import
+保住全部旧导入路径(见下方 import 块),源行为零变化。
 """
 from __future__ import annotations
 
+import calendar
 import ctypes
 import ctypes.wintypes as wt
 import datetime as dt
@@ -20,6 +24,18 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
+
+# ---- 用量源包(sources/,Provider 配置化)----
+# UsageSource/ZCodeSource/ClaudeSource 与 ZCODE_DIR/DB_PATH/connect_ro/today0_ms
+# 的唯一定义都在 sources/(base.py/zcode.py/claude.py);此处模块级 re-import 是
+# 兼容契约:tests 与外部脚本沿用 from zcode_meter.data_engine import DB_PATH /
+# de.today0_ms() 等全部旧导入路径,一个都不能断(test_package 的 hasattr 同理)。
+# sources 包内严禁反向 import data_engine —— 循环导入会让本模块加载成两个
+# 实例、QuotaMonitor 与缓存身份分裂(v0.6.0 双路径 import 红线)。
+from .sources import (UsageSource, ZCodeSource,  # noqa: F401  纯 re-export
+                      ClaudeSource, discover_sources)
+from .sources.zcode import (ZCODE_DIR, DB_PATH,  # noqa: F401  DB_PATH 为纯 re-export
+                            connect_ro, today0_ms)
 
 
 def app_dir() -> str:
@@ -51,8 +67,9 @@ try:
 except Exception:
     pass
 
-ZCODE_DIR = os.path.expanduser("~/.zcode/cli")
-DB_PATH = os.path.join(ZCODE_DIR, "db", "db.sqlite")
+# ZCODE_DIR/DB_PATH/connect_ro/today0_ms 的唯一定义已下沉 sources/zcode.py
+# (顶部 re-import);LOG_DIR/ROLL_DIR 就地派生 —— 日志 tail 与回退会话识别
+# 仍是 data_engine 职责,不随只读连接下沉源包。
 LOG_DIR = os.path.join(ZCODE_DIR, "log")
 ROLL_DIR = os.path.join(ZCODE_DIR, "rollout")
 
@@ -60,22 +77,22 @@ DEBUG = os.environ.get("ZM_DEBUG") == "1"
 DBG_PATH = os.path.join(app_dir(), "zm_debug.log")
 
 
-def connect_ro() -> sqlite3.Connection:
-    """只读连接:引擎轮询与 UI 侧图表/菜单查询共用,统一 open 参数。"""
-    return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=2)
-
-
-def today0_ms() -> int:
-    """本地午夜毫秒时间戳:今日用量(_poll_stats)与按天图表(fetch_daily_usage)
-    必须共用同一午夜口径,否则两张图对不上账。"""
-    return int(dt.datetime.now().replace(hour=0, minute=0, second=0,
-                                         microsecond=0).timestamp() * 1000)
-
-
 def dbg(msg: str):
     if DEBUG:
         with open(DBG_PATH, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} {msg}\n")
+
+
+# 历史聚合防御上限:历史图表四查询(fetch_daily_usage / fetch_daily_usage_cost /
+# fetch_billing_blocks / fetch_session_usage)只统计最近 MAX_SCAN_ROWS 行
+# (rowid 下限),防库无限增长后聚合查询随历史线性变慢。实测库约 3.95 万
+# completed 行/31 天、日增约 1.3k,100k ≈ 当前 78 天用量,对现有数据零影响;
+# 今日轮询(_poll_stats / ZCodeSource.today_usage / Claude 扫描)刻意不设此闸
+# (今日口径是命根子,不做任何窗口裁剪)。超出上限的更早记录不计入历史图表,
+# 属预期行为而非『图表变小』bug(README 口径表已加注)。四函数在调用时读本
+# 常量并以 SQL 占位符参数传入(禁字符串内插),单测 monkeypatch 本常量即可
+# 调整窗口 —— 参数绑定是可 patch 性的证据。
+MAX_SCAN_ROWS = 100_000
 
 
 # ---------------------------------------------------- 配置/价格/守卫(v0.4.0) ---
@@ -98,9 +115,29 @@ def _is_num(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 
 
+def _norm_quota_refresh(v):
+    """quota_refresh(设置窗『quota 刷新间隔』档位)合法性判定与规范化:
+    合法值 = "auto"(事件驱动+节流,缺省语义)或 int∈[60,86400] 秒的固定
+    间隔轮询 —— 下限 60 与 QUOTA_MIN_GAP 硬闸同义(用户显式选的间隔不得
+    比 auto 档硬闸更密),上限 24h 防手改文件写出『一天只查一次』的死值。
+    bool 是 int 子类须显式排除(同 _is_num 口径)。返回规范化值("auto" 或
+    int),非法 → None。
+    可选键语义(保 test_save_config_roundtrip 三键全等断言的关键裁决):
+    load_config 仅当文件含合法值才在返回 dict 放该键、save_config 仅当
+    输入含合法值才写该键,缺省/非法 → 整键省略;消费方一律
+    cfg.get("quota_refresh", "auto") —— 第 4 键只在用户显式选了固定档时
+    出现,旧配置文件与既有断言零感知。"""
+    if v == "auto":
+        return "auto"
+    if isinstance(v, int) and not isinstance(v, bool) and 60 <= v <= 86400:
+        return v
+    return None
+
+
 def load_config() -> dict:
     """zm_config.json(用户本地文件,已 .gitignore,防 key 随仓库提交):
-    quota_api_key(str)、daily_budget_cny(>0 数字)、alert_pct(正数列表)。
+    quota_api_key(str)、daily_budget_cny(>0 数字)、alert_pct(正数列表)、
+    quota_refresh(可选:仅文件含合法值时含键,见 _norm_quota_refresh)。
     缺文件/坏 JSON/字段类型不对一律回退默认,不抛错。任何日志与调试路径
     都不得打印 key 明文(泄漏面专查项)。"""
     cfg = {"quota_api_key": "", "daily_budget_cny": None, "alert_pct": [20.0, 10.0]}
@@ -122,6 +159,10 @@ def load_config() -> dict:
         vals = sorted({float(v) for v in pcts if _is_num(v) and v > 0}, reverse=True)
         if vals:
             cfg["alert_pct"] = vals
+    # 可选键:仅文件含合法档位才放键(缺文件/坏 JSON 的早退路径天然无此键)
+    rv = _norm_quota_refresh(obj.get("quota_refresh"))
+    if rv is not None:
+        cfg["quota_refresh"] = rv
     return cfg
 
 
@@ -154,6 +195,12 @@ def save_config(cfg: dict, path: str | None = None) -> bool:
         vals = sorted({float(v) for v in pcts if _is_num(v) and v > 0}, reverse=True)
         if vals:
             out["alert_pct"] = vals
+    # 可选键:仅输入含合法档位才写第 4 键(缺省/非法整键省略)—— 无条件
+    # 写会把三键 cfg 也变成四键文件,翻掉 test_save_config_roundtrip 的
+    # back2 三键全等断言,且旧配置文件平白多一个无信息量的默认键
+    rv = _norm_quota_refresh(cfg.get("quota_refresh"))
+    if rv is not None:
+        out["quota_refresh"] = rv
     tmp = p + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -257,6 +304,49 @@ def est_hours_left(daily_budget_cny, today_cost_cny, burn_cny_per_hour):
     return (daily_budget_cny - (today_cost_cny or 0)) / burn_cny_per_hour
 
 
+def trend_forecast(model_rows, today=None) -> "dict | None":
+    """近 7 个日历日的趋势外推(纯函数,历史图表『本月预计』的数据源)。
+
+    model_rows = fetch_daily_model_usage 的行形状 (date, model, in_tok,
+    cache, out_tok, cny, partial);本函数只读 date / in_tok+out_tok / cny /
+    partial 四个字段(in_tok 已含 cache_read 勿再加,同今日口径),不触库,
+    可用合成行离线单测。返回 {avg_tokens, avg_cny, forecast_cny, partial}
+    或 None,口径钉死(与 UI 两处展示互为对账依据):
+    - 窗口 = 以 today 为末日(含)往前连续 7 个日历日,缺量日补零(padding
+      与历史图表 30 天补齐同口径 —— 补零让『整周没用』显式摊薄日均,而不是
+      把均值偷偷抬到只算有数据的那几天);窗口外的旧行直接忽略(防御)。
+    - avg 恒除 7(窗口宽),不按有数据的天数除:用量集中在少数天时按实际
+      天数除会高估日均、进而高估月度预计。
+    - forecast_cny = avg_cny × 当月总天数(calendar.monthrange)—— 裁决采
+      『近 7 天日均 × 当月天数』直推;月初样本尚少时外推粗暴,属已知取舍。
+    - 窗口总 token 用量 0(空库/近 7 天零用量)→ None,宁缺勿错:0 日均
+      外推出的『本月预计 ¥0.00』毫无信息量,徒占图表标注位。
+    - partial = 窗口内任一行含未知模型(¥ 为下限,UI 在 ¥ 前加 ≈)。
+    舍入约定:avg_tokens 取 1 位小数(fmt_k 直接可显示)、avg_cny/forecast
+    取 4 位(与 fetch_daily_usage_cost 同精度);forecast 用舍入后的
+    avg_cny 计算,保证 UI 上看到的两个数自洽(forecast == avg × 当月天数)。
+    today 缺省取本地今日;显式传 dt.date 供单测钉死窗口与当月天数。"""
+    end = dt.date.today() if today is None else today
+    if isinstance(end, dt.datetime):        # 宽容:datetime 也认,取其日期部分
+        end = end.date()
+    keys = {(end - dt.timedelta(days=k)).isoformat() for k in range(7)}
+    tot_tok, tot_cny, partial = 0, 0.0, False
+    for row in model_rows or ():
+        if str(row[0]) not in keys:
+            continue
+        tot_tok += int(row[2] or 0) + int(row[4] or 0)
+        tot_cny += float(row[5] or 0)
+        partial = partial or bool(row[6])
+    if tot_tok <= 0:
+        return None
+    avg_cny = round(tot_cny / 7, 4)
+    return {"avg_tokens": round(tot_tok / 7, 1),
+            "avg_cny": avg_cny,
+            "forecast_cny": round(
+                avg_cny * calendar.monthrange(end.year, end.month)[1], 4),
+            "partial": partial}
+
+
 # ------------------------------------------------------ 预算告警(双轨共芯) ---
 
 class BudgetAlerts:
@@ -309,6 +399,20 @@ class BudgetAlerts:
             self._save()
         return deepest_new
 
+    def fire_once(self, key: str, today: str) -> bool:
+        """当日一次性事件去重(quota 重置通知等,非预算阈值事件):key 当日
+        首次 → True 并落盘;同日再来 → False;跨日自然重置(与 evaluate 同
+        语义)。刻意复用 _fired/_save/_load 而非另开状态文件 —— zm_alerts.json
+        的 {"fired": {key: 日期}} 形状不变,守卫语义同 _save(守卫环境不写盘,
+        内存去重仍成立)。键名由调用方保证不与 evaluate 的 f"{track}|{lv:g}"
+        冲突(重置通知用 "reset_5h"/"reset_cycle",track 名空间不同)。"""
+        k = str(key)
+        if self._fired.get(k) == today:
+            return False
+        self._fired[k] = today
+        self._save()
+        return True
+
 
 # ------------------------------------------------ quota 轨(Coding Plan 余量) ---
 
@@ -327,18 +431,43 @@ def _as_number(x):
     return None
 
 
+def _quota_sanity_dbg(best: dict, cyc: dict | None):
+    """parse 的二重校验,**仅 dbg 记录、绝不改取数**:5h 窗的 nextResetTime
+    距 now 不在 (0,5h]、或长周期窗的 reset 距 now ≤5h 时各记一条 —— 社区
+    逆向接口结构漂移的第一现场线索,便于下次修 parse;ZM_DEBUG 未开时
+    dbg 零开销,不影响正常路径。"""
+    now_ms = time.time() * 1000
+    nrt = best.get("next_reset_ms")
+    if nrt is not None and not (0 < nrt - now_ms <= 18_000_000):
+        dbg(f"quota sanity: 5h nextResetTime 距 now {nrt - now_ms:.0f}ms "
+            f"不在 (0,5h],结构疑似漂移")
+    if cyc is not None:
+        cnrt = cyc.get("next_reset_ms")
+        if cnrt is not None and cnrt - now_ms <= 18_000_000:
+            dbg(f"quota sanity: cycle(number={cyc['number']:g}) reset 距 now "
+                f"{cnrt - now_ms:.0f}ms ≤5h,疑似非长周期窗")
+
+
 def parse_quota_payload(obj) -> dict | None:
     """quota 接口载荷 → {'window_hours':5, 'used_pct', 'remaining_pct',
-    'next_reset_ms'}。结构(2026-09 实测逆向,非官方文档):
-    data.limits[].type∈{TOKENS_LIMIT,CREDIT_LIMIT,MCP_LIMIT,TIME_LIMIT};
-    percentage 为**已用**百分比 → remaining = 100 - percentage;
-    在 TOKENS_LIMIT 里选 number==5 的条目作 5h 计费窗,并透出 nextResetTime(ms)。
+    'next_reset_ms'}(4 键契约不变:既有单测与 UI 只读这 4 键)。结构(2026-09
+    实测逆向,非官方文档):data.limits[].type∈{TOKENS_LIMIT,CREDIT_LIMIT,
+    MCP_LIMIT,TIME_LIMIT};percentage 为**已用**百分比 → remaining =
+    100 - percentage;在 TOKENS_LIMIT 里选 number==5 的条目作 5h 计费窗,
+    并透出 nextResetTime(ms)。
+    新增可选键 cycle(重置通知判据用):TOKENS_LIMIT 且 number!=5 中 number
+    最小条目(长周期 token 计费窗,实测样例 number:30)的 {'number',
+    'used_pct', 'remaining_pct', 'next_reset_ms'};无候选则整键省略,
+    消费方一律 .get('cycle')。刻意不把 CREDIT_LIMIT 等其他 type 当长周期:
+    钱/额度轨的重置语义与 token 计费窗不同,混入会把额度变动误报成 token
+    窗重置(偏离 ROADMAP『其他 type → weekly/月度』草案的原因)。
     结构对不上/没有 5h 窗 → None(该轨优雅降级为不显示,绝不抛错)。"""
     try:
         limits = obj["data"]["limits"]
         if not isinstance(limits, list):
             return None
         best = None
+        cyc = None
         for it in limits:
             if not isinstance(it, dict) or it.get("type") != "TOKENS_LIMIT":
                 continue
@@ -350,9 +479,66 @@ def parse_quota_payload(obj) -> dict | None:
                         "used_pct": pct,
                         "remaining_pct": 100.0 - pct,
                         "next_reset_ms": int(nrt) if nrt is not None else None}
+            elif (num is not None and num != 5 and pct is not None
+                  and (cyc is None or num < cyc["number"])):
+                # 长周期窗候选:取 number 最小(同 number 多条时保留首条,
+                # 社区样例未见此形态,不值得额外裁决)
+                nrt = _as_number(it.get("nextResetTime"))
+                cyc = {"number": num,
+                       "used_pct": pct,
+                       "remaining_pct": 100.0 - pct,
+                       "next_reset_ms": int(nrt) if nrt is not None else None}
+        if best is None:
+            return None            # 没有 5h 窗:整轨降级,cycle 也无从谈起
+        if cyc is not None:
+            best["cycle"] = cyc    # 可选键语义:仅值合法时含键
+        _quota_sanity_dbg(best, cyc)
         return best
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def quota_reset_event(prev: dict | None, cur: dict | None,
+                      now_ms: float | None = None) -> str | None:
+    """两次 quota 快照之间是否发生额度重置、重置的是哪类窗(纯函数,UI 线程
+    逐快照调用):'5h' | 'cycle' | None。
+    主判据 = nextResetTime 前跳:正常倒计时只会递减,cur 比 prev 前跳超过
+    60s(5h 与 cycle 两窗各自比)即判该窗刚重置;60s 容差滤掉接口侧小幅
+    重排/时钟抖动(恰 +60s 不算,严格大于才算)。
+    回退判据(仅 5h 窗、仅当缺 nextResetTime):remaining_pct 跳升 Δ≥+30 个
+    百分点且新值>50 → '5h'。cycle 不做回退:长周期窗的跳升形态未实测,
+    宁缺勿错。有 reset 时刻时主判据独裁 —— remaining 本身随消耗波动,
+    叠加第二触发源会放大误报。
+    同一 tick 两窗同时命中 → 'cycle'(更罕见,优先报)。
+    prev 为 None(首查)→ None:首查不触发是硬约定,否则换号/首配 key 的
+    第一次查询必误报『已重置』。now_ms 仅供 dbg 上下文,不参与判定。"""
+    if not isinstance(prev, dict) or not isinstance(cur, dict):
+        return None
+
+    def _jumped(p_win, c_win) -> bool:
+        """该窗 nextResetTime 是否前跳 >60s:两侧都有有效值才可比(任一
+        缺失/非法即不可比 → False,首见新窗不触发)。"""
+        if not isinstance(p_win, dict) or not isinstance(c_win, dict):
+            return False
+        pn, cn = p_win.get("next_reset_ms"), c_win.get("next_reset_ms")
+        if not _is_num(pn) or not _is_num(cn):
+            return False
+        return cn > pn + 60_000
+
+    ev_5h = _jumped(prev, cur)
+    ev_cyc = _jumped(prev.get("cycle"), cur.get("cycle"))
+    if ev_5h or ev_cyc:
+        ev = "cycle" if ev_cyc else "5h"     # 双窗同拍归 cycle
+        if _is_num(now_ms):
+            dbg(f"quota reset event: {ev} (now_ms={now_ms})")
+        return ev
+    # 回退判据:仅 5h 窗、仅当缺 nextResetTime(两侧任一缺失即『缺』)
+    pn, cn = prev.get("next_reset_ms"), cur.get("next_reset_ms")
+    if not _is_num(pn) or not _is_num(cn):
+        pr, cr = prev.get("remaining_pct"), cur.get("remaining_pct")
+        if _is_num(pr) and _is_num(cr) and cr - pr >= 30.0 and cr > 50.0:
+            return "5h"
+    return None
 
 
 # ---- v0.5.1 事件驱动+节流:何时真发 quota 请求,判定抽成纯函数便于单测 ----
@@ -364,7 +550,8 @@ QUOTA_ACTIVE_WINDOW = 3600.0    # 活跃判定窗口(s):窗口内有请求才算
 
 
 def quota_fetch_decision(now: float, last_fetch: float | None,
-                         last_activity: float | None, force: bool = False) -> bool:
+                         last_activity: float | None, force: bool = False,
+                         mode: str | int = "auto", gap: float = 0.0) -> bool:
     """本次 tick 是否真的向 quota 接口发请求(纯函数,无副作用,单测钉死)。
     判定顺序(闸门链,任一闸命中即拒):
     ① force → 放行:启动首查/设置窗换 key 重启,对应『立即查一次』;
@@ -375,7 +562,17 @@ def quota_fetch_decision(now: float, last_fetch: float | None,
     ④ last_activity 为 None 或 now−last_activity > QUOTA_ACTIVE_WINDOW → 拒:
       静默期(>1h 无任何请求)完全暂停;恰好 3600s 仍算活跃(边界归活跃);
     ⑤ now−last_fetch < QUOTA_ACTIVE_GAP → 拒:活跃期常态 ≤1 次/3min;
-    ⑥ 放行。"""
+    ⑥ 放行。
+    手动档(mode != "auto",设置窗『quota 刷新间隔』选了固定间隔,QuotaMonitor
+    以 refresh=间隔秒数调用):闸门链 ③④⑤ 全部不适用 —— 静默期也照查、
+    与活动信号无关,这是用户显式选择的语义;间隔本身经 _norm_quota_refresh
+    钳在 [60,86400],60s 硬闸语义已由配置层满足,故函数内不再重复设闸。
+    判定 = force 或 last_fetch 为 None 或 now−last_fetch ≥ gap(恰好到点
+    放行,与⑤『< 才拒』同侧边界);gap 缺省 0 仅是占位,手动档调用方
+    必须显式传间隔。mode/gap 均为默认参数 → 既有调用(全位置参数或
+    force= 形态)行为逐字不变。"""
+    if mode != "auto":
+        return bool(force or last_fetch is None or now - last_fetch >= gap)
     if force:
         return True
     if last_fetch is None:
@@ -439,6 +636,12 @@ class QuotaMonitor(threading.Thread):
     不为倒计时发任何请求 —— 只有剩余%需要网络刷新。失败也推进
     _last_fetch_ts(失败占频率预算,防 1s tick 对故障端点加密重试)。
 
+    刷新档位 refresh(v0.7 刷新档位显式化):"auto"(缺省,上述事件驱动+
+    节流)或固定间隔秒数(int,手动档纯间隔轮询,忽略活动/静默)。设置窗
+    改档时 UI 侧 _apply_config 裸写 self.refresh 热更 —— 属性赋值在 GIL
+    下原子,run() 每 tick 现读,最坏 1s 后生效;不重启线程,重启反而丢
+    _last_fetch_ts 频率记账、换档立即重查一次白耗请求。
+
     启动位置钉死(评审必改#1):类定义在本模块,但只由 zcode_meter_qt 的
     MeterWindow 实例化与启动;DataEngine.__init__/run() 及一切测试路径永不
     触碰 —— 否则源码目录放着带 key 的 zm_config.json 时,回归测试会发真实
@@ -448,9 +651,12 @@ class QuotaMonitor(threading.Thread):
     TICK = 1.0                         # 节流决策的检查粒度(检查≠请求)
     TIMEOUT = 10.0
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, refresh="auto"):
         super().__init__(daemon=True, name="zm-quota")
         self.api_key = api_key
+        # 档位值域见 _norm_quota_refresh;非法值不在此兜底(配置层已钳),
+        # run() 侧对非 num 非 auto 的值防御性按 auto 走,线程绝不因档位死
+        self.refresh = refresh
         self.stop_flag = threading.Event()
         self._lock = threading.Lock()
         self._latest: dict | None = None
@@ -478,9 +684,17 @@ class QuotaMonitor(threading.Thread):
         while not self.stop_flag.is_set():
             with self._lock:
                 la = self._last_activity_ts
+            # 档位每 tick 现读(热更生效点):手动档以档位秒数为 gap;
+            # 非 auto 且非数值的档位防御性回退 auto —— 本循环无 try,
+            # quota 线程绝不因一个坏档位值(外部直改 self.refresh)炸死,
+            # 回退 auto(静默期暂停)也比回退 0(每秒狂查)安全
+            mode = self.refresh
+            if mode != "auto" and not _is_num(mode):
+                mode = "auto"
+            gap = float(mode) if mode != "auto" else 0.0
             # first 仅首轮 True:启动即查,与旧 run() 先查后等的行为一致
             if quota_fetch_decision(time.time(), self._last_fetch_ts, la,
-                                    force=first):
+                                    force=first, mode=mode, gap=gap):
                 self._fetch_and_record()
             first = False
             self.stop_flag.wait(self.TICK)
@@ -534,198 +748,12 @@ class QuotaMonitor(threading.Thread):
 
 
 # ------------------------------------------------------------ 多用量源抽象 ---
-
-class UsageSource:
-    """用量源接口(v0.4.0 多 CLI 聚合):ZCode 为默认实现,Claude Code 为
-    v1 的额外源(本地 jsonl 只读解析)。金额/燃速口径钉死 ZCode-DB-only,
-    其他源只进 today_by_source 聚合展示 —— DEFAULT_PRICES 无 Claude 模型,
-    计入金额会把 ≈ 永久点亮(评审钉死的口径边界)。"""
-
-    name = "source"
-
-    def is_available(self) -> bool:
-        return True
-
-    def today_usage(self) -> int:
-        raise NotImplementedError
-
-    def daily_usage(self, days: int = 30) -> list:
-        raise NotImplementedError
-
-
-class ZCodeSource(UsageSource):
-    """默认源:包装现有 ZCode SQLite 口径。today_usage 的 SQL 与 _poll_stats
-    的今日用量完全同 WHERE 同天界(全来源 completed in+out)—— 两处刻意
-    保持同文,单测 test_today_by_source 对账防漂移。"""
-
-    name = "ZCode"
-
-    def is_available(self) -> bool:
-        return os.path.exists(DB_PATH)
-
-    def today_usage(self) -> int:
-        try:
-            con = connect_ro()
-            (t,) = con.execute(
-                "SELECT COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
-                " FROM model_usage WHERE status='completed' AND started_at>=?",
-                (today0_ms(),)).fetchone()
-            con.close()
-            return t or 0
-        except sqlite3.Error:
-            return 0
-
-    def daily_usage(self, days: int = 30) -> list:
-        try:
-            con = connect_ro()
-            rows = con.execute(
-                "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
-                " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
-                " FROM model_usage WHERE status='completed' AND started_at>=?"
-                " GROUP BY d ORDER BY d",
-                (today0_ms() - (days - 1) * 86_400_000,)).fetchall()
-            con.close()
-            return rows
-        except sqlite3.Error:
-            return []
-
-
-def _claude_ts_local(s):
-    """Claude jsonl 的 timestamp(ISO-UTC,如 2026-07-21T02:33:00.699Z)→
-    本地时区 aware datetime;坏值返回 None。天界必须转本地再定,直接取
-    UTC 日期会把本地 0 点前的用量算进前一天(CN 时区恒差 8 小时)。"""
-    if not isinstance(s, str) or not s:
-        return None
-    try:
-        d = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))  # py3.10 不认 Z
-        if d.tzinfo is None:
-            d = d.replace(tzinfo=dt.timezone.utc)               # 裸时间按 UTC
-        return d.astimezone()
-    except ValueError:
-        return None
-
-
-class ClaudeSource(UsageSource):
-    """Claude Code 源:只读解析 ~/.claude/projects/**/*.jsonl。
-    口径(实测 1921 条 assistant 行验证):
-    - 只取 type=='assistant' 行的 message.usage;含 isSidechain 行
-      (与 ZCode 今日用量含 subagent 对齐);
-    - in = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
-      —— Anthropic 口径 input_tokens 不含 cache,ZCode 口径已含,补齐后两源
-      才可比(README 口径表已写明,两源合计口径不同勿当 bug);
-    - 按 message.id 全局去重,但 isApiErrorMessage 行与 usage 全零行先跳过
-      再去重 —— keep-last 会让后到的零用量 error 行清零真实用量(实测存在);
-    - 解析结果按 (path, mtime, size) 缓存;另有 15s 扫描 TTL —— 引擎 1s 一轮
-      的 _poll_stats 也调它,不节流会把 jsonl 目录扫成热点。"""
-
-    name = "Claude"
-    SCAN_TTL = 15.0
-    # 文件级缓存放类属性:单测一轮会 new 多个 DataEngine(每个带一个源实例),
-    # 共享缓存避免把同一批 jsonl 反复解析;键含 (mtime,size) 保证不读过期内容,
-    # 条目解析后只读,跨实例共享安全(GIL 下最坏重复解析一次,结果相同)。
-    _file_cache: dict = {}              # path -> ((mtime, size), [(ts,in,out,mid)])
-
-    def __init__(self, projects_dir: str | None = None):
-        self.projects_dir = projects_dir or os.path.expanduser("~/.claude/projects")
-        self._entries: list | None = None
-        self._scanned_at = 0.0
-
-    def is_available(self) -> bool:
-        return os.path.isdir(self.projects_dir)
-
-    def _parse_file(self, path: str) -> list:
-        """单文件 → [(ts_local, in_tok, out_tok, message_id)]。跳过规则
-        (isApiErrorMessage / usage 全零)在这里做,先于全局去重 —— 这是
-        「keep-last 会清零真实用量」教训的钉死顺序。"""
-        out = []
-        try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(obj, dict) or obj.get("type") != "assistant":
-                        continue
-                    if obj.get("isApiErrorMessage"):
-                        continue
-                    msg = obj.get("message")
-                    usage = msg.get("usage") if isinstance(msg, dict) else None
-                    if not isinstance(usage, dict):
-                        continue
-                    vals = {}
-                    for k in ("input_tokens", "cache_read_input_tokens",
-                              "cache_creation_input_tokens", "output_tokens"):
-                        v = usage.get(k)
-                        vals[k] = v if isinstance(v, int) and v > 0 else 0
-                    if sum(vals.values()) == 0:
-                        continue                      # 零用量行(残留 error 等)
-                    ts = _claude_ts_local(obj.get("timestamp"))
-                    if ts is None:
-                        continue
-                    mid = msg.get("id")
-                    out.append((ts,
-                                vals["input_tokens"] + vals["cache_read_input_tokens"]
-                                + vals["cache_creation_input_tokens"],
-                                vals["output_tokens"],
-                                mid if isinstance(mid, str) else None))
-        except OSError:
-            return []
-        return out
-
-    def _scan(self) -> list:
-        now = time.time()
-        if self._entries is not None and now - self._scanned_at < self.SCAN_TTL:
-            return self._entries
-        seen, entries = set(), []
-        for root, _dirs, files in os.walk(self.projects_dir):
-            for fn in files:
-                if not fn.endswith(".jsonl"):
-                    continue
-                p = os.path.join(root, fn)
-                try:
-                    st = os.stat(p)
-                except OSError:
-                    continue
-                key = (st.st_mtime, st.st_size)
-                cached = self._file_cache.get(p)
-                if cached is not None and cached[0] == key:
-                    per_file = cached[1]
-                else:
-                    per_file = self._parse_file(p)
-                    self._file_cache[p] = (key, per_file)
-                for ts, i, o, mid in per_file:
-                    # message.id 去重跨文件全局做(流式响应同 id 多行只计一次);
-                    # 无 id 的行不参与去重(无法识别身份,宁多勿漏)
-                    if mid is not None:
-                        if mid in seen:
-                            continue
-                        seen.add(mid)
-                    entries.append((ts, i, o))
-        self._entries = entries
-        self._scanned_at = now
-        return entries
-
-    def today_usage(self) -> int:
-        if not self.is_available():
-            return 0
-        today = dt.date.today()
-        return sum(i + o for ts, i, o in self._scan() if ts.date() == today)
-
-    def daily_usage(self, days: int = 30) -> list:
-        if not self.is_available():
-            return []
-        lo = dt.date.today() - dt.timedelta(days=days - 1)
-        agg: dict = {}
-        for ts, i, o in self._scan():
-            d = ts.date()
-            if d < lo:
-                continue
-            agg[d.isoformat()] = agg.get(d.isoformat(), 0) + i + o
-        return sorted(agg.items())
+# UsageSource/ZCodeSource/ClaudeSource(含 _claude_ts_local)已原样迁至
+# sources/ 包(base.py / zcode.py / claude.py),SQL 与解析规则一字未动,
+# 经顶部 re-import 维持全部旧导入路径;DataEngine.sources 改由
+# discover_sources() 自动发现并按 (Source.order, 模块名) 排序 —— 迁移是
+# 纯移动,源行为与既有单测断言零变化(test_claude_source_synthetic /
+# test_today_by_source 钉死)。新增源见 README『如何贡献一个源』。
 
 
 # ---------------------------------------------------------------- 数据层 ---
@@ -796,7 +824,10 @@ class DataEngine(threading.Thread):
         cfg = load_config()
         self.prices = load_prices()
         self.daily_budget_cny = cfg["daily_budget_cny"]
-        self.sources: list = [ZCodeSource(), ClaudeSource()]
+        # discover_sources() 自动发现 sources/ 包内源并按 order 排序(现 =
+        # ZCode(0)、Claude(10)),与迁移前硬编码 [ZCodeSource(), ClaudeSource()]
+        # 顺序一致 —— 卡片 today_by_source 显示顺序不变
+        self.sources: list = discover_sources()
         self.quota_hint = None           # UI 线程回写的 nextResetTime(ms),纯数据
 
     def _latest_session(self) -> str:
@@ -1146,15 +1177,18 @@ class DataEngine(threading.Thread):
         days=1 时与今日用量 SQL 完全同界。天界用 SQLite 'localtime',依赖
         OS 时区设置。v0.4.0 起历史图表改用金额版 fetch_daily_usage_cost(三元
         组),本方法保留二元组形状不动 —— HistoryWindow 的 dict() 转换与单测
-        test_daily_usage_matches_today_scope 双双依赖此形状。"""
+        test_daily_usage_matches_today_scope 双双依赖此形状。
+        v0.6.x 起受 MAX_SCAN_ROWS 行防御上限约束:仅统计最近 N 行,更早
+        记录不计(防库增长后查询线性变慢,详见常量处注释)。"""
         try:
             con = connect_ro()
             rows = con.execute(
                 "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
                 " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
                 " FROM model_usage WHERE status='completed' AND started_at>=?"
+                " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
                 " GROUP BY d ORDER BY d",
-                (today0_ms() - (days - 1) * 86_400_000,)).fetchall()
+                (today0_ms() - (days - 1) * 86_400_000, MAX_SCAN_ROWS)).fetchall()
             con.close()
             return rows
         except sqlite3.Error:
@@ -1166,7 +1200,9 @@ class DataEngine(threading.Thread):
         test_daily_usage_matches_today_scope 双双依赖,金额版必须走本方法,
         改旧方法返回元数会直接崩图表。金额需按模型分组计价后在 Python 侧
         聚合(unknown 模型计 ¥0,partial 不在此体现 —— 天级 ¥ 图表恒为下限,
-        卡片上的 ≈ 标记才是 partial 的展示位)。"""
+        卡片上的 ≈ 标记才是 partial 的展示位)。
+        v0.6.x 起受 MAX_SCAN_ROWS 行防御上限约束(同 fetch_daily_usage):
+        仅统计最近 N 行,更早记录不计。"""
         try:
             con = connect_ro()
             rows = con.execute(
@@ -1175,8 +1211,9 @@ class DataEngine(threading.Thread):
                 " COALESCE(SUM(cache_read_input_tokens),0),"
                 " COALESCE(SUM(output_tokens),0)"
                 " FROM model_usage WHERE status='completed' AND started_at>=?"
+                " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
                 " GROUP BY d, model_id ORDER BY d",
-                (today0_ms() - (days - 1) * 86_400_000,)).fetchall()
+                (today0_ms() - (days - 1) * 86_400_000, MAX_SCAN_ROWS)).fetchall()
             con.close()
         except sqlite3.Error:
             return []
@@ -1186,6 +1223,37 @@ class DataEngine(threading.Thread):
             v, _partial = cost_of(self.prices, model, i_ or 0, o_ or 0, c_ or 0)
             agg[d] = (tok + (i_ or 0) + (o_ or 0), cny + v)
         return [(d, t, round(c, 4)) for d, (t, c) in sorted(agg.items())]
+
+    def fetch_daily_model_usage(self, days: int = 30) -> list:
+        """按天×模型明细 [(date, model, in_tok, cache, out_tok, cny, partial)]:
+        导出 CSV(右键菜单)与趋势外推的数据源。SQL 与 fetch_daily_usage_cost
+        刻意保持同 WHERE 同 GROUP(completed 全部 query_source、本地午夜天界)
+        —— 两处若漂移,导出的明细与按天图表互相矛盾,会被用户当 bug。
+        cny/partial 逐行调 cost_of(唯一合法计价入口;input 已含 cache_read,
+        手写公式曾在此双计翻车一个数量级),未知模型行 ¥0+partial 由 cost_of
+        语义透传。同 fetch_daily_usage_cost 一样刻意镜像而不合并:其三元组
+        形状被单测与 HistoryWindow 依赖,本方法七元组形状是导出/外推专属。同受 MAX_SCAN_ROWS 行防御上限约束
+        (与 cost 版同 floor,库超上限后明细与图表一致截断)。"""
+        try:
+            con = connect_ro()
+            rows = con.execute(
+                "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
+                " model_id, COALESCE(SUM(input_tokens),0),"
+                " COALESCE(SUM(cache_read_input_tokens),0),"
+                " COALESCE(SUM(output_tokens),0)"
+                " FROM model_usage WHERE status='completed' AND started_at>=?"
+                " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
+                " GROUP BY d, model_id ORDER BY d, model_id",
+                (today0_ms() - (days - 1) * 86_400_000, MAX_SCAN_ROWS)).fetchall()
+            con.close()
+        except sqlite3.Error:
+            return []
+        out = []
+        for d, model, i_, c_, o_ in rows:
+            cny, partial = cost_of(self.prices, model, i_ or 0, o_ or 0, c_ or 0)
+            out.append((d, model, i_ or 0, c_ or 0, o_ or 0,
+                        round(cny, 4), partial))
+        return out
 
     BLOCK_MS = 5 * 3600 * 1000            # 5h 计费块宽(ms)
 
@@ -1197,14 +1265,17 @@ class DataEngine(threading.Thread):
         最早 started_at(query_source 全部 —— 措辞刻意区别于跨产品的"全来源"),
         此时块界为示意、非平台真实计费窗(UI 页签内已声明)。
         聚合口径同今日 token:completed 全部 query_source 的 in+out(input 已含
-        cache_read 勿重复加)。"""
+        cache_read 勿重复加)。v0.6.x 起锚点 MIN 子查询与聚合 SQL 均受
+        MAX_SCAN_ROWS 行防御上限约束:仅统计最近 N 行,更早记录不计。"""
         try:
             con = connect_ro()
             anchor = self.quota_hint
             if not _is_num(anchor) or anchor <= 0:
                 row = con.execute(
                     "SELECT MIN(started_at) FROM model_usage"
-                    " WHERE status='completed'").fetchone()
+                    " WHERE status='completed'"
+                    " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)",
+                    (MAX_SCAN_ROWS,)).fetchone()
                 anchor = row[0] if row and row[0] else None
             if not _is_num(anchor) or anchor <= 0:
                 con.close()
@@ -1223,8 +1294,11 @@ class DataEngine(threading.Thread):
                 "SELECT (started_at-?)/? AS b,"
                 " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
                 " FROM model_usage WHERE status='completed' AND started_at>=?"
-                " AND started_at<? GROUP BY b",
-                (base, self.BLOCK_MS, base, base + blocks * self.BLOCK_MS)).fetchall()
+                " AND started_at<?"
+                " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
+                " GROUP BY b",
+                (base, self.BLOCK_MS, base, base + blocks * self.BLOCK_MS,
+                 MAX_SCAN_ROWS)).fetchall()
             con.close()
         except sqlite3.Error:
             return []
@@ -1237,7 +1311,8 @@ class DataEngine(threading.Thread):
         会话 —— 与卡片统计逐字对齐(README 口径表)。返回 (sid,title,tokens,
         请求数),按会话最近请求时间倒序。注意:普通会话内也混有 compact/
         workflow_child 等非 main_turn 来源,不加 query_source 过滤必与卡片
-        对不上而被当 bug 报。"""
+        对不上而被当 bug 报。v0.6.x 起受 MAX_SCAN_ROWS 行防御上限约束:
+        仅统计最近 N 行,更早记录不计(含整会话被裁出结果集的形态)。"""
         try:
             con = connect_ro()
             rows = con.execute(
@@ -1247,8 +1322,10 @@ class DataEngine(threading.Thread):
                 " FROM model_usage mu LEFT JOIN session s ON s.id = mu.session_id"
                 " WHERE mu.status='completed' AND mu.query_source='main_turn'"
                 " AND mu.session_id NOT LIKE 'sess_subagent%'"
+                " AND mu.rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
                 " GROUP BY mu.session_id"
-                " ORDER BY MAX(mu.started_at) DESC LIMIT ?", (limit,)).fetchall()
+                " ORDER BY MAX(mu.started_at) DESC LIMIT ?",
+                (MAX_SCAN_ROWS, limit)).fetchall()
             con.close()
             return rows
         except sqlite3.Error:

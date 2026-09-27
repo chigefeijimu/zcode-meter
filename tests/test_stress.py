@@ -7,6 +7,7 @@
 """
 import os
 import sys
+import time
 from pathlib import Path
 
 # 位置记忆隔离:直接运行本文件时也不改写用户真实 zm_state.json
@@ -95,6 +96,45 @@ def main() -> int:
     check("数据缺席:plan/burn/分隔线整段隐藏",
           not win.plan_lbl.isVisible() and not win.burn_lbl.isVisible()
           and not win._budget_sep.isVisible())
+
+    # ---- 数据新鲜度视觉化:贴边条形态 + 套餐数据龄超 15min → 半透明 ----
+    # 纯函数边界用整值参数(100.0/1000.0):拿浮点时刻做『恰 900』断言会有
+    # 舍入噪声;窗口侧只注入 dock/_plan_fetched_at 两状态,不启 monitor
+    check("freshness 纯函数:龄恰 900s 不冻结(严格大于)",
+          m.frozen_opacity("top", 100.0, now=1000.0) == 1.0)
+    check("freshness 纯函数:龄 900.5s 冻结",
+          m.frozen_opacity("top", 100.0, now=1000.5) == 0.8)
+    check("freshness 纯函数:quota 未配置(fetched_at 缺/0)恒 1.0",
+          m.frozen_opacity("bottom", None) == 1.0
+          and m.frozen_opacity("bottom", 0) == 1.0)
+    win.dock = "bottom"
+    win._plan_fetched_at = time.time() - 1200
+    win._apply_freshness()
+    check("贴边+数据龄20min → 窗口透明度0.8",
+          abs(win.windowOpacity() - 0.8) < 1e-9)
+    win._plan_fetched_at = time.time()
+    win._apply_freshness()
+    check("贴边+数据新鲜 → 透明度回 1.0",
+          abs(win.windowOpacity() - 1.0) < 1e-9)
+    win.dock = None
+    win._plan_fetched_at = time.time() - 1200
+    win._apply_freshness()
+    check("卡片形态恒 1.0(数据再旧也不冻结)",
+          abs(win.windowOpacity() - 1.0) < 1e-9)
+    # 值缓存:同值重复调用不得再 setWindowOpacity(_poll_queue 200ms 一跳,
+    # 防重绘 churn 的钉死断言)—— 实例属性临时遮蔽真方法,记录调用序列
+    set_calls = []
+    _orig_set_op = win.setWindowOpacity
+    win.setWindowOpacity = set_calls.append
+    win._apply_freshness()                       # 1.0 == 缓存 → 不 set
+    win.dock = "bottom"; win._plan_fetched_at = time.time() - 1200
+    win._apply_freshness()                       # 0.8 != 1.0 → set 一次
+    win._apply_freshness()                       # 0.8 == 缓存 → 不 set
+    win.setWindowOpacity = _orig_set_op
+    check("值缓存:仅变化时 setWindowOpacity", set_calls == [0.8])
+    # 复位注入态:close 前回到不透明、卡片态
+    win.dock = None; win._plan_fetched_at = None
+    win._apply_freshness()
 
     win.close()
     if FAILED:

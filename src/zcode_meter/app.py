@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import ctypes
+import csv
 import datetime as dt
 import json
 import math
@@ -22,15 +23,15 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
+from PySide6.QtCore import QLineF, QPoint, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import (
     QCursor, QColor, QDoubleValidator, QFont, QFontMetrics, QGuiApplication,
-    QPainter,
+    QPainter, QPen,
 )
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
-    QPushButton, QScrollArea, QStyle, QSystemTrayIcon, QTabWidget, QToolTip,
-    QVBoxLayout, QWidget,
+    QApplication, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QMenu, QPushButton, QScrollArea, QStyle, QSystemTrayIcon, QTabWidget,
+    QToolTip, QVBoxLayout, QWidget,
 )
 
 # 脚本直跑(python src/zcode_meter/app.py)时 __package__ 为空:补 src 进
@@ -43,7 +44,8 @@ if __package__ in (None, "") and not getattr(sys, "frozen", False):
 
 from zcode_meter.data_engine import (
     BudgetAlerts, DataEngine, QuotaMonitor, Snapshot, app_dir, dbg,
-    format_age_zh, format_countdown_hm, load_config, save_config,
+    format_age_zh, format_countdown_hm, load_config, quota_reset_event,
+    save_config, trend_forecast,
 )
 
 C_BG, C_BORDER = "#16171c", "#2c2f3a"
@@ -100,6 +102,11 @@ QPushButton#primary:hover {{ background: #6fe2b3; }}
 # 位置记忆状态文件:与 zm_*.log 同目录(frozen 时落 exe 旁)
 STATE_PATH = os.path.join(app_dir(), "zm_state.json")
 
+# 导出的用量明细落点(右键『导出 CSV』):与 STATE_PATH 同锚 app_dir,
+# frozen 时落 exe 旁。内容是模型名+token+金额(无密钥),.gitignore 已追加
+# 防用户本地导出物随仓库误提交。
+EXPORT_PATH = os.path.join(app_dir(), "zm_usage_export.csv")
+
 
 def _state_guard() -> bool:
     """状态读写守卫:--verify 自检或 ZM_NO_STATE=1(回归测试注入)时不读不写
@@ -117,9 +124,34 @@ def fmt_k(n: int) -> str:
     return str(n)
 
 
+# 数据新鲜度冻结阈值(秒)与冻结透明度:贴边(条)形态下套餐轨数据龄超
+# 15 分钟 → 整窗降至 0.8。这是 v0.5.1 拍板的静默期语义(quota 静默期停
+# 查询,数据停在最后一次活跃时刻)的可见化 —— 纯展示层,不影响任何调度。
+FROZEN_AFTER_S = 900.0
+FROZEN_OPACITY = 0.8
+
+
+def frozen_opacity(dock: str | None, fetched_at: float | None,
+                   now: float | None = None) -> float:
+    """纯函数:贴边形态 + 套餐数据龄 > 15 分钟 → 0.8,其余 → 1.0。
+
+    - dock 为 None(卡片/未贴边)恒 1.0:卡片是主动查看形态,突然半透明
+      会被读成『窗口坏了』;条形态常驻屏边,半透明=轻量的『数据可能过期』;
+    - fetched_at 缺失/≤0(quota 未配置或尚无首查结果)恒 1.0:没数据就
+      无『过期』可言;
+    - 龄恰为 900s 不冻结(严格大于):边界两侧抖动无信息量。
+    不触任何 Qt/实例状态 —— test_stress 直接注入参数断言。"""
+    if dock is None or fetched_at is None or fetched_at <= 0:
+        return 1.0
+    if now is None:
+        now = time.time()
+    return FROZEN_OPACITY if now - fetched_at > FROZEN_AFTER_S else 1.0
+
+
 class TrayController:
-    """托盘模式(v0.4.0):主窗可收起到托盘,托盘菜单=显示/隐藏+退出,
-    单击托盘图标恢复主窗;预算告警经 tray.showMessage 气泡派发。
+    """托盘模式(v0.4.0):主窗可收起到托盘,托盘菜单=今日概览三行(T1)+
+    打开历史图表+显示/隐藏+退出,单击托盘图标恢复主窗;预算告警经
+    tray.showMessage 气泡派发。
     isSystemTrayAvailable() 为 False(无托盘/远程会话)时 create() 返回
     None 整体跳过 —— 不崩、--verify 与 stress 回归不受影响。
     持有者只跨线程传普通数据(告警文本),Qt 调用全部留在 UI 线程。"""
@@ -143,13 +175,51 @@ class TrayController:
                         f" border: 1px solid {C_BORDER}; }}"
                         "QMenu::item { padding: 4px 18px; }"
                         "QMenu::item:selected { background: #2c2f3a; }")
+        # ---- 今日概览区(T1):三个 disabled QAction,文本在 aboutToShow 刷新 ----
+        # 单击 Trigger 已被『恢复主窗』占用(见 _activated),快捷面板只能落在
+        # 菜单顶部。刻意不用 QWidgetAction+QLabel:纯展示条目做成不可点
+        # QAction,天然不抢 hover 高亮、不多一层布局;disabled 只影响交互,
+        # 样式表未写 :disabled 分支,Qt 以正常前景色渲染,概览可读性不降。
+        # 菜单平时不打开 → 刷新挂在 aboutToShow 上零轮询开销,打开瞬间直读
+        # win 的 UI 线程缓存(snap/_plan_pct)——同线程无竞态、零额外查询。
+        self._ov_cost = m.addAction("今日 ¥0.00")
+        self._ov_plan = m.addAction("套餐剩余 —")
+        self._ov_burn = m.addAction("燃速 0/h")
+        for a in (self._ov_cost, self._ov_plan, self._ov_burn):
+            a.setEnabled(False)
+        m.addSeparator()
+        # 历史图表入口:槽体本身也要 QTimer.singleShot(0) 延迟 —— triggered
+        # 槽内直接 show 会被菜单关闭的鼠标抓取时序吞掉("点击没反应"坑,
+        # _open_history 内部注释有实测记载);这里把整个调用延到菜单模态
+        # 循环返回之后,_open_history 内部对 show 还有第二层延迟,双保险。
+        m.addAction("打开历史图表",
+                    lambda: QTimer.singleShot(0, self.win._open_history))
+        m.addSeparator()
         m.addAction("显示 / 隐藏", self.toggle)
         m.addSeparator()
         m.addAction("退出", QApplication.quit)
+        m.aboutToShow.connect(self._refresh_overview)
         self.tray.setContextMenu(m)
         self.tray.activated.connect(self._activated)
         self.tray.show()
         self._menu = m                     # QMenu 无父对象,显式持有防 GC
+
+    def _refresh_overview(self):
+        """aboutToShow 刷新顶部三行概览,文案口径与卡片逐字对齐:
+        - 今日金额:partial(含未知模型,金额为下限)前缀 ≈,同 today_lbl;
+        - 套餐剩余:_plan_pct 为 None(quota 未配/未返回)显示占位『—』而非
+          藏行 —— 菜单恒三行,行数稳定才扫得快(与卡片『缺数据即隐藏』的
+          条形态策略不同,菜单是快照面板不做显隐逻辑);
+        - 燃速:trailing 60min 窗口口径,0(今日未活跃)如实显示 0/h。"""
+        s = self.win.snap
+        cost = s.today_cost_cny or 0.0
+        approx = "≈" if s.today_cost_partial else ""
+        self._ov_cost.setText(f"今日 {approx}¥{cost:.2f}")
+        pct = self.win._plan_pct
+        self._ov_plan.setText(f"套餐剩余 {pct:.0f}%" if pct is not None
+                              else "套餐剩余 —")
+        self._ov_burn.setText(
+            f"燃速 {fmt_k(int(s.burn_tokens_per_hour or 0))}/h")
 
     def toggle(self):
         w = self.win
@@ -218,6 +288,28 @@ class SettingsDialog(QDialog):
         self.alert_edit = QLineEdit(", ".join(f"{v:g}" for v in cfg.get("alert_pct") or []))
         root.addWidget(self.alert_edit)
 
+        # ---- v0.7 刷新档位下拉:自动(事件驱动)或固定间隔轮询 ----
+        root.addWidget(caption("quota 刷新间隔(自动 = 事件驱动:活跃期最长 3 分钟一查、静默期暂停)"))
+        self.refresh_combo = QComboBox()
+        # 档位 ↔ 值(数据层 _norm_quota_refresh 钳 [60,86400] 秒);
+        # 选『自动』= 整键省略(缺省即 auto 的可选键语义),固定档才落
+        # quota_refresh —— 设置窗从不写 "auto" 字面值,zm_config.json 保持
+        # 最小形状(旧文件零 diff)
+        for lbl, val in (("自动(事件驱动)", "auto"), ("3 分钟", 180),
+                         ("5 分钟", 300), ("15 分钟", 900), ("30 分钟", 1800)):
+            self.refresh_combo.addItem(lbl, val)
+        # 入参 cfg 即 load_config() 输出(已规范化):quota_refresh 缺省或
+        # 'auto' → 选第 0 项;合法但非预设(手改文件如 600s)→ 加显选项
+        # 回显,不悄悄改值,保存原样透传
+        cur = cfg.get("quota_refresh", "auto")
+        idx = next((i for i in range(self.refresh_combo.count())
+                    if self.refresh_combo.itemData(i) == cur), -1)
+        if idx < 0:
+            self.refresh_combo.addItem(f"自定义({cur / 60:g} 分钟)", cur)
+            idx = self.refresh_combo.count() - 1
+        self.refresh_combo.setCurrentIndex(idx)
+        root.addWidget(self.refresh_combo)
+
         self.status_lbl = QLabel("")
         self.status_lbl.setObjectName("err")
         self.status_lbl.setWordWrap(True)
@@ -240,7 +332,8 @@ class SettingsDialog(QDialog):
     def _parse_input(self) -> dict | None:
         """UI 输入 → 合法 cfg dict;非法返回 None(已写状态行红字)。
         数值判定一律 float(strip())、异常文本直接判非法;空串语义:
-        key 空=不启用、预算空=None、阈值空=恢复默认 [20,10]。"""
+        key 空=不启用、预算空=None、阈值空=恢复默认 [20,10]。
+        刷新档位:选『自动』省键(可选键语义),固定档才含 quota_refresh。"""
         key = self.key_edit.text().strip()
         budget_txt = self.budget_edit.text().strip()
         budget = None
@@ -273,7 +366,14 @@ class SettingsDialog(QDialog):
             if not pcts:
                 self._err("告警阈值不能全为分隔符(留空恢复默认 20,10)")
                 return None
-        return {"quota_api_key": key, "daily_budget_cny": budget, "alert_pct": pcts}
+        out = {"quota_api_key": key, "daily_budget_cny": budget, "alert_pct": pcts}
+        # 档位:itemData 恒为 "auto" 或合法 int(构造时已钳);选『自动』时
+        # 整键省略 —— 回退默认与显式 auto 对消费方等价(get 缺省),但省键
+        # 才能守住 test_save_config_roundtrip 的三键形状
+        rv = self.refresh_combo.currentData()
+        if isinstance(rv, int) and not isinstance(rv, bool):
+            out["quota_refresh"] = rv
+        return out
 
     def _on_save(self):
         cfg = self._parse_input()
@@ -333,7 +433,8 @@ class MeterWindow(QWidget):
         self.alerts = BudgetAlerts(cfg["alert_pct"])
         self.quota_monitor = None
         if cfg["quota_api_key"] and not _state_guard():
-            self.quota_monitor = QuotaMonitor(cfg["quota_api_key"])
+            self.quota_monitor = QuotaMonitor(cfg["quota_api_key"],
+                                              cfg.get("quota_refresh", "auto"))
             self.quota_monitor.start()
             # v0.5.1 事件驱动:引擎 completed 水位前进 → monitor 记活跃,
             # 节流器据此决定何时真发 quota 请求(未配 key 不接线,零开销)
@@ -343,6 +444,15 @@ class MeterWindow(QWidget):
         # 纯本地递减,不为它发请求);换号/清号时随三缓存一并清零
         self._plan_fetched_at: float | None = None
         self._plan_next_reset: float | None = None
+        # 重置事件判据的 prev 侧(上一次 quota 快照):_update_quota 在覆盖它
+        # 之前先与最新快照比对。换号/清号分支必须一并置 None —— 残留旧账号
+        # 快照会让新号首查的 nextResetTime 前跳被误判成『额度已重置』
+        # (T8 重写该分支时必须保留那行清 prev)
+        self._prev_quota: dict | None = None
+        # 数据新鲜度视觉化:setWindowOpacity 的值缓存 —— 仅变化时才 set,
+        # _poll_timer 200ms 一跳重复设置同一值会引发无谓的重绘 churn;
+        # 初始 1.0 与 Qt 默认窗口透明度一致(见 _apply_freshness)
+        self._frozen_opacity = 1.0
         # 托盘:无托盘环境(远程会话等)整体跳过,不崩不影响 --verify/stress
         self.tray = TrayController.create(self)
 
@@ -764,6 +874,8 @@ class MeterWindow(QWidget):
         self._add_session_menu(m)
         m.addAction("历史用量图表", self._open_history)
         m.addAction("设置", self._open_settings)
+        m.addAction("导出 CSV", self._export_csv)
+        m.addAction("复制今日摘要", self._copy_today_summary)
         if self.tray is not None:          # 无托盘环境不提供收起,防"收起后找不回"
             m.addAction("收起到托盘", self.hide)
         m.addSeparator()
@@ -814,6 +926,61 @@ class MeterWindow(QWidget):
             with open("zm_error.log", "a", encoding="utf-8") as f:
                 f.write(time.strftime("%H:%M:%S ") + traceback.format_exc())
 
+    # ---- 导出 CSV / 复制今日摘要(菜单在 _popup_menu『设置』之后) ----
+    def _export_csv(self):
+        """右键『导出 CSV』:近 30 天 date×模型明细平铺写 zm_usage_export.csv。
+        encoding='utf-8-sig'(带 BOM)—— Excel 对无 BOM 的 UTF-8 按 ANSI 猜
+        编码,中文模型名/日期直接乱码;newline='' 是 csv.writer 的官方要求,
+        缺席时 Windows 下 writer 的 \r\n 之上再叠一层 CRLF,Excel 里每行尾多
+        出空行(验收项『列不错位』的一半坑在这)。行粒度=date×model 平铺、
+        刻意不插合计行:partial 日合计与普通行混在同一文件里,读者在表格里
+        二次求和时会被当普通行重复加。OSError(exe 目录只读/文件被 Excel
+        占用)只气泡+dbg 不抛 —— 菜单槽内异常会被 Qt 静默吞掉,用户什么都
+        看不到反而像『点了没反应』。"""
+        rows = self.eng.fetch_daily_model_usage(30)
+        try:
+            with open(EXPORT_PATH, "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(("date", "model", "in", "cache_read", "out",
+                            "total", "cny", "partial"))
+                for d, model, i_, c_, o_, cny, partial in rows:
+                    # total=in+out:input_tokens 已含 cache_read(口径红线),
+                    # 切勿 in+cache+out 双计;partial 落 0/1(表格软件布尔兼容)
+                    w.writerow((d, model, i_, c_, o_, i_ + o_, cny,
+                                int(bool(partial))))
+            ok = True
+        except OSError:
+            ok = False
+        # 气泡直连 tray.notify 而非 _notify:后者标题钉死『预算提醒』,
+        # 导出是文件操作不是预算事件,混用会稀释告警标题的信号量
+        if ok:
+            dbg(f"csv exported: {EXPORT_PATH} rows={len(rows)}")
+            if self.tray is not None:
+                self.tray.notify("zcode-meter", "已导出 zm_usage_export.csv")
+        else:
+            dbg(f"csv export failed: {EXPORT_PATH}")
+            if self.tray is not None:
+                self.tray.notify("zcode-meter",
+                                 "导出失败:zm_usage_export.csv 不可写(被占用?)")
+
+    def _copy_today_summary(self):
+        """右键『复制今日摘要』:格式钉死四行,数据缺席宁缺勿错 ——
+        套餐轨未配置/无数据时整行省略(_plan_pct is None),贴出旧数据比缺行
+        更误导;燃速恒显示(0 也是『今日未活跃』的信息);partial(含未知
+        模型,金额为下限)在金额后追加『(下限)』。数据直读 UI 线程缓存
+        快照(self.snap)与 _plan_pct,与托盘概览(T1)同源同刻。复制成功
+        仅 dbg 不弹气泡:复制是用户的显式动作,弹气泡纯属打扰(降噪裁决)。"""
+        s = self.snap
+        cost = s.today_cost_cny or 0.0
+        lines = [f"zcode-meter · {dt.date.today().isoformat()}",
+                 f"今日 {fmt_k(s.today_tokens)} tokens · ¥{cost:.2f}"
+                 + ("(下限)" if s.today_cost_partial else "")]
+        if self._plan_pct is not None:
+            lines.append(f"套餐剩余 {self._plan_pct:.0f}%")
+        lines.append(f"燃速 {fmt_k(int(s.burn_tokens_per_hour))}/h")
+        QGuiApplication.clipboard().setText("\n".join(lines))
+        dbg("today summary copied to clipboard")
+
     # ---- 设置窗(v0.5.0) ----
     def _open_settings(self):
         """右键「设置」:现读磁盘预填(允许用户手改 zm_config.json 后经界面
@@ -843,7 +1010,8 @@ class MeterWindow(QWidget):
         zm_alerts.json 已触发状态保留)→ ③与 self._quota_key(内存基准)
         四分支对账:不动/启动(含挂活动回调)/停+清套餐缓存(三缓存 +
         v0.5.1 的 fetched_at/next_reset,并摘除活动回调)/换号停+清+立即
-        按新 key 重启(回调重挂新实例)。"""
+        按新 key 重启(回调重挂新实例)。v0.7 刷新档位:key 未变就地裸写
+        monitor.refresh 热更(不重启线程),②④新实例以新档位构造。"""
         if not save_config(cfg):
             return
         self.daily_budget_cny = cfg["daily_budget_cny"]
@@ -851,11 +1019,18 @@ class MeterWindow(QWidget):
         self.alerts.thresholds = sorted(
             {float(t) for t in (cfg["alert_pct"] or []) if t > 0}, reverse=True)
         old, new = self._quota_key or "", cfg["quota_api_key"] or ""
+        # 刷新档位:可选键语义,消费方一律 get 缺省 auto(旧配置文件无此键)
+        new_refresh = cfg.get("quota_refresh", "auto")
         if old == new:
-            pass                            # ①key 未变:monitor 不动
+            # ①key 未变:monitor 不动;刷新档位就地热更(裸写属性,run() 每
+            # tick 现读,1s 内生效 —— 重启线程反而丢 _last_fetch_ts 频率
+            # 记账,换档立即重查一次白耗请求)。未配 key(monitor=None)时
+            # 无对象可热更,档位随②启用分支的新实例生效
+            if self.quota_monitor is not None:
+                self.quota_monitor.refresh = new_refresh
         elif not old and new:
             if not _state_guard():          # ②启用:仍过守卫闸(测试环境不发真请求)
-                self.quota_monitor = QuotaMonitor(new)
+                self.quota_monitor = QuotaMonitor(new, new_refresh)
                 self.quota_monitor.start()
                 self.eng.on_activity = self.quota_monitor.notify_activity
         else:
@@ -869,20 +1044,21 @@ class MeterWindow(QWidget):
             self._plan_pct = None
             self._plan_fetched_at = None
             self._plan_next_reset = None
+            self._prev_quota = None   # 清 prev:残留旧号快照会让新号首查误报『额度已重置』(T8 重写须保留)
             self.snap.plan_remaining_pct = None
             self.eng.quota_hint = None
             self.eng.on_activity = None
             if new and not _state_guard():  # ④换号:立即按新 key 重启,不停在 None
-                self.quota_monitor = QuotaMonitor(new)
+                self.quota_monitor = QuotaMonitor(new, new_refresh)
                 self.quota_monitor.start()
                 # 换号必须重挂新实例的回调:漏挂则换号后只剩启动首查,
                 # quota 永不因活动刷新(比现状更糟的翻车点)
                 self.eng.on_activity = self.quota_monitor.notify_activity
         self._quota_key = new
-        # dbg 只记预算/阈值/布尔,不记 key 明文(泄漏面专查项)
+        # dbg 只记预算/阈值/布尔/档位,不记 key 明文(泄漏面专查项)
         dbg(f"config applied: budget={cfg['daily_budget_cny']} "
             f"alert={cfg['alert_pct']} monitor_on={self.quota_monitor is not None} "
-            f"key_changed={old != new}")
+            f"key_changed={old != new} refresh={new_refresh}")
 
     # ---- 数据渲染 ----
     def _poll_queue(self):
@@ -894,19 +1070,45 @@ class MeterWindow(QWidget):
         self._update_quota()
         self._apply_snapshot(self.snap)
         self._check_alerts()
+        self._apply_freshness()
+
+    def _apply_freshness(self):
+        """数据新鲜度 → 整窗透明度:贴边条形态且套餐数据 >15 分钟未更新
+        (静默期停查的可见代价)→ 0.8;数据回新鲜/脱离贴边即自愈回 1.0 ——
+        本方法由 _poll_queue 每 200ms 驱动,形态切换点无需另行挂钩。
+        只读 dock 与 _plan_fetched_at,不碰 quota 调度/告警/托盘
+        (quota_fetch_decision 的静默期语义由 data 层单测钉死,与展示解耦);
+        值缓存防 churn:与上次相同则跳过 setWindowOpacity。"""
+        op = frozen_opacity(self.dock, self._plan_fetched_at)
+        if op != self._frozen_opacity:
+            self._frozen_opacity = op
+            self.setWindowOpacity(op)
 
     def _update_quota(self):
         """quota 轨数据搬运(UI 线程):daemon 线程只产出普通 dict,这里取
         拷贝渲染并回写引擎 —— plan_remaining_pct 引擎只写 None、UI 回填
         (引擎从不读它,跨线程无竞态);nextResetTime 给计费块对齐块界用。
         v0.5.1:同时缓存 fetched_at(渲染『N分钟前』新鲜度)与 next_reset_ms
-        (倒计时每 200ms 渲染 tick 本地重算,零 API 请求)。"""
+        (倒计时每 200ms 渲染 tick 本地重算,零 API 请求)。
+        重置通知:在覆盖 _prev_quota 前先比对快照检出 5h/cycle 重置(顺序
+        不可乱,否则 prev 恒等于 cur、事件永不触发);经 BudgetAlerts.
+        fire_once 当日去重后直连托盘气泡 —— 刻意不走 _notify(标题钉死
+        『预算提醒』,重置不是预算事件,混用会稀释告警标题的信号量)。
+        quota 未配置/未出数据时本方法早退,事件自然不触发。"""
         m = self.quota_monitor
         if m is None:
             return
         data = m.latest()
         if not data:
             return
+        ev = quota_reset_event(self._prev_quota, data)
+        self._prev_quota = dict(data)
+        if ev is not None and self.alerts.fire_once(
+                f"reset_{ev}", dt.date.today().isoformat()):
+            dbg(f"quota reset notified: {ev}")   # 只记事件类型,无 key 明文
+            if self.tray is not None:            # 无托盘环境仅 dbg,不降级成弹窗
+                self.tray.notify("zcode-meter",
+                                 "5h 额度已刷新" if ev == "5h" else "周期额度已重置")
         pct = data.get("remaining_pct")
         if pct is not None:
             self._plan_pct = pct
@@ -1119,6 +1321,8 @@ class BarChart(QWidget):
         self._items: list[tuple[str, int]] = []
         self._extra: list[str] = []        # 第二行数值文本(如 ¥ 金额),可空
         self._highlight = -1               # 高亮柱下标(计费块的当前块)
+        self._ref_value: float | None = None   # 参考线值(近7天日均);None=不画
+        self._ref_label = ""               # 参考线线顶标注文本
         self.setMinimumSize(360, 200)
         self.setMouseTracking(True)        # 悬停 tooltip 需要 mouseMove 事件
 
@@ -1132,6 +1336,14 @@ class BarChart(QWidget):
 
     def set_highlight(self, i: int):
         self._highlight = int(i)
+        self.update()
+
+    def set_reference(self, value, label: str = ""):
+        """水平图参考线(近 7 天日均):_paint_h 画竖向虚线 + 线顶标注,
+        value=None 清除。竖柱形态不画(v0.5.2 起三页签统一水平条,竖柱仅供
+        未来切换,参考线对其静默无效)。"""
+        self._ref_value = float(value) if value else None
+        self._ref_label = str(label)
         self.update()
 
     def paintEvent(self, ev):
@@ -1189,6 +1401,27 @@ class BarChart(QWidget):
                 txt = f"{txt} {extra}"
             p.drawText(QRectF(x0 + bw + 6, y, val_w, row_h),
                        Qt.AlignVCenter | Qt.AlignLeft, txt)
+        # 参考线(近 7 天日均,HistoryWindow『本月预计』配套):竖向虚线画在
+        # x = x0 + value/vmax*bar_max,与条形同一比例尺 —— 线的落点即可目视
+        # 读出『日均约为当日峰值的几成』。x 全按当前 w 现算(上方列宽已按 w
+        # 自适应),不缓存像素(v0.3.0 固定尺寸脱节的教训);标注画在线顶右侧,
+        # 右缘放不下时换到线顶左侧右对齐。用警示黄虚线与主题绿条区分。
+        if self._ref_value and self._ref_value > 0:
+            rx = x0 + max(min(self._ref_value / vmax * bar_max, bar_max), 0.0)
+            pen = QPen(QColor(C_WARN))
+            pen.setStyle(Qt.DashLine)
+            p.setPen(pen)
+            p.drawLine(QLineF(rx, 2.0, rx, min(4 + n * row_h, h - 2)))
+            p.setFont(f_lbl)
+            tw = fm.horizontalAdvance(self._ref_label)
+            if rx + 4 + tw <= w - 4:
+                p.drawText(QRectF(rx + 4, 2, tw + 4, row_h),
+                           Qt.AlignVCenter | Qt.AlignLeft, self._ref_label)
+            else:
+                p.drawText(QRectF(4, 2, max(rx - 8, 12), row_h),
+                           Qt.AlignVCenter | Qt.AlignRight,
+                           fm.elidedText(self._ref_label, Qt.ElideRight,
+                                         max(rx - 8, 12)))
 
     def _paint_v(self, p: QPainter, w: int, h: int, vmax: int):
         """竖柱:数值沿柱身竖排(旋转-90°,每根都显示,不占横向空间);
@@ -1297,6 +1530,12 @@ class HistoryWindow(QWidget):
     刷新在 UI 线程同步查询:当前 db 规模实测 ~0.1s 量级,可接受;数据量
     再涨需加时间窗或转 worker 线程。"""
 
+    # 头部口径说明的固定底稿:refresh 在其后追加近 7 天趋势段(有数据时),
+    # 零用量/无数据回到纯底稿 —— 底稿集中一处,防 __init__ 与 refresh 两处漂移
+    HINT_BASE = ("按天=全部来源 in+out(同今日口径,含 ¥ 按刊例价估算);"
+                 "按会话=main_turn(与卡片一致);计费块=每 5h 一桶。"
+                 "三图口径不同,合计对不上属预期。")
+
     def __init__(self, eng: DataEngine):
         super().__init__(None)
         self.eng = eng
@@ -1306,9 +1545,9 @@ class HistoryWindow(QWidget):
         self.setWindowFlag(Qt.Window, True)
         self.resize(780, 460)
 
-        # v0.5.0:三图统一竖柱。按天页保持水平标签(默认 0,外观不变);
-        # 会话/计费块页标签远宽于槽位('标题… ·N次'/'09-26 14:00'),旧版
-        # 水平摆放要么矩形裁剪要么重叠,改 45° 斜排 + elide + 悬停全量 tooltip
+        # v0.5.2:三图统一水平条(用户实测竖柱不便阅读);长标签按空间省略,
+        # 悬停 tooltip 显示全量 label+数值 —— 近 7 天日均参考线也只画在
+        # 水平形态上(见 BarChart.set_reference)
         self.daily_chart = BarChart(horizontal=True)
         self.sess_chart = BarChart(horizontal=True)
         self.block_chart = BarChart(horizontal=True)
@@ -1342,14 +1581,12 @@ class HistoryWindow(QWidget):
         self.tabs.addTab(blk, "计费块(每5h一桶)")
 
         head = QHBoxLayout()
-        hint = QLabel("按天=全部来源 in+out(同今日口径,含 ¥ 按刊例价估算);"
-                      "按会话=main_turn(与卡片一致);计费块=每 5h 一桶。"
-                      "三图口径不同,合计对不上属预期。")
-        hint.setObjectName("dim")
-        hint.setWordWrap(True)
+        self.hint = QLabel(self.HINT_BASE)
+        self.hint.setObjectName("dim")
+        self.hint.setWordWrap(True)
         btn = QPushButton("刷新")
         btn.clicked.connect(self.refresh)
-        head.addWidget(hint, 1)
+        head.addWidget(self.hint, 1)
         head.addWidget(btn)
 
         root = QVBoxLayout(self)
@@ -1374,6 +1611,22 @@ class HistoryWindow(QWidget):
               f"¥{daily_cost[d.isoformat()][1]:.2f}" if d.isoformat() in daily_cost
               else "")
              for d in days])
+        # 近 7 天趋势外推:日均虚线画进按天图 + 头部 hint 追加『本月预计』。
+        # 窗口零用量(空库/近 7 天没用)→ trend_forecast 返回 None,线与标注
+        # 双双不出现(宁缺勿错:0 日均外推的『本月预计 ¥0.00』无信息量);
+        # partial(窗口内含未知模型)时两处 ¥ 前加 ≈,金额为下限
+        fc = trend_forecast(self.eng.fetch_daily_model_usage(7))
+        if fc is None:
+            self.daily_chart.set_reference(None, "")
+            self.hint.setText(self.HINT_BASE)
+        else:
+            self.daily_chart.set_reference(
+                fc["avg_tokens"], f"日均 {fmt_k(fc['avg_tokens'])}/天")
+            approx = "≈" if fc["partial"] else ""
+            self.hint.setText(
+                self.HINT_BASE +
+                f" · 近7天日均 {approx}¥{fc['avg_cny']:.2f}/天,"
+                f"本月预计 {approx}¥{fc['forecast_cny']:.2f}")
         rows = self.eng.fetch_session_usage(20)
         self.sess_chart.set_items(
             [((title or sid[:12]) + f" ·{cnt}次", tok)

@@ -13,6 +13,8 @@ zm_state.json
 zm_config.json
 zm_prices.json
 zm_alerts.json
+# 右键『导出 CSV』的本地导出物(模型名+token+金额,无密钥),用户数据不进库
+zm_usage_export.csv
 mini_tk_events.log
 # PyInstaller 打包产物
 build/
