@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ctypes
 import csv
+import calendar
 import datetime as dt
 import json
 import math
@@ -1541,9 +1542,7 @@ class HistoryWindow(QWidget):
 
     # 头部口径说明的固定底稿:refresh 在其后追加近 7 天趋势段(有数据时),
     # 零用量/无数据回到纯底稿 —— 底稿集中一处,防 __init__ 与 refresh 两处漂移
-    HINT_BASE = ("按天=全部来源 in+out(同今日口径,含 ¥ 按刊例价估算);"
-                 "按会话=main_turn(与卡片一致);计费块=每 5h 一桶。"
-                 "三图口径不同,合计对不上属预期。")
+    HINT_BASE = ""   # 口径说明按用户要求移除,hint 为纯数据行
 
     def __init__(self, eng: DataEngine):
         super().__init__(None)
@@ -1623,23 +1622,27 @@ class HistoryWindow(QWidget):
         # 近 7 天趋势外推:日均虚线画进按天图 + 头部 hint 追加『本月预计』。
         # 窗口零用量(空库/近 7 天没用)→ trend_forecast 返回 None,线与标注
         # 双双不出现(宁缺勿错:0 日均外推的『本月预计 ¥0.00』无信息量);
-        # 全部历史总计(全量无防御截断,总计语义即完整):top hint 恒显
+        # hint = 纯数据行:近7天日均( tokens+¥ ) · 本月预计( tokens+¥ ) · 全部历史
         t_tok, t_cny, t_p = self.eng.fetch_total_usage()
-        total_txt = (f" · 全部历史 {fmt_k(t_tok)} tokens · "
+        total_txt = (f"全部历史 {fmt_k(t_tok)} tokens · "
                      + ("≈" if t_p else "") + f"¥{t_cny:,.0f}")
-        # partial(窗口内含未知模型)时两处 ¥ 前加 ≈,金额为下限
+        # partial(窗口内含未知模型)时 ¥ 前加 ≈,金额为下限
         fc = trend_forecast(self.eng.fetch_daily_model_usage(7))
         if fc is None:
             self.daily_chart.set_reference(None, "")
-            self.hint.setText(self.HINT_BASE + total_txt)
+            self.hint.setText(total_txt)
         else:
             self.daily_chart.set_reference(
                 fc["avg_tokens"], f"日均 {fmt_k(fc['avg_tokens'])}/天")
             approx = "≈" if fc["partial"] else ""
+            # 本月预计 tokens = 日均 × 当月天数(与 forecast_cny 同外推口径)
+            days_in_month = calendar.monthrange(
+                dt.date.today().year, dt.date.today().month)[1]
+            ft_tokens = fc["avg_tokens"] * days_in_month
             self.hint.setText(
-                self.HINT_BASE +
-                f" · 近7天日均 {approx}¥{fc['avg_cny']:.2f}/天,"
-                f"本月预计 {approx}¥{fc['forecast_cny']:.2f}" + total_txt)
+                f"近7天日均 {fmt_k(fc['avg_tokens'])}/天 · {approx}¥{fc['avg_cny']:.2f}/天"
+                f" · 本月预计 {fmt_k(ft_tokens)} · {approx}¥{fc['forecast_cny']:.2f}"
+                f" · {total_txt}")
         rows = self.eng.fetch_session_usage(20)
         self.sess_chart.set_items(
             [((title or sid[:12]) + f" ·{cnt}次", tok)
