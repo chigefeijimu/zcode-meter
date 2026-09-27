@@ -197,20 +197,6 @@ python tests/run_all.py data       # 只跑数据层单测
 2. **界面层** `src/zcode_meter/app.py`：`_build_card`/`_build_bar` 加 label（竖条不显示的字段记得显式置 `None`，防悬空引用）；`_apply_snapshot` 渲染
 3. **单测** `tests/test_data_engine.py`：对着 db 手算期望值加断言（口径回归就是这么防的）
 
-## 调试与故障排查
-
-| 症状 | 排查 |
-|---|---|
-| 窗口消失/崩溃 | 看 `zm_crash.log`（faulthandler 自动记录堆栈）；启动恢复时按屏幕可视区夹取 + 贴边尺寸 `_refit_dock` 周期自愈，无周期出界守护 |
-| 交互事件异常 | `ZM_DEBUG=1` 启动，事件流写入 `zm_debug.log` |
-| 数据不对 | 先跑 `python tests/run_all.py` 确认口径回归；再对照"显示指标与口径"表核查（今日/按天/按会话/计费块/多源各口径互不相等属预期） |
-| 金额带 ≈ / 偏低 | 今日用了价格表未覆盖的模型（非 bigmodel 模型计 ¥0）：在 `zm_prices.json` 补该模型单价后重启 |
-| 「套餐剩余」不显示 | 未配置 `quota_api_key`（该轨优雅降级）；或 quota 接口结构变化 —— 看 `zm_debug.log` 首跑失败落盘的响应片段（无 key 无法联调，结构取自 2026-09 社区逆向实测） |
-| 告警气泡不弹 | Windows 专注助手开启时系统会抑制托盘气泡（系统行为非本工具 bug）；确认托盘图标存在；同级别同日只提醒一次（看 `zm_alerts.json`） |
-| 燃速/还可撑偏大 | 刚启动或今日活跃不足 60 分钟时窗口未满、燃速被低估，属口径而非 bug（见口径表"燃速"行） |
-| 两源今日对不上 | ZCode 与 Claude 口径不同（Claude 补 cache、含 sidechain），见口径表"多源今日"行 |
-| exe 版日志找不到 | frozen 模式下 `zm_crash.log`/`zm_debug.log`/`zm_state.json`/`zm_config.json`/`zm_prices.json` 落 **exe 同目录** |
-
 ## 路线图
 
 - [x] 位置记忆（重启回到上次位置/形态）
