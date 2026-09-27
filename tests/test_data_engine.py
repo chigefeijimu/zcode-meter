@@ -55,7 +55,7 @@ def test_fetch_total_usage():
                 (t0, "GLM-5.3", "completed", "main_turn",
                  2_000_000, 1_000_000, 500_000),
                 # GLM-5.3-Flash: in 1M(含 cache 0.8M) out 0.5M →
-                # (0.2M*0.8 + 0.8M*0.23 + 0.5M*2.8)/1M = ¥1.824, tokens 1.5M
+                # (0.2M*0.8 + 0.8M*0.23 + 0.5M*2.8)/1M = ¥1.744, tokens 1.5M
                 (t0, "GLM-5.3-Flash", "completed", "subagent",
                  1_000_000, 800_000, 500_000),
                 # 未知模型:¥0 + partial, tokens 0.15M
@@ -70,9 +70,9 @@ def test_fetch_total_usage():
         e = de.DataEngine(queue.Queue(maxsize=1))
         tok, cny, partial = e.fetch_total_usage()
         # 手算:tokens = 2.5M + 1.5M + 0.15M = 4.15M
-        # 金额 = 24.0 + 1.824 + 0 = ¥25.824 → round(…,2)=25.82
+        # 金额 = 24.0 + 1.744 + 0 = ¥25.744 → round(…,2)=25.74
         check("总计 tokens=全库 in+out", tok == 4_150_000, str(tok))
-        check("总计金额=分组计价之和", cny == 25.82, str(cny))
+        check("总计金额=分组计价之和", cny == 25.74, str(cny))
         check("总计 partial(含未知模型)", partial is True)
         e.stop()
     finally:
