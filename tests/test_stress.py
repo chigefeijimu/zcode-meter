@@ -368,13 +368,17 @@ def main() -> int:
     # (F3 裁决:est_lbl/elapsed_lbl 删除,信息并入,tooltip 补偿);
     # sparkline <2 点隐藏不闪空(T-4 数据缺席口径)
     win.snap.state = "generating"
-    win.snap.tps_est = 24.3
+    win.snap.global_tps = 24.3
     win.snap.gen_elapsed = 12.0
     win.snap.recent_speeds = None
     win._apply_snapshot(win.snap)
-    check("卡片状态行:生成中+elapsed 并入;速度 ~ 前缀流式估算",
+    check("卡片状态行:生成中+elapsed 并入;主数字=全局吞吐恒带 ~",
           win.state_lbl.text() == "生成中 12s" and win.tps_lbl.text() == "~24.3",
           f"{win.state_lbl.text()!r}/{win.tps_lbl.text()!r}")
+    win.snap.global_tps = 0.0
+    win._apply_snapshot(win.snap)
+    check("卡片主数字:全局吞吐 0 → 空闲 --",
+          win.tps_lbl.text() == "--", win.tps_lbl.text())
     check("卡片 sparkline:<2 点隐藏", win.spark.isHidden())
     win.snap.recent_speeds = [10.0, 20.0, 15.0, 30.0]
     win._apply_snapshot(win.snap)

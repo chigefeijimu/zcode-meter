@@ -1680,7 +1680,8 @@ def test_fetch_recent_speeds_synthetic():
             " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
             " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
             " output_tokens INTEGER, duration_ms INTEGER,"
-            " time_to_first_token_ms INTEGER)")
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
         t0 = de.today0_ms()
 
         def mu(sid, src, status, out, dur, ttft):
@@ -1746,13 +1747,30 @@ def test_fetch_recent_speeds_synthetic():
         check("sparkline:无记录会话空表",
               e.fetch_recent_speeds(12, "sess_none") == [])
         # 接线:_poll_stats 在 snap_lock 内填充(直调与 _switch_session 内部
-        # 同一调用点;不 start 免线程竞态)
+        # 同一调用点;不 start 免线程竞态)。v0.8.0 速度语义改全局吞吐后,
+        # recent_speeds = _gtps_hist 逐秒采样(1 次 poll → 1 点;fixture 行
+        # completed_at 为旧时刻,重叠=0,part 表无 text 增长 → 0.0)
         e._poll_stats()
         rs = e.snap.recent_speeds
-        check("sparkline:Snapshot.recent_speeds 已接线(_poll_stats)",
-              isinstance(rs, list) and len(rs) == 5
-              and all(abs(a - b) < 1e-9 for a, b in zip(rs, expect_full)),
-              f"got {rs}")
+        check("sparkline:全局吞吐采样已接线(_poll_stats,1 点 0.0)",
+              isinstance(rs, list) and len(rs) == 1 and abs(rs[0]) < 1e-9
+              and abs(e.snap.global_tps) < 1e-9, f"got {rs}")
+        # 完成重叠:把一行 completed 挪进最近窗口 → 全局吞吐 = 重叠加权
+        con = sqlite3.connect(tdb)
+        now_ms = int(time.time() * 1000)
+        # r3(1350tok 全表唯一):ft=now−4s c=now−1s → 区间 [−4,−1]s 完整落
+        # 在 10s 窗内,gen=3s,r=450 → 贡献 450×3/10=135.0(其余行 completed_at
+        # NULL 天然被滤)
+        con.execute("UPDATE model_usage SET first_token_at=?, completed_at=?"
+                    " WHERE output_tokens=1350 AND session_id='sess_main'",
+                    (now_ms - 4_000, now_ms - 1_000))
+        con.commit(); con.close()
+        e._poll_stats()
+        expect_overlap = (1350.0 / 3.0) * 3.0 / de.DataEngine.THROUGHPUT_WINDOW_S
+        check("全局吞吐:完成行重叠加权(手算 135)",
+              len(e.snap.recent_speeds) == 2
+              and abs(e.snap.global_tps - expect_overlap) < 1e-6,
+              f"got {e.snap.global_tps}")
         e.stop()
 
         # 异常路径:DB_PATH 指向不存在的库 → connect_ro 抛 OperationalError

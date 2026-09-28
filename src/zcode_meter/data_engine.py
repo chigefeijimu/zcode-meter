@@ -19,6 +19,7 @@ import json
 import os
 import queue
 import sqlite3
+from collections import deque
 import sys
 import threading
 import time
@@ -769,9 +770,14 @@ class Snapshot:
     tps_avg: float | None = None        # 主力模型的会话平均 tok/s
     speed_by_model: list = None         # [(provider, model, tps, out_tokens)] 按用量降序
     # ---- v0.8.0 新增:速度趋势(sparkline 数据源) ----
-    recent_speeds: list = None          # 最近 n=12 条完成请求的逐条速度(tok/s,
-                                        # 时间正序),fetch_recent_speeds 填充;
+    recent_speeds: list = None          # 全局吞吐的逐秒采样(最近 ~12 点,时间
+                                        # 正序)—— v0.8.0 视觉对版期速度语义改
+                                        # 全局瞬时吞吐后,sparkline 与主数字同
+                                        # 口径(引擎 _gtps_hist 环形缓冲填充);
                                         # <2 点时 UI 隐藏曲线(不闪空)
+    global_tps: float = 0.0             # 全局瞬时吞吐 tok/s = 全部会话(主/子代
+                                        # 理/工作流/compact 等)流式贡献 + 完成
+                                        # 请求与最近 10s 窗口的重叠加权;0=空闲
     today_tokens: int = 0               # 今日全部会话 token 总用量(in+out)
     # ---- v0.4.0 新增(口径见 README):金额/燃速/多源均 ZCode-DB-only ----
     today_cost_cny: float = 0.0         # 今日金额(元,按刊例价;订阅套餐内
@@ -802,6 +808,8 @@ class DataEngine(threading.Thread):
     POLL_DB = 1.0
     POLL_PART = 0.5
     CHAR_PER_TOKEN_INIT = 3.2
+    THROUGHPUT_WINDOW_S = 10.0   # 全局吞吐的完成重叠窗(用户拍板 10s;越小越
+                                 # "瞬时"越抖,越大越平滑越迟钝)
 
     def __init__(self, out: "queue.Queue[Snapshot]"):
         super().__init__(daemon=True)
@@ -817,6 +825,11 @@ class DataEngine(threading.Thread):
         self._last_len_t = 0.0
         self._chars_per_token = self.CHAR_PER_TOKEN_INIT
         self._exact_out_chars = 0
+        # ---- 全局瞬时吞吐(v0.8.0 对版期,速度语义从『当前会话』改『机器
+        # 全部会话』):_gpart_last = 每会话最新 text part 的 (长度, 时刻),
+        # 增长即流式输出;_gtps_hist = 全局吞吐逐秒采样环形缓冲(sparkline) --
+        self._gpart_last: dict = {}
+        self._gtps_hist: "deque" = deque(maxlen=12)
         self._prev_max_rowid = self._max_usage_rowid()
         # ---- v0.5.1:quota 活动信号。水位 = completed 行最大 rowid(全
         # 会话全 query_source,含 subagent —— 与今日用量同宽,子代理消耗
@@ -1045,10 +1058,14 @@ class DataEngine(threading.Thread):
                 self.snap.burn_cny_per_hour = round(burn_cny, 6)
                 self.snap.est_hours_left = est_hours_left(
                     self.daily_budget_cny, cost_cny, burn_cny)
-                # 速度趋势 sparkline:独立连接+自带异常兜底(fetch_recent_speeds),
-                # 与 today_by_source 同批填充 —— _switch_session 重建 Snapshot 后
-                # 本方法随 _poll_stats 立即补全,不闪空
-                self.snap.recent_speeds = self.fetch_recent_speeds()
+                # 速度趋势 sparkline:全局吞吐逐秒采样环形缓冲(v0.8.0 对版期
+                # 速度语义改全局,与主数字同口径;12 点 × 1s 采样 ≈ 12s 走势)
+                now_t = time.time()
+                self.snap.global_tps = (self._global_part_tps(now_t)
+                                        + self._global_completed_tps(
+                                            now_t, self.THROUGHPUT_WINDOW_S))
+                self._gtps_hist.append(self.snap.global_tps)
+                self.snap.recent_speeds = list(self._gtps_hist)
                 # 多源聚合(只读、TTL 缓存);新字段与本批同批填充,
                 # _switch_session 重建 Snapshot 后经 _poll_stats 立即补全不闪空
                 self.snap.today_by_source = [
@@ -1119,6 +1136,68 @@ class DataEngine(threading.Thread):
                 self.snap.tps_exact = out_tok / (gen_ms / 1000)
                 self.snap.last_ttft = (ttft_ms or 0) / 1000
                 self.snap.last_duration = (dur_ms or 0) / 1000
+
+    # ---- 全局瞬时吞吐(2026-09-28,速度语义『当前会话』→『机器全部会话』) ----
+    def _global_part_tps(self, now: float) -> float:
+        """流式贡献:所有会话最新 text part 的长度增长之和 ÷ 字符token比。
+
+        part 表每个会话都在流式写入(子代理/工作流同样),取每会话 MAX(rowid)
+        的 text 行长度,与上次采样差分 —— 增长即输出速率;行切换(新一轮开始,
+        新行更短)只重置基线不计负增长。扫近 4000 行窗口防全表 GROUP BY;会话
+        消失(生成完)时裁剪字典防无限长。chars/token 用主会话完成请求自校准
+        的 _chars_per_token(子代理内容比例近似,初始化 3.2)。"""
+        try:
+            con = self._connect()
+            rows = con.execute(
+                "SELECT session_id, MAX(rowid), length(data) FROM part"
+                " WHERE data LIKE '{\"type\":\"text\"%'"
+                " AND rowid > (SELECT MAX(rowid) FROM part) - 4000"
+                " GROUP BY session_id").fetchall()
+            con.close()
+        except sqlite3.Error:
+            return 0.0
+        tps = 0.0
+        seen = set()
+        for sid, _mx, ln in rows:
+            if not sid or not ln:
+                continue
+            seen.add(sid)
+            prev = self._gpart_last.get(sid)
+            if prev is not None and ln > prev[0]:
+                dt = max(now - prev[1], 1e-3)
+                tps += (ln - prev[0]) / dt / self._chars_per_token
+            self._gpart_last[sid] = (ln, now)
+        if len(self._gpart_last) > len(seen) + 64:
+            self._gpart_last = {k: v for k, v in self._gpart_last.items()
+                                if k in seen}
+        return tps
+
+    def _global_completed_tps(self, now: float, window_s: float) -> float:
+        """完成贡献:completed 行的输出区间 [first_token_at, completed_at] 与
+        最近 window_s 窗口的重叠加权 —— 贡献 = r_i × 重叠秒 / 窗口,其中
+        r_i = output/(c−ft)。token 摊到真实生成的那段时间上,完成瞬间不产生
+        尖峰;流式请求完成后由 part 增长无缝切换到本项(不重不漏)。
+        completed_at≥窗沿即全部候选行。异常语义:sqlite3.Error → 0.0。"""
+        cut_ms = int((now - window_s) * 1000)
+        try:
+            con = self._connect()
+            rows = con.execute(
+                "SELECT output_tokens, first_token_at, completed_at"
+                " FROM model_usage WHERE status='completed' AND completed_at>=?"
+                " AND output_tokens>0 AND first_token_at IS NOT NULL",
+                (cut_ms,)).fetchall()
+            con.close()
+        except sqlite3.Error:
+            return 0.0
+        win = max(window_s, 1e-3)
+        now_ms = now * 1000.0
+        tps = 0.0
+        for out_tok, ft, c in rows:
+            gen_s = max((c - ft) / 1000.0, 1e-3)
+            ov_ms = min(c, now_ms) - max(ft, cut_ms)
+            if ov_ms > 0:
+                tps += (out_tok / gen_s) * (ov_ms / 1000.0) / win
+        return tps
 
     # ---- part 轮询(生成中估算) ----
     def _part_loop(self):

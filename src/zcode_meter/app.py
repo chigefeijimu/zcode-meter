@@ -1090,8 +1090,9 @@ class MeterWindow(QWidget):
         lay = self.layout()
         if lay is None:
             return 60, 20
-        sp = 6
-        pad = 3          # 每控件安全余量:中文在 Consolas 回退渲染时 sizeHint 会低估
+        sp = 10   # 横条项间距(预览 gap 10,2026-09-28 对版)—— 旧 6 每件差
+                  # 4px,~13 件累计 ~50px,条尾『均燃 148.4M/h』被裁(用户截图)
+        pad = 2   # 每控件安全余量:中文在 Consolas 回退渲染时 sizeHint 会低估
         if vertical:
             # 边框 2 + 上下边距 16×2 + 4px 总余量 + 项间距 8×(n−1)。
             # 旧式每控件 pad 3 ×~13 项 ≈ 39px 虚高全被首尾 stretch 均分,
@@ -1854,11 +1855,14 @@ class MeterWindow(QWidget):
     def _apply_snapshot(self, s: Snapshot):
         generating = s.state == "generating"
         self._set_dot_active(generating)     # 三形态均脉冲环(T3 后无 QLabel 分支)
-        tps = s.tps_est if (generating and s.tps_est) else s.tps_exact
+        # 主数字 = 全局瞬时吞吐(2026-09-28 语义切换:机器全部会话的流式贡献
+        # + 10s 完成重叠窗,不再跟随当前会话;tps_est/tps_exact 仍由引擎维护
+        # 但仅供字符比校准等内部用途)。<0.05 视为空闲显 --
+        gtps = s.global_tps or 0.0
         if self._bar_form is None:
             # v0.8.0 T5+T2:卡片新结构渲染(_apply_card),此后即返回 ——
             # 下方条分支消费的 in_lbl/plan_ring 等在卡形态是 None(F4 表)
-            self._apply_card(s, generating, tps)
+            self._apply_card(s, generating, gtps)
             self._refit_dock()
             return
         # ---- v0.8.0 T3 条形态渲染(F4 属性表横/竖列)----
@@ -1877,7 +1881,7 @@ class MeterWindow(QWidget):
             self.vbar_in_cap.setVisible(True)
             self.vsep_today.setVisible(True)     # 今日/入出组恒在 → 恒显
             self.vsep_in.setVisible(True)
-        speed_txt = f"{tps:.1f}" if tps else "--"
+        speed_txt = f"{gtps:.1f}" if gtps >= 0.05 else "--"
         if self._bar_form == "h":
             self.tps_lbl.setText(speed_txt)   # 14px Bold 蓝;单位恒显 "t/s" dim
             self.tps_unit_lbl.setVisible(True)
@@ -1962,10 +1966,11 @@ class MeterWindow(QWidget):
             self.vbar_in_cap.setText(f"入 · 出{fmt_k(s.session_out)}")
         self._refit_dock()
 
-    def _apply_card(self, s: Snapshot, generating: bool, tps) -> None:
+    def _apply_card(self, s: Snapshot, generating: bool, gtps) -> None:
         """v0.8.0 T5+T2 卡片渲染(预览 .g-card 结构,_build_card ①-⑥ 对应)。
         条形态走 _apply_snapshot 的 T3 新分支;本方法只消费 F4 属性表卡列的
-        件,条形态件(plan_ring(横)/in_lbl(竖)等)一律不碰。"""
+        件,条形态件(plan_ring(横)/in_lbl(竖)等)一律不碰。gtps=全局瞬时
+        吞吐(2026-09-28 语义切换,主数字不再用会话级 tps_est/exact)。"""
         # ① 状态行:elapsed 并入状态文本(idle『空闲』);会话标题降级为窗口
         # tooltip(F3 裁决:卡片行数减法由 tooltip+告警气泡补偿);模型名
         # manual 前缀 📌、超宽 elide(固定 150px 钳宽,不反推撑宽卡片)
@@ -1977,11 +1982,10 @@ class MeterWindow(QWidget):
         # 190px:内容宽 289 − 速度列(最宽 "999.9 t/s" 实测 87)− 间距 6 的
         # 余量内取整;模型行不改列宽策略(name label 本就在拉伸侧)
         self.model_name_lbl.setText(fm.elidedText(name, Qt.ElideRight, 190))
-        # ② 主数字行:流式估算以速度 ~ 前缀表达(旧 est_lbl 删除,README
-        # 『速度带~=流式估算』口径);sparkline <2 点隐藏不闪空(T-4 风险)
-        self.tps_lbl.setText(
-            ("~" if (generating and s.tps_est) else "")
-            + (f"{tps:.1f}" if tps else "--"))
+        # ② 主数字行:全局瞬时吞吐恒带 ~ 前缀(估算量:流式贡献+10s 重叠窗,
+        # README 口径『~=估算』仍成立);<0.05 空闲显 --;sparkline=同口径
+        # 逐秒采样(recent_speeds),<2 点隐藏不闪空(T-4 风险)
+        self.tps_lbl.setText(f"~{gtps:.1f}" if gtps >= 0.05 else "--")
         vals = s.recent_speeds or []
         self.spark.set_values(vals)
         self.spark.setHidden(len(vals) < 2)
