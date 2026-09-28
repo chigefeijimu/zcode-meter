@@ -626,14 +626,27 @@ class SparklineWidget(QWidget):
     <2 点的显隐由宿主(_apply_snapshot)驱动 setVisible —— 本控件不隐藏
     自己,保持纯展示件语义;隐藏控件被 _bar_size 跳过(v0.5.0 机制)。"""
 
-    def __init__(self, w: int, h: int, parent=None):
+    def __init__(self, w: int, h: int, parent=None, stretch: bool = False):
         super().__init__(parent)
-        self.setFixedSize(int(w), int(h))
+        # stretch=True(卡形态 2026-09-28):吃满主数字行剩余宽度 —— 用户
+        # 反馈卡片上半右侧空白,速度趋势是填充该带的最自然数据;min w=72
+        # 保底可读。条形态保持 fixed(v0.5.0 语义,_bar_size 依赖定宽)。
+        if stretch:
+            self.setMinimumSize(int(w), int(h))
+            sp = self.sizePolicy()
+            sp.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+            sp.setVerticalPolicy(QSizePolicy.Policy.Fixed)
+            self.setSizePolicy(sp)
+        else:
+            self.setFixedSize(int(w), int(h))
         self._values: list = []
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     def sizeHint(self) -> QSize:
-        return QSize(self.width(), self.height())
+        # minimumSize 而非当前 width/height:未布局时 QWidget 默认 640x480,
+        # stretch 模式无定宽钳制,sizeHint 报 480 高会把布局撑爆
+        # (measure 满载 755px 事故,2026-09-28);fixed 模式 min==定宽,同式
+        return QSize(self.minimumWidth(), self.minimumHeight())
 
     def set_values(self, values) -> None:
         self._values = [float(v) for v in (values or [])]
@@ -686,12 +699,13 @@ class MeterWindow(QWidget):
     # 固定列宽』修宽度策略(CARD_GRID_COL_W),三态收敛 313。视觉对版
     # (2026-09-28)字号 px 化后重测(findings/measure_card_baseline.py,
     # 原生平台+停引擎三闸防真实数据竞态):grid 键值叠印修复(4 行结构)→
-    # 284/297/310/323/336;模型行对版(行高 1.8 节奏/线上 10 下 8/速度
-    # 600 字重)再测 → 305/318/331/344/357,全矩阵 max=357 → CARD_H=359
-    # (357 截断点+2 余量)。机制不变:
+    # 284/297/310/323/336;模型行对版再测 → 305/318/331/344/357;上半右侧
+    # 空白利用(sparkline 拉伸/多源并入今日行/预算余量上卡,今日行省一行)
+    # 再测 → 287/300/313/326/339,全矩阵 max=339 → CARD_H=341(339 截断点
+    # +2 余量)。机制不变:
     # _unset_dock/_restore_state/_detach_to_pointer 用它 setGeometry,偏小会
     # 静默截断(ui-verify 只打印不校验,需人工目视)。
-    CARD_W, CARD_H = 313, 359
+    CARD_W, CARD_H = 313, 341
     # grid 六格固定列宽(v0.8.0 T5+T2 宽度策略裁决):满载文本自然宽实测
     # 372 > CARD_W 313(findings/measure_card_baseline.py,13pt 字号期),按
     # spec 的『elide/固定列宽』修标签宽度策略 —— 列宽钉死后 v label 走
@@ -1159,11 +1173,13 @@ class MeterWindow(QWidget):
         head.addWidget(self.model_name_lbl)
         root.addLayout(head)
 
-        # ② 主数字行:速度 30pt Bold 蓝 + 单位 11pt faint + Sparkline(72x24,
-        # 预览 :150-157)。旧 est_lbl(『~估算』)删除:流式估算改为速度文本
-        # 的 ~ 前缀(README『速度带~=流式估算』口径);旧 elapsed_lbl 并入
-        # ①状态文本。单位拆独立 label 是为 30pt/11pt 双字号共存(sizeHint
-        # 可测,stress 可断言)—— 不入 F4 属性表但遵守同款 None 纪律。
+        # ② 主数字行:速度 30pt Bold 蓝 + 单位 11pt faint + Sparkline(stretch,
+        # min 72x24,吃满行剩余宽 —— 用户反馈上半右侧空白 2026-09-28,速度
+        # 趋势拉通填充;预览 :150-157 的 72px 定宽升级为弹性)。旧 est_lbl
+        # (『~估算』)删除:流式估算改为速度文本的 ~ 前缀(README『速度带~=
+        # 流式估算』口径);旧 elapsed_lbl 并入①状态文本。单位拆独立 label
+        # 是为 30pt/11pt 双字号共存(sizeHint 可测,stress 可断言)—— 不入
+        # F4 属性表但遵守同款 None 纪律。
         big = QHBoxLayout()
         big.setSpacing(SP["s"])
         self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 30)
@@ -1171,9 +1187,8 @@ class MeterWindow(QWidget):
         big.addWidget(self.tps_lbl)
         self.tps_unit_lbl = self._mk_lbl("tok/s", "faint", C_MONO, 11)
         big.addWidget(self.tps_unit_lbl, 0, Qt.AlignBottom)
-        self.spark = SparklineWidget(72, 24)
+        self.spark = SparklineWidget(72, 24, stretch=True)
         big.addWidget(self.spark, 0, Qt.AlignBottom)
-        big.addStretch(1)
         root.addLayout(big)
 
         # ③ 今日 hero 三段 baseline:fmt_k 19pt Bold 白.9(C_FG)/金额 13pt
@@ -1181,6 +1196,8 @@ class MeterWindow(QWidget):
         # 三段连排左对齐(预览 .g-today :159-163:n/c/t 顺排无 stretch,
         # 视觉对版 2026-09-28 修正 —— 首版把『今日』甩到右端是旧版遗留)。
         # 金额段 cost=0 整段隐藏、partial ≈ 前缀 —— 口径逐字沿 v0.7 实现。
+        # 多源拆分并入本行右端(dim 9px,右对齐,Ignored+elide 防撑宽):
+        # 用户反馈卡片上半右侧空白(2026-09-28),此行上移消化一行高度。
         today = QHBoxLayout()
         today.setSpacing(SP["s"])
         self.today_lbl = self._mk_lbl("--", "normal", C_MONO, 19)
@@ -1190,13 +1207,12 @@ class MeterWindow(QWidget):
         self.today_cost_lbl.setFont(mk_mono(13, QFont.DemiBold))
         today.addWidget(self.today_cost_lbl)
         today.addWidget(self._mk_lbl("今日", "faint", "Microsoft YaHei UI", 10))
-        today.addStretch(1)
-        root.addLayout(today)
-        # 多源拆分行:>1 源才有文案(README『多源今日』行,口径不动)。
-        # 空文本同步 setHidden:QLabel 空串仍占一行字高,卡片比预览高
-        # 出一截的隐形来源之一(视觉对版 2026-09-28)。
         self.today_src_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 9)
-        root.addWidget(self.today_src_lbl)
+        self.today_src_lbl.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                         QSizePolicy.Policy.Fixed)
+        self.today_src_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        today.addWidget(self.today_src_lbl, 1)
+        root.addLayout(today)
 
         # ④ 套餐 section 容器化(评审钉死):分节线+RingWidget46+右信息三行
         # 包进同一 QWidget,_plan_pct None 时整组 setVisible(False) —— 分节
@@ -1222,6 +1238,21 @@ class MeterWindow(QWidget):
         self.plan_sub_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 10)
         info.addWidget(self.plan_sub_lbl)
         prow.addLayout(info, 1)
+        # 右端:预算余量『还可撑 X h』(v0.8 降 tooltip 的 est_hours_left 恢复
+        # 上卡 —— 用户反馈套餐行右侧空白 2026-09-28;该数据本属套餐语境,
+        # F3 当时的取舍是密度让位,空间释放后回归)。est None 隐藏;≤0『超支』
+        # 红档。k/v 两行右对齐,与左 info 的 k/v 结构呼应。
+        plan_right = QVBoxLayout()
+        plan_right.setSpacing(0)
+        self.plan_left_k = self._mk_lbl("还可撑", "faint",
+                                        "Microsoft YaHei UI", 9)
+        self.plan_left_k.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        plan_right.addWidget(self.plan_left_k)
+        self.plan_left_v = self._mk_lbl("", "soft", C_MONO, 13)
+        self.plan_left_v.setFont(mk_mono(13, QFont.DemiBold))
+        self.plan_left_v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        plan_right.addWidget(self.plan_left_v)
+        prow.addLayout(plan_right)
         pv.addLayout(prow)
         root.addWidget(self.plan_section)
         # plan_lbl(F4 属性表:三形态恒建):卡形态的 % 由 ring 中心呈现,本
@@ -1459,6 +1490,7 @@ class MeterWindow(QWidget):
         self.title_lbl = self.elapsed_lbl = self.ttft_lbl = self.dur_lbl = None
         self.out_lbl = None               # 出量并入 vbar_in_cap 文本(F4:三形态 None)
         self.today_src_lbl = self.timing_lbl = None
+        self.plan_left_k = self.plan_left_v = None
         self.avg_lbl = self.rate_lbl = None
         self.plan_section = None
         self.plan_cap_lbl = self.plan_tok_lbl = None
@@ -1932,8 +1964,15 @@ class MeterWindow(QWidget):
         srcs = s.today_by_source
         src_txt = (" · ".join(f"{n} {fmt_k(t)}" for n, t in srcs)
                    if srcs and len(srcs) > 1 else "")
-        self.today_src_lbl.setText(src_txt)
+        # 并入今日行右端(Ignored+elide 130 防撑宽,右对齐):elide 用本
+        # label 9px 字体量宽
+        src_fm = QFontMetrics(self.today_src_lbl.font())
+        self.today_src_lbl.setText(
+            src_fm.elidedText(src_txt, Qt.ElideRight, 130) if src_txt else "")
         self.today_src_lbl.setHidden(not src_txt)
+        self.today_src_lbl.setToolTip(src_txt if
+                                      self.today_src_lbl.text() != src_txt
+                                      else "")
         # ④ 套餐 section 容器化:_plan_pct None → 分节线随段整组隐藏(不悬
         # 空);ring 中心 N% tier 色;lt 缺占位『—』;r 行段序与旧 D3 表相反
         # 是有意变更(评审第 3 轮):倒计时在前、『 · 』join、无前导点
@@ -1958,6 +1997,32 @@ class MeterWindow(QWidget):
                 seg for seg in (f"{cd} 后重置" if cd else None, age) if seg)
             self.plan_sub_lbl.setText(sub_txt)
             self.plan_sub_lbl.setHidden(not sub_txt)
+            # 右端预算余量:est_hours_left 缺隐藏;≤0『超支』红档(k 换『预算』)。
+            # 未配日预算时兜底显示燃速金额版 ¥/h(token 版在 grid 燃速格,
+            # 用户 taste『token+¥ 全统一』)—— 两者都缺才隐藏。
+            eh = s.est_hours_left
+            bc = s.burn_cny_per_hour or 0.0
+            if eh is not None:
+                self.plan_left_k.setHidden(False)
+                self.plan_left_v.setHidden(False)
+                if eh <= 0:
+                    self.plan_left_k.setText("预算")
+                    self.plan_left_v.setText("超支")
+                    self.plan_left_v.setStyleSheet(
+                        f"color: {C_TIER_DANGER};")
+                else:
+                    self.plan_left_k.setText("还可撑")
+                    self.plan_left_v.setText(f"{eh:.1f}h")
+                    self.plan_left_v.setStyleSheet(f"color: {C_FG};")
+            elif bc > 0:
+                self.plan_left_k.setHidden(False)
+                self.plan_left_v.setHidden(False)
+                self.plan_left_k.setText("燃速")
+                self.plan_left_v.setText(f"¥{bc:.2f}/h")
+                self.plan_left_v.setStyleSheet(f"color: {C_FG};")
+            else:
+                self.plan_left_k.setHidden(True)
+                self.plan_left_v.setHidden(True)
         # ⑤ grid 六格:k 恒显、v 缺参 --、按列宽 elide(CARD_GRID_COL_W
         # 宽度策略);燃速格 est_hours_left 降级为 tooltip(F3 取舍:
         # 『还可撑 X 小时』不再占行,悬停补偿;elide 丢失的全量原文同走
