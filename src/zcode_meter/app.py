@@ -32,8 +32,9 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy, QStyle,
-    QSystemTrayIcon, QTabWidget, QToolTip, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy,
+    QSpacerItem, QStyle, QSystemTrayIcon, QTabWidget, QToolTip, QVBoxLayout,
+    QWidget,
 )
 
 # 脚本直跑(python src/zcode_meter/app.py)时 __package__ 为空:补 src 进
@@ -1287,6 +1288,7 @@ class MeterWindow(QWidget):
         mv.addWidget(self._mk_card_sep("rgba(255,255,255,0.05)"))
         mv.addSpacing(8)
         self._model_rows_items = []          # [(name_lbl, tps_lbl)]×4,随容器重建
+        self._model_inset_items = []         # 行尾右缩进 spacer(_apply_card 动态改)
         for _i in range(4):
             if _i:
                 mv.addSpacing(5)
@@ -1297,6 +1299,13 @@ class MeterWindow(QWidget):
             sp = self._mk_lbl("", "half", C_MONO, 10)
             sp.setFont(mk_mono(10, QFont.DemiBold))
             row.addWidget(sp)
+            # 行尾弹性缩进:速度值右缘不贴内容边,而是对齐 grid 第三列
+            # (⏱首/总/均速)当前最宽文本的右缘 —— 用户裁决 2026-09-28,
+            # 缩进量 = 列宽 95 − 那两格最宽文本,逐帧 changeSize
+            spacer = QSpacerItem(0, 0, QSizePolicy.Policy.Fixed,
+                                 QSizePolicy.Policy.Minimum)
+            row.addSpacerItem(spacer)
+            self._model_inset_items.append(spacer)
             mv.addLayout(row)
             self._model_rows_items.append((nm, sp))
         root.addWidget(self.model_rows)
@@ -1997,6 +2006,20 @@ class MeterWindow(QWidget):
                 nm.setText(fmn.elidedText(f"{prov} / {model}",
                                           Qt.ElideRight, 215))
                 sp_lbl.setText(f"{tps_m:.1f} t/s" if tps_m else "-- t/s")
+        # 行尾右缩进:对齐 grid 第三列(⏱首/总/均速)当前最宽文本的右缘
+        # (用户裁决 2026-09-28『不要拉这么右边』)。用 elide 前的原文量宽
+        # (与该列 13px mono 同 metrics);inset = 列宽 95 − 最宽文本,钳 0
+        # (极端长文本越列宽时退回贴边,与 elide 行为一致)。
+        fmc = QFontMetrics(self.timing_lbl.font())
+        col3_max = max(
+            fmc.horizontalAdvance(f"{tt} / {du}"),
+            fmc.horizontalAdvance(f"{s.tps_avg:.1f} t/s" if s.tps_avg
+                                  else "--"))
+        inset = max(0, self.CARD_GRID_COL_W[2] - int(col3_max))
+        for it in self._model_inset_items:
+            it.changeSize(inset, 0, QSizePolicy.Policy.Fixed,
+                          QSizePolicy.Policy.Minimum)
+        self.model_rows.layout().invalidate()
 
     def _refit_dock(self):
         """条模式下数据文字变长时重算条尺寸(防截断);几何统一由
