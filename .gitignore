@@ -22,3 +22,4 @@ dist/
 *.spec
 # 本地开发工具链(ZCode 迭代工作流),不属于项目本体
 .zcode/
+zm_*.png

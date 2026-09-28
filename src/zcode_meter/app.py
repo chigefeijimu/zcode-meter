@@ -160,10 +160,13 @@ def mk_mono(size: int, weight=None) -> QFont:
       显式列中文字体反而会把它抬成首选、数字不再等宽;
     - weight 传 QFont.Weight 枚举(如 QFont.Bold),None 用默认权重。
     等宽构造唯一入口:_mk_lbl 内部单点 + 少数直接 setFont 的调用点,
-    其余 label 经 _mk_lbl 自动继承。"""
+    其余 label 经 _mk_lbl 自动继承。
+    - size 是像素(setPixelSize):与预览 HTML 的 px 字号一一对应。
+      v0.8.0 首版误用 setPointSize(pt=px×1.33),整卡放大 1.33 倍 →
+      高度溢出、grid 列宽爆掉,视觉对版时纠正(2026-09-28)。"""
     f = QFont()
     f.setFamilies([C_MONO, "Consolas"])
-    f.setPointSize(size)
+    f.setPixelSize(size)
     if weight is not None:
         f.setWeight(weight)
     return f
@@ -182,6 +185,14 @@ def _state_guard() -> bool:
     """状态读写守卫:--verify 自检或 ZM_NO_STATE=1(回归测试注入)时不读不写
     zm_state.json,防测试改写用户真实的位置记忆。"""
     return "--verify" in sys.argv or os.environ.get("ZM_NO_STATE") == "1"
+
+
+def _yf(px: int) -> QFont:
+    """图表中文标签字体(YaHei,像素基准):px 化对版时与 mk_mono
+    同步切 setPixelSize,原 QFont(fam, pt) 构造留给外部显式传参。"""
+    f = QFont("Microsoft YaHei UI")
+    f.setPixelSize(px)
+    return f
 
 
 def fmt_k(n: int) -> str:
@@ -671,23 +682,26 @@ class MeterWindow(QWidget):
     # 满载 0~4 行模型 → 303/303/317/331/345,全矩阵 max=345,CARD_H=346。
     # v0.8.0 T5+T2 卡片重绘(spec=design-preview-abd.html .g-card):宽改
     # 设计宽 313(预览 :36);满载文本自然宽实测 372>313,按 spec『elide/
-    # 固定列宽』修宽度策略(CARD_GRID_COL_W),三态收敛 313。CARD_H 实测
-    # 重估(findings/measure_card_baseline.py,原生平台+停引擎三闸防真实
-    # 数据竞态):满载(plan/burn on,sparkline 12 点,多源)0~4 行模型 →
-    # 276/293/310/327/344,全矩阵 max=344,CARD_H=346 沿用(344 截断点 +2
-    # 余量);0/1 行不再同高(plan section 容器 63px 恒占)。机制不变:
+    # 固定列宽』修宽度策略(CARD_GRID_COL_W),三态收敛 313。视觉对版
+    # (2026-09-28)字号 px 化后重测(findings/measure_card_baseline.py,
+    # 原生平台+停引擎三闸防真实数据竞态):满载 0~4 行模型 → 268/281/
+    # 294/307/320,全矩阵 max=320 → CARD_H=322(320 截断点+2 余量);预览
+    # .g-card 满载(3 行模型)322,与 3 行态 307 同量级,纵向收敛达成
+    # (首版 pt 字号曾把满载顶到 344+、真机比预览高 ~100px)。机制不变:
     # _unset_dock/_restore_state/_detach_to_pointer 用它 setGeometry,偏小会
     # 静默截断(ui-verify 只打印不校验,需人工目视)。
-    CARD_W, CARD_H = 313, 346
+    CARD_W, CARD_H = 313, 322
     # grid 六格固定列宽(v0.8.0 T5+T2 宽度策略裁决):满载文本自然宽实测
-    # 372 > CARD_W 313(findings/measure_card_baseline.py),按 spec 的
-    # 『elide/固定列宽』修标签宽度策略 —— 列宽钉死后 v label 走 Ignored
-    # 策略(不被 sizeHint 反推),文本按列宽 QFontMetrics elide(典型值全
-    # 显,极端值 elide 尾段+tooltip 回读全量)。分档以本机实测文本宽为准:
-    # 入/出 101(典型 "1.2M / 88K"=100)/ 缓存命中 81("100.00%"=70、
-    # 均燃同列 "296.0M/h"=80)/ ⏱首/总 111("0.8 / 12.4s"=109)。合计 293 +
-    # 列间距 2×2 + 边距 2×8 = 313,恰好收敛在设计宽内。
-    CARD_GRID_COL_W = (101, 81, 111)
+    # 372 > CARD_W 313(findings/measure_card_baseline.py,13pt 字号期),按
+    # spec 的『elide/固定列宽』修标签宽度策略 —— 列宽钉死后 v label 走
+    # Ignored 策略(不被 sizeHint 反推),文本按列宽 QFontMetrics elide
+    # (典型值全显,极端值 elide 尾段+tooltip 回读全量)。视觉对版
+    # (2026-09-28):字号 px 化(13px)后单字符宽 7.8px,边距回归 16×2、
+    # 列距 2→8(预览 gap 12 的紧凑折中,313 内放不下 12),列宽按新内容
+    # 宽 281−16 重算:入/出 102(真机实测会话 "427.1M / 528K"=13 字符
+    # 101px,首版 92 会被 elide 截断)/ 缓存命中 68("100.00%"=55)/
+    # ⏱首/总 95("0.8 / 12.4s"=86),合计 265+16+32=313 收敛。
+    CARD_GRID_COL_W = (102, 68, 95)
     _bar_form = None              # 类级默认:paintEvent 可能早于首次 _build_card
     _settle_timer = None          # 类级默认:moveEvent 可能早于 __init__ 定时器创建
     _in_prog_move = False         # 程序性移动(吸附/恢复)期间,moveEvent 不喂防抖
@@ -797,9 +811,13 @@ class MeterWindow(QWidget):
     # ---- v0.8.0 T5:窗口背景自绘(替代 QSS #root background/border) ----
     def paintEvent(self, ev):
         """深渐变玻璃底(不透明近似版,预览 .g-card/.g-bar/.g-vbar):
-        ① 垂直渐变 #17181d→#131419;② 顶部中央 200x100 径向光晕
-        rgba(96,205,255,0.10)→透明(y 半轴压缩 0.5 成椭圆,裁进圆角);
-        ③ 1px rgba(255,255,255,0.08) 描边。圆角按 _bar_form 分档:
+        ① 垂直渐变 #1c1e28→#15161d —— 预览底 rgba(24,26,34,.58) 叠
+        blur 壁纸后的等效观感(视觉对版 2026-09-28:首版 #17181d 过暗,
+        光晕叠上去仅 3 个 RGB 单位差、肉眼不可辨,玻璃感整体丢失);
+        ② 顶部中央 200x100 径向光晕(rgba(96,205,255,0.18)→透明,y 半轴
+        压缩 0.5 成椭圆,裁进圆角);
+        ③ 1px rgba(255,255,255,0.08) 描边 + 顶部内发光线(预览 inset
+        0 1px 0 白.06 的等价物,首版遗漏)。圆角按 _bar_form 分档:
         卡/竖条 12(预览 :42/:119)、横条 8(预览 :104)—— 圆角归属钉死在
         形态而非 QSS(QSS_BAR 的 7px 派生已不绘制,见 QSS 注释)。
         覆盖 paintEvent 即接管控件底色渲染,不调 super(默认实现只做 QSS
@@ -813,8 +831,8 @@ class MeterWindow(QWidget):
         path.addRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0),
                             radius, radius)
         grad = QLinearGradient(0.0, 0.0, 0.0, float(h))
-        grad.setColorAt(0.0, QColor("#17181d"))
-        grad.setColorAt(1.0, QColor("#131419"))
+        grad.setColorAt(0.0, QColor("#1c1e28"))
+        grad.setColorAt(1.0, QColor("#15161d"))
         p.fillPath(path, grad)
         # 顶部光晕:径向渐变圆心在顶边中点,半径 100(水平全幅 200);
         # scale(1, 0.5) 把纵向压成 100px 高的椭圆下半(预览 ::before 的
@@ -824,9 +842,16 @@ class MeterWindow(QWidget):
         p.translate(w / 2.0, 0.0)
         p.scale(1.0, 0.5)
         halo = QRadialGradient(QPointF(0.0, 0.0), 100.0)
-        halo.setColorAt(0.0, QColor(96, 205, 255, 26))    # 0.10 ≈ 26/255
+        halo.setColorAt(0.0, QColor(96, 205, 255, 46))    # 0.18 ≈ 46/255
         halo.setColorAt(0.7, QColor(96, 205, 255, 0))
         p.fillRect(QRectF(-100.0, -100.0, 200.0, 200.0), halo)
+        p.restore()
+        # 顶部内发光线:圆角矩形内 1px 横线(白.06)—— 预览玻璃感的
+        # 上沿高光,一半来自这条线、一半来自光晕
+        p.save()
+        p.setClipPath(path)
+        p.setPen(QPen(QColor(255, 255, 255, 15), 1.0))
+        p.drawLine(QPointF(radius, 1.5), QPointF(w - radius, 1.5))
         p.restore()
         p.setPen(QPen(QColor(255, 255, 255, 20), 1.0))    # 白.08 ≈ 20/255
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1093,9 +1118,14 @@ class MeterWindow(QWidget):
         lb.setObjectName(cls if cls != "normal" else "")
         if font:
             # v0.8.0 T1:等宽族经 mk_mono 单点构造(Cascadia 主+Consolas
-            # 回退);其余族(中文 UI/Segoe)维持单族 QFont 构造
-            lb.setFont(mk_mono(size or 9) if font == C_MONO
-                       else QFont(font, size or 9))
+            # 回退);其余族(中文 UI/Segoe)维持单族 QFont 构造。
+            # size 一律像素(与 mk_mono 同基准,对齐预览 px 字号)
+            if font == C_MONO:
+                lb.setFont(mk_mono(size or 9))
+            else:
+                f = QFont(font)
+                f.setPixelSize(size or 9)
+                lb.setFont(f)
         return lb
 
     def _build_card(self):
@@ -1105,10 +1135,11 @@ class MeterWindow(QWidget):
         # 每次重建后与实际标签集合一一对应(F4 属性表卡列,stress 断言锚)
         self._bar_form = None
         root = QVBoxLayout(self)
-        # 边距 m(8) 而非 l(12):grid 固定列宽预算(293+间距 4+边距 16=313)
-        # 需要这 8px —— 宽度优先于留白,预览 16px 边距在 13pt 字号下不可得
-        root.setContentsMargins(SP["m"], SP["m"], SP["m"], SP["s"])
-        root.setSpacing(SP["xs"])
+        # 边距 14/16/12 = 预览 padding 原值(:42)。首版用 8 是给 13pt 字号
+        # 的列宽预算让路;字号 px 化后文本窄回预览宽度,边距回归原值
+        # (视觉对版 2026-09-28),grid 列宽预算随内容宽 281 重算。
+        root.setContentsMargins(16, 14, 16, 12)
+        root.setSpacing(6)
 
         # ---- v0.8.0 T5+T2 卡片结构(预览 .g-card :145-191,自上而下) ----
         # ① 状态行:PulseIndicator(14)+状态文本(elapsed 并入:idle『空闲』/
@@ -1118,12 +1149,12 @@ class MeterWindow(QWidget):
         head.setSpacing(SP["s"])
         self.dot = PulseIndicator(14)         # 替换旧 QLabel『●』(M5 分派)
         head.addWidget(self.dot)
-        self.state_lbl = self._mk_lbl("空闲", "dim", "Microsoft YaHei UI", 9)
+        self.state_lbl = self._mk_lbl("空闲", "dim", "Microsoft YaHei UI", 11)
         head.addWidget(self.state_lbl)
         head.addStretch(1)
         # 模型名超宽 elide 由 _apply_card 用 QFontMetrics 钳宽完成(布局侧
         # 只给它 Ignored 水平策略,防长名反推撑宽卡片)
-        self.model_name_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 8)
+        self.model_name_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 10)
         head.addWidget(self.model_name_lbl)
         root.addLayout(head)
 
@@ -1146,6 +1177,8 @@ class MeterWindow(QWidget):
 
         # ③ 今日 hero 三段 baseline:fmt_k 19pt Bold 白.9(C_FG)/金额 13pt
         # 白.55 600(DemiBold,140 档)/『今日』10pt faint(89 档)。
+        # 三段连排左对齐(预览 .g-today :159-163:n/c/t 顺排无 stretch,
+        # 视觉对版 2026-09-28 修正 —— 首版把『今日』甩到右端是旧版遗留)。
         # 金额段 cost=0 整段隐藏、partial ≈ 前缀 —— 口径逐字沿 v0.7 实现。
         today = QHBoxLayout()
         today.setSpacing(SP["s"])
@@ -1155,11 +1188,13 @@ class MeterWindow(QWidget):
         self.today_cost_lbl = self._mk_lbl("", "dim", C_MONO, 13)
         self.today_cost_lbl.setFont(mk_mono(13, QFont.DemiBold))
         today.addWidget(self.today_cost_lbl)
-        today.addStretch(1)
         today.addWidget(self._mk_lbl("今日", "faint", "Microsoft YaHei UI", 10))
+        today.addStretch(1)
         root.addLayout(today)
-        # 多源拆分行:>1 源才有文案(README『多源今日』行,口径不动)
-        self.today_src_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
+        # 多源拆分行:>1 源才有文案(README『多源今日』行,口径不动)。
+        # 空文本同步 setHidden:QLabel 空串仍占一行字高,卡片比预览高
+        # 出一截的隐形来源之一(视觉对版 2026-09-28)。
+        self.today_src_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 9)
         root.addWidget(self.today_src_lbl)
 
         # ④ 套餐 section 容器化(评审钉死):分节线+RingWidget46+右信息三行
@@ -1167,8 +1202,8 @@ class MeterWindow(QWidget):
         # 线随段隐藏不悬空(旧实现分节线恒显,数据缺席时孤线漂浮)。
         self.plan_section = QWidget()
         pv = QVBoxLayout(self.plan_section)
-        pv.setContentsMargins(0, SP["s"], 0, 0)
-        pv.setSpacing(SP["xs"])
+        pv.setContentsMargins(0, 8, 0, 0)
+        pv.setSpacing(4)
         plan_line = self._mk_card_sep("rgba(255,255,255,0.07)")
         pv.addWidget(plan_line)
         prow = QHBoxLayout()
@@ -1183,7 +1218,7 @@ class MeterWindow(QWidget):
         self.plan_tok_lbl = self._mk_lbl("—", "normal", C_MONO, 14)
         self.plan_tok_lbl.setFont(mk_mono(14, QFont.DemiBold))
         info.addWidget(self.plan_tok_lbl)
-        self.plan_sub_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 8)
+        self.plan_sub_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 10)
         info.addWidget(self.plan_sub_lbl)
         prow.addLayout(info, 1)
         pv.addLayout(prow)
@@ -1202,8 +1237,8 @@ class MeterWindow(QWidget):
         # 由 _apply_card 按列宽 elide —— 不固定会被长文本反推出 372px。
         root.addWidget(self._mk_card_sep("rgba(255,255,255,0.07)"))
         grid = QGridLayout()
-        grid.setHorizontalSpacing(2)  # 豁免:列距让位于列宽预算(CARD_GRID_COL_W)
-        grid.setVerticalSpacing(2)   # 豁免:k/v 行距刻意<xs,密度优先(v0.7 先例)
+        grid.setHorizontalSpacing(8)  # 视觉对版:预览列 gap 12 在 313 宽内放不下,8 为折中
+        grid.setVerticalSpacing(4)    # 预览 k→v margin 1px+行内自然距的等效折中(原 2 过挤)
         for c, cw in enumerate(self.CARD_GRID_COL_W):
             grid.setColumnMinimumWidth(c, cw)
 
@@ -1314,7 +1349,7 @@ class MeterWindow(QWidget):
             self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 9)
             self.plan_lbl.setFont(mk_mono(9, QFont.DemiBold))   # 600(tier 色由 _apply_snapshot 注入)
             root.addWidget(self.plan_lbl)
-            self.plan_cd_lbl = self._mk_lbl("", "dim", C_MONO, 8)
+            self.plan_cd_lbl = self._mk_lbl("", "dim", C_MONO, 9)
             root.addWidget(self.plan_cd_lbl)
             self.sep_today = self._mk_sep(False)
             root.addWidget(self.sep_today)
@@ -1333,7 +1368,7 @@ class MeterWindow(QWidget):
             self.vbar_in_cap = self.vbar_burn_cap = None
             self.vsep_plan = self.vsep_burn = self.vsep_today = self.vsep_in = None
         else:
-            def vnum(txt="", cls="", size=9):
+            def vnum(txt="", cls="", size=14):
                 lb = self._mk_lbl(txt, cls, C_MONO, size)
                 lb.setAlignment(Qt.AlignHCenter)
                 return lb
@@ -1869,9 +1904,10 @@ class MeterWindow(QWidget):
             f"{'≈' if s.today_cost_partial else ''}¥{cost:.2f}" if cost else "")
         self.today_cost_lbl.setHidden(not cost)
         srcs = s.today_by_source
-        self.today_src_lbl.setText(
-            " · ".join(f"{n} {fmt_k(t)}" for n, t in srcs)
-            if srcs and len(srcs) > 1 else "")
+        src_txt = (" · ".join(f"{n} {fmt_k(t)}" for n, t in srcs)
+                   if srcs and len(srcs) > 1 else "")
+        self.today_src_lbl.setText(src_txt)
+        self.today_src_lbl.setHidden(not src_txt)
         # ④ 套餐 section 容器化:_plan_pct None → 分节线随段整组隐藏(不悬
         # 空);ring 中心 N% tier 色;lt 缺占位『—』;r 行段序与旧 D3 表相反
         # 是有意变更(评审第 3 轮):倒计时在前、『 · 』join、无前导点
@@ -1892,8 +1928,10 @@ class MeterWindow(QWidget):
                 f"~{fmt_k(int(lt))} tokens" if lt is not None else "—")
             cd = format_countdown_hm(self._plan_next_reset)
             age = format_age_zh(self._plan_fetched_at)
-            self.plan_sub_lbl.setText(" · ".join(
-                seg for seg in (f"{cd} 后重置" if cd else None, age) if seg))
+            sub_txt = " · ".join(
+                seg for seg in (f"{cd} 后重置" if cd else None, age) if seg)
+            self.plan_sub_lbl.setText(sub_txt)
+            self.plan_sub_lbl.setHidden(not sub_txt)
         # ⑤ grid 六格:k 恒显、v 缺参 --、按列宽 elide(CARD_GRID_COL_W
         # 宽度策略);燃速格 est_hours_left 降级为 tooltip(F3 取舍:
         # 『还可撑 X 小时』不再占行,悬停补偿;elide 丢失的全量原文同走
@@ -2023,7 +2061,7 @@ class BarChart(QWidget):
         p.fillRect(0, 0, w, h, QColor(C_BG))
         if not self._items:
             p.setPen(QColor(C_DIM))
-            p.setFont(QFont("Microsoft YaHei UI", 9))
+            p.setFont(_yf(11))
             p.drawText(self.rect(), Qt.AlignCenter, "无数据")
             return
         vmax = max(v for _, v in self._items) or 1
@@ -2039,7 +2077,7 @@ class BarChart(QWidget):
         n = len(self._items)
         # 标签列按内容自适应:取最长标签的实际渲染宽度(上限 150,下限 60),
         # 避免短标签(日期 70px)被 130px 固定列推远柱子
-        f_lbl0 = QFont("Microsoft YaHei UI", 8)
+        f_lbl0 = _yf(10)
         fm0 = QFontMetrics(f_lbl0)
         longest = max((fm0.horizontalAdvance(t[0]) for t in self._items), default=40)
         lbl_w = min(150, max(30, longest + 4))   # 紧贴:只留 4px 呼吸,短标签窄列
@@ -2047,8 +2085,8 @@ class BarChart(QWidget):
         val_w = 96                                     # 数值区预留(token+¥)
         bar_max = max(right - x0 - val_w - 6, 20)
         row_h = min(26, max((h - 8) / max(n, 1), 13))
-        f_lbl = QFont("Microsoft YaHei UI", 8)
-        f_val = mk_mono(8)
+        f_lbl = _yf(10)
+        f_val = mk_mono(10)
         fm = QFontMetrics(f_lbl)
         fm_val = QFontMetrics(f_val)
         for i, (label, val) in enumerate(self._items):
@@ -2103,7 +2141,7 @@ class BarChart(QWidget):
           不抽稀;按可用对角线长度 elide(首尾标签另受左缘钳制),bot 边距
           按旋转投影自适应并设上限,防矮窗口被标签区吃光。"""
         n = len(self._items)
-        f_val, f_lbl = mk_mono(8), QFont("Microsoft YaHei UI", 8)
+        f_val, f_lbl = mk_mono(10), _yf(10)
         fm = QFontMetrics(f_lbl)
         line_h = fm.height()
         w_max = max((fm.horizontalAdvance(t[0]) for t in self._items), default=0)
