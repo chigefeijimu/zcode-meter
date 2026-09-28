@@ -1092,13 +1092,17 @@ class MeterWindow(QWidget):
         sp = 6
         pad = 3          # 每控件安全余量:中文在 Consolas 回退渲染时 sizeHint 会低估
         if vertical:
-            total_h = 2 + 2
+            # 边框 2 + 上下边距 16×2(预览 padding 16px 8px)+ 项间距 8
+            # (预览 gap 8)+ 每控件 pad 3 安全余量;末尾 −8 去尾距。
+            # 旧公式锚 margins(8,0,8,0)+spacing 4,2026-09-28 竖条对版随
+            # 布局参数同步更新。
+            total_h = 2 + 32
             for i in range(lay.count()):
                 w = lay.itemAt(i).widget()
                 if w is None or w.isHidden():
                     continue
-                total_h += w.sizeHint().height() + pad + sp
-            return self.BAR_V_W, max(total_h - sp, 10)
+                total_h += w.sizeHint().height() + pad + 8
+            return self.BAR_V_W, max(total_h - 8, 10)
         total_w, max_h = 16 + 2, 0
         for i in range(lay.count()):
             w = lay.itemAt(i).widget()
@@ -1377,11 +1381,13 @@ class MeterWindow(QWidget):
         self._clear()
         root = QVBoxLayout(self) if vertical else QHBoxLayout(self)
         if vertical:
-            # 水平边距钉 8(N1):内容宽 116−16=100;上下 0 使内容贴窗口边框
-            root.setContentsMargins(8, 0, 8, 0)
+            # 预览 .g-vbar padding 16px 8px(:115):左右 8(N1 同旧)、上下
+            # 16 —— 旧 0+双 stretch 让圆点贴顶边(用户对版 2026-09-28);
+            # stretch 保留:条高富余时仍垂直居中,贴边态则 16px 呼吸
+            root.setContentsMargins(8, 16, 8, 16)
         else:
             root.setContentsMargins(2, 0, 2, 0)   # 四周最小留白(收窄)
-        root.setSpacing(SP["xs"])
+        root.setSpacing(8 if vertical else SP["xs"])   # 预览 gap 8(竖条)
         self._bar_form = "v" if vertical else "h"
         if vertical:
             root.addStretch(1)   # 首尾对称弹性:条高富余时内容整体垂直居中(用户要求)
@@ -1422,16 +1428,23 @@ class MeterWindow(QWidget):
             self.vsep_plan = self.vsep_burn = self.vsep_today = self.vsep_in = None
         else:
             def vnum(txt="", cls="", size=14):
+                # .cell .v 600 字重(预览 :126 font-weight:600)—— 旧默认
+                # 常规字重,用户对版 2026-09-28
                 lb = self._mk_lbl(txt, cls, C_MONO, size)
+                lb.setFont(mk_mono(size, QFont.DemiBold))
                 lb.setAlignment(Qt.AlignHCenter)
                 return lb
 
             def vcap(txt, mono=False):
-                # k 行/caption:faint 89 档 9pt(N2 映射:k/caption=89);中文
-                # 走 YaHei、纯 ASCII(TOK/S)走 mono,中文不列进 mk_mono 的
-                # families 才不抬成首选(T1 注释同款理由)
+                # k 行/caption:faint 89 档 9px;TOK/S 帽标 letter-spacing
+                # 1px(预览 :123),cell .k 无字距;中文走 YaHei、纯 ASCII
+                # 走 mono,中文不列进 mk_mono 的 families 才不抬成首选
                 lb = self._mk_lbl(txt, "faint",
                                   C_MONO if mono else "Microsoft YaHei UI", 9)
+                if mono:
+                    f = lb.font()   # PySide6 font() 返回副本,须 set 回
+                    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
+                    lb.setFont(f)
                 lb.setAlignment(Qt.AlignHCenter)
                 return lb
 
