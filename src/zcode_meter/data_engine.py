@@ -775,6 +775,7 @@ class Snapshot:
     today_cost_partial: bool = False    # 含未知模型 → 金额为下限(UI 加 ≈)
     burn_tokens_per_hour: float = 0.0   # 燃速 = trailing 60min 窗口 token 和
     burn_avg_tokens_per_hour: float | None = None   # 会话平均燃速 Σ(in+out)/Σ净生成h
+    burn_instant_per_hour: float | None = None  # 瞬时燃速=最近请求(in+out)/净生成h
     burn_cny_per_hour: float = 0.0      # 燃速金额版(元/h,同窗口)
     est_hours_left: float | None = None # (日预算-今日花费)/燃速;未配预算或
                                         # 燃速 0 → None(活跃不足 60min 会低估)
@@ -979,6 +980,18 @@ class DataEngine(threading.Thread):
                 speed_by_model = [
                     (p, m, (o / (d / 1000)) if o and d else None, o)
                     for p, m, o, d, _i in speed_rows]
+                # 瞬时燃速 = 最近一次完成请求的吞吐(单请求 in+out/净生成),
+                # 体现"此刻"消耗;预算告警仍用 60min 窗口值(告警不该被抖动触发)
+                rlast = con.execute(
+                    "SELECT COALESCE(input_tokens,0)+COALESCE(output_tokens,0),"
+                    " COALESCE(duration_ms,0) - COALESCE(time_to_first_token_ms,0)"
+                    " FROM model_usage WHERE status='completed' AND session_id=?"
+                    " AND query_source='main_turn' AND duration_ms IS NOT NULL"
+                    " ORDER BY rowid DESC LIMIT 1", (self.session_id,)).fetchone()
+                if rlast and rlast[0] and rlast[1] > 0:
+                    self.snap.burn_instant_per_hour = rlast[0] / (rlast[1] / 3_600_000)
+                else:
+                    self.snap.burn_instant_per_hour = None
                 # 会话平均燃速 = Σ(in+out)/Σ净生成时长(实时燃速的 in+out
                 # 口径 × tps_avg 的会话时长口径 —— 两个既有口径的自然组合)
                 tot_tok = sum((r[4] or 0) + (r[2] or 0) for r in speed_rows)

@@ -1395,8 +1395,10 @@ class MeterWindow(QWidget):
                         # 竖条分组:纯数值(组语义由上方套餐组的延续性表达)
                         self.burn_lbl.setText(fmt_k(int(burn)) + "/h")
                     else:
-                        # 横条:实时燃速 + 会话平均燃速(平均燃速统计)
-                        t = f"燃速 {fmt_k(int(burn))}/h"
+                        # 横条:瞬时燃速(最近请求吞吐)优先,无单请求数据退回
+                        # 60min 窗口值;后接会话平均燃速
+                        shown = s.burn_instant_per_hour or burn
+                        t = f"燃速 {fmt_k(int(shown))}/h"
                         ab = s.burn_avg_tokens_per_hour
                         if ab:
                             t += f" · 均燃 {fmt_k(int(ab))}/h"
