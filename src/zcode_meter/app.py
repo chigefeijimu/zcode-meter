@@ -725,7 +725,7 @@ class MeterWindow(QWidget):
     # 『max_w 聚合 + min(...,100) cap』改为定宽常量(内容超宽按旧 cap 同款
     # 哲学硬截;竖条文案已钉死紧凑形,预期不触界);_bar_size 高度侧聚合与
     # 『跳过 hidden』机制、横向分支均一字不动。
-    BAR_V_W = 116
+    BAR_V_W = 104   # 116→104 用户『边界再收窄』2026-09-28(内容 88,最宽 k 行"燃速 · 均129.7M"=67/套餐行~80 均容)
     EDGE_NEAR = 30
 
     def __init__(self):
@@ -1068,10 +1068,10 @@ class MeterWindow(QWidget):
         line = QFrame()
         line.setStyleSheet(f"background: {C_BORDER}; border: none;")
         if vertical:
-            # v0.8.0 T3/N1:84 —— 锚『BAR_V_W 116 − 左右边距 8×2(预览 :117
-            # padding 16px 8px 的水平侧)− 边框』(旧 92 锚的是 100 宽条,随
-            # 定宽机制一并重锚);横条侧竖线(1x14)不动
-            line.setFixedSize(84, 1)
+            # 宽随定宽派生:BAR_V_W − 左右边距 8×2 − 边框 2 − 两侧呼吸 8×2
+            # (116 时代=84;104 时代=72,收窄后随动不再钉死 —— 用户对版
+            # 2026-09-28);横条侧竖线(1x14)不动
+            line.setFixedSize(self.BAR_V_W - 32, 1)
         else:
             line.setFixedSize(1, 14)
         return line
