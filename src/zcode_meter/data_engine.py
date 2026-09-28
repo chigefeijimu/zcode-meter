@@ -768,6 +768,10 @@ class Snapshot:
     tps_exact: float | None = None      # 最近完成的请求精确 tok/s(实时)
     tps_avg: float | None = None        # 主力模型的会话平均 tok/s
     speed_by_model: list = None         # [(provider, model, tps, out_tokens)] 按用量降序
+    # ---- v0.8.0 新增:速度趋势(sparkline 数据源) ----
+    recent_speeds: list = None          # 最近 n=12 条完成请求的逐条速度(tok/s,
+                                        # 时间正序),fetch_recent_speeds 填充;
+                                        # <2 点时 UI 隐藏曲线(不闪空)
     today_tokens: int = 0               # 今日全部会话 token 总用量(in+out)
     # ---- v0.4.0 新增(口径见 README):金额/燃速/多源均 ZCode-DB-only ----
     today_cost_cny: float = 0.0         # 今日金额(元,按刊例价;订阅套餐内
@@ -1041,6 +1045,10 @@ class DataEngine(threading.Thread):
                 self.snap.burn_cny_per_hour = round(burn_cny, 6)
                 self.snap.est_hours_left = est_hours_left(
                     self.daily_budget_cny, cost_cny, burn_cny)
+                # 速度趋势 sparkline:独立连接+自带异常兜底(fetch_recent_speeds),
+                # 与 today_by_source 同批填充 —— _switch_session 重建 Snapshot 后
+                # 本方法随 _poll_stats 立即补全,不闪空
+                self.snap.recent_speeds = self.fetch_recent_speeds()
                 # 多源聚合(只读、TTL 缓存);新字段与本批同批填充,
                 # _switch_session 重建 Snapshot 后经 _poll_stats 立即补全不闪空
                 self.snap.today_by_source = [
@@ -1057,6 +1065,41 @@ class DataEngine(threading.Thread):
                     self.snap.model = speed_by_model[0][1]
         except sqlite3.Error:
             pass
+
+    def fetch_recent_speeds(self, n: int = 12, session_id: str | None = None) -> list:
+        """速度趋势(sparkline 数据源):某会话最近 n 条完成请求的逐条速度
+        (tok/s),时间正序 [speed, …]。口径与 _poll_stats 的主速度查询完全
+        同型(status='completed' AND session_id AND query_source='main_turn',
+        v0.2.0 subagent 劫持会话统计的事故红线 —— 混入即曲线与主速度口径
+        不符),再叠加 duration_ms IS NOT NULL AND output_tokens>0:分母/分子
+        无意义的行不进曲线;rowid 判据与 rlast 查询一致(ORDER BY rowid DESC
+        取最近 n 条,Python 侧 reversed 反转成时间正序 —— 曲线横轴左旧右新)。
+        speed = output / (max(duration−COALESCE(ttft,0), 1)/1000),max(,1)
+        防零除与 _poll_new_completed 同式。异常语义:sqlite3.Error → 返回 []
+        (与 _poll_stats 同吞法,查询坏库不炸引擎线程,UI 按 <2 点隐藏);
+        con.close 置 finally —— 查询抛错也不泄漏连接(con.close 后再查询
+        会被 except 吞掉,连接必须先查后关)。session_id 缺省取
+        self.session_id;显式传参供单测与其他会话查询。
+        """
+        sid = self.session_id if session_id is None else session_id
+        try:
+            con = self._connect()
+            try:
+                rows = con.execute(
+                    "SELECT output_tokens, duration_ms, time_to_first_token_ms"
+                    " FROM model_usage WHERE status='completed' AND session_id=?"
+                    " AND query_source='main_turn' AND duration_ms IS NOT NULL"
+                    " AND output_tokens>0"
+                    " ORDER BY rowid DESC LIMIT ?", (sid, n)).fetchall()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return []
+        out = []
+        for out_tok, dur_ms, ttft_ms in reversed(rows):
+            gen_ms = max((dur_ms or 0) - (ttft_ms or 0), 1)
+            out.append(out_tok / (gen_ms / 1000))
+        return out
 
     def _poll_new_completed(self):
         try:

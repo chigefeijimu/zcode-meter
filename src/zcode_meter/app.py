@@ -25,15 +25,15 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QLineF, QPoint, QRect, QRectF, Qt, QTimer
+from PySide6.QtCore import QLineF, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QCursor, QColor, QDoubleValidator, QFont, QFontMetrics, QGuiApplication,
-    QPainter, QPen,
+    QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF, QRadialGradient,
 )
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMenu, QPushButton, QScrollArea, QStyle, QSystemTrayIcon, QTabWidget,
-    QToolTip, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout,
+    QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy, QStyle,
+    QSystemTrayIcon, QTabWidget, QToolTip, QVBoxLayout, QWidget,
 )
 
 # 脚本直跑(python src/zcode_meter/app.py)时 __package__ 为空:补 src 进
@@ -71,22 +71,47 @@ def monitor_workarea_of(hwnd) -> tuple[int, int, int, int]:
 
 
 C_BG, C_BORDER = "#16171c", "#2c2f3a"
-C_FG, C_DIM, C_ACCENT, C_WARN = "#e8eaf0", "#8b8f9c", "#5ad6a0", "#e8c268"
-C_MONO = "Consolas"
+# v0.8.0 T1 色板(spec=design-preview-abd.html):旧名改值,app.py 内 37 处
+# 引用零改动。C_FG/C_DIM 是白 alpha 叠 #17181d 的逐通道实算合成(白.9/
+# 白.55),QSS faint 字面与 BarChart 内联 faint 同法(白.35)。
+# 【F2 硬约束】C_FG/C_DIM/C_BG/C_BORDER/C_ACCENT/C_WARN 连同下方新增三色
+# 必须保持 QColor 可解析的 hex 字符串 —— BarChart 直接 QColor(C_FG)/
+# QColor(C_DIM) 消费(历史窗零测试覆盖),rgba 字面实测 isValid()==False
+# 会静默画黑;半透明白只允许出现在 QSS 字面与 painter 的
+# QColor(255,255,255,a) 构造,不落 C_* 常量。
+C_FG, C_DIM, C_ACCENT, C_WARN = "#e8e8e8", "#979799", "#7ad7ff", "#ffd166"
+C_ACCENT_DIM = "#60cdff"      # 主题蓝次亮档(sparkline 折线等)
+C_TIER_OK = "#6ee7a8"         # 套餐余量充足档(tier_color:pct>50)
+C_TIER_DANGER = "#ff6b6b"     # 套餐余量告急档(tier_color:pct<20)
+C_MONO = "Cascadia Code"
 # T-B 间距标度(8pt 栅格半步档):替换全部布局魔法间距,语义就近映射
 # (内容行间=xs/s,分组间=m/l,区块边距=l/xl);豁免点就地注释标明
 SP = {"xs": 4, "s": 6, "m": 8, "l": 12, "xl": 16}
 C_BORDER_SUB = "#232631"   # 次分节符(弱于 C_BORDER 主分节,层级可辨)
 
 QSS = f"""
-QWidget#root {{ background: {C_BG}; border: 1px solid {C_BORDER}; border-radius: 10px; }}
+QWidget#root {{ border-radius: 10px; }}
 QLabel {{ color: {C_FG}; background: transparent; border: none; }}
 QLabel#dim   {{ color: {C_DIM}; }}
 QLabel#accent {{ color: {C_ACCENT}; }}
 QLabel#warn  {{ color: {C_WARN}; }}
-QLabel#faint {{ color: #565a66; }}
+QLabel#faint {{ color: #68696c; }}
+QLabel#soft    {{ color: rgba(255,255,255,204); }}
+QLabel#half    {{ color: rgba(255,255,255,128); }}
+QLabel#vstrong {{ color: rgba(255,255,255,217); }}
 QFrame#sep {{ background: {C_BORDER}; border: none; max-height: 1px; }}
 """
+# v0.8.0 T5+T2:#root 的 background/border 已删 —— 窗口底色/描边/圆角全部
+# 改由 MeterWindow.paintEvent 自绘(垂直渐变+光晕+1px 白.08 描边,圆角按
+# _bar_form 12/8/12)。QSS 侧保留 border-radius 纯为 QSS_BAR 的 replace 派生
+# 链不被静默断掉(无 background 属性时 border-radius 不绘制任何东西,
+# 双层绘制风险表的反向兜底:两层都不会画底色)。
+# N2 补充白梯度档(v0.8.0):主三档(白.9/.55/.35 → C_FG/C_DIM/faint hex)
+# 之外的三档半透明白 —— soft 204(卡片 grid 六格 v)、half 128(模型行速度)、
+# vstrong 217(竖条组 v)。落地机制钉死:仅以 QSS objectName selector 的
+# rgba 字面 + painter 侧 QColor(255,255,255,a) 构造存在,不新增 C_* 常量
+# (F2 hex 约束不破)。QSS_BAR 经上方 replace 自动继承;历史/设置窗不用
+# 这三档,不补进 QSS_HIST/QSS_SET。
 
 # 胶囊条样式:小圆角 + 细边,内边距由布局控制
 QSS_BAR = QSS.replace("border-radius: 10px", "border-radius: 7px")
@@ -124,6 +149,25 @@ QPushButton#primary {{ background: {C_ACCENT}; color: #10241c; border: none;
                        font-weight: 600; }}
 QPushButton#primary:hover {{ background: #6fe2b3; }}
 """
+
+
+def mk_mono(size: int, weight=None) -> QFont:
+    """等宽字体构造(v0.8.0 T1/M1):Cascadia Code 主族 + Consolas 回退。
+
+    - setFamilies 而非单 family 构造:未装 Cascadia 的机器(精简系统/
+      非 Win11)渲染期自动落到 Consolas,数字宽度不漂、不落系统默认衬线;
+    - 中文/⏱ 等缺字形不列进 families,走 Qt 字体合并(v0.7 ⏱ 先例),
+      显式列中文字体反而会把它抬成首选、数字不再等宽;
+    - weight 传 QFont.Weight 枚举(如 QFont.Bold),None 用默认权重。
+    等宽构造唯一入口:_mk_lbl 内部单点 + 少数直接 setFont 的调用点,
+    其余 label 经 _mk_lbl 自动继承。"""
+    f = QFont()
+    f.setFamilies([C_MONO, "Consolas"])
+    f.setPointSize(size)
+    if weight is not None:
+        f.setWeight(weight)
+    return f
+
 
 # 位置记忆状态文件:与 zm_*.log 同目录(frozen 时落 exe 旁)
 STATE_PATH = os.path.join(app_dir(), "zm_state.json")
@@ -172,6 +216,21 @@ def frozen_opacity(dock: str | None, fetched_at: float | None,
     if now is None:
         now = time.time()
     return FROZEN_OPACITY if now - fetched_at > FROZEN_AFTER_S else 1.0
+
+
+def tier_color(pct: float) -> str:
+    """纯函数:套餐剩余百分比 → 三档视觉色(hex 字符串,QColor 可解析)。
+
+    pct>50 → C_TIER_OK;20≤pct≤50 → C_WARN;pct<20 → C_TIER_DANGER。
+    20 与默认告警首阈值 alert_pct=[20,10] 巧合对齐但刻意不动态绑定 ——
+    阈值可配多级,分档色是视觉语言非告警状态,动态绑定会让 30/10 配置
+    退化成两档。不触任何 Qt/实例状态 —— test_stress 直接注入参数断言
+    (同 frozen_opacity 先例)。"""
+    if pct > 50:
+        return C_TIER_OK
+    if pct >= 20:
+        return C_WARN
+    return C_TIER_DANGER
 
 
 class TrayController:
@@ -425,24 +484,220 @@ class SettingsDialog(QDialog):
         return self._cfg
 
 
+# ================= v0.8.0 T5:可复用绘制件(spec=design-preview-abd.html) =================
+# 三形态(卡/横条/竖条)共用的纯 QPainter 原语 + 三 QWidget。画在 QWidget 上
+# 而非 QSS/SVG:单文件零依赖原则(BarChart 同款先例),且半透明白只允许
+# 落在 painter 的 QColor(255,255,255,a) 构造(F2 约束,常量层注释)。
+# 色值钉死 #60cdff(C_ACCENT_DIM)/#7ad7ff(C_ACCENT):模块级函数在 T1 常量
+# 之后定义,直接引用常量而非字面 —— T1 若微调色值此处自动跟随。
+
+
+def paint_sparkline(painter: QPainter, rect: QRectF, values) -> None:
+    """速度趋势折线(预览 :153-157):#60cdff 1.5px 圆帽折线 + 末端点
+    #7ad7ff r=2。x_i = i/(n-1)*w;y 按 min-max 线性映射、上下各 1px inset;
+    min==max 画水平中线(单值无趋势,不放大噪声);n<2 直接 return ——
+    控件侧另有 <2 点隐藏兜底(UI 不闪空,风险表钉死),这里再防一层。
+    时间正序由数据层 fetch_recent_speeds 保证,函数不排序不反转。"""
+    vals = [float(v) for v in (values or [])]
+    n = len(vals)
+    if n < 2:
+        return
+    painter.setRenderHint(QPainter.Antialiasing)
+    w, h = rect.width(), rect.height()
+    lo, hi = min(vals), max(vals)
+    pts = []
+    for i, v in enumerate(vals):
+        x = rect.left() + i / (n - 1) * w
+        y = (rect.top() + h / 2 if hi == lo else
+             rect.top() + 1 + (1 - (v - lo) / (hi - lo)) * (h - 2))
+        pts.append(QPointF(x, y))
+    pen = QPen(QColor(C_ACCENT_DIM))
+    pen.setWidthF(1.5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.drawPolyline(QPolygonF(pts))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(C_ACCENT))
+    painter.drawEllipse(pts[-1], 2.0, 2.0)
+
+
+def paint_ring(painter: QPainter, rect: QRectF, pct: float, color) -> None:
+    """环形进度(预览 :81/:166-170):底环白.10 3.5px、前景 color 3.5px 圆帽,
+    12 点起顺时针 pct%·360°,pct 钳 [0,100]。中心文字由调用方叠加
+    (卡片 46px 中心 N% 11pt tier 色 / 横条 12px 无字)—— 函数只画环,
+    文字与环的字号层级解耦。Qt 角度系 0°=3 点钟、正值逆时针:12 点=90°,
+    顺时针扫描即负 span。"""
+    p = max(0.0, min(100.0, float(pct)))
+    painter.setRenderHint(QPainter.Antialiasing)
+    # 内缩 stroke/2(≈2px):圆帽在 0%/100% 端点不越出控件矩形
+    r = QRectF(rect).adjusted(2.0, 2.0, -2.0, -2.0)
+    painter.setPen(QPen(QColor(255, 255, 255, 26), 3.5))      # 白.10 ≈ 26/255
+    painter.drawArc(r, 0, 360 * 16)
+    if p > 0:
+        pen = QPen(QColor(str(color)), 3.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawArc(r, 90 * 16, int(-p * 3.6 * 16))
+
+
+class PulseIndicator(QWidget):
+    """脉冲环状态指示(预览 :57-66/:224/:259):active=蓝环+内核+外扩圈
+    2s ease-in-out;idle=白.35 静态空心环。
+
+    - 相位复用 MeterWindow._breath 与 60ms _breath_timer:窗口侧只推进相位
+      (set_phase),本控件不建定时器 —— 多一个 timer 就多一份空转 repaint;
+      _breath 周期 750ms(0.08/tick),×0.375 折算成 2s 周期(CSS keyframes
+      2s 的等价实现);
+    - 仅 generating 时 update()(set_phase 内部判定):idle 后零重绘,
+      与旧 QLabel 呼吸点『空闲不刷样式』的节制同款;
+    - 尺寸三档:卡 14 / 横条 10 / 竖条 12(构造参数),环宽/内核/外扩圈
+      全按直径比例缩放。"""
+
+    def __init__(self, diameter: int, parent=None):
+        super().__init__(parent)
+        self._d = int(diameter)
+        self.setFixedSize(self._d, self._d)
+        self._active = False
+        self._phase = 0.0
+        # 指示件不参与交互:让鼠标按下穿透到主窗(拖动窗口的既定路径)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._d, self._d)
+
+    def set_active(self, on: bool) -> None:
+        if self._active != bool(on):
+            self._active = bool(on)
+            self.update()
+
+    def set_phase(self, phase: float) -> None:
+        self._phase = float(phase) % 1.0
+        if self._active:
+            self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        d = float(self._d)
+        cx = cy = d / 2
+        ring_w = max(1.2, d * 0.15)            # 14→2.1  CSS 2px;10→1.5
+        ring_r = d / 2 - ring_w / 2 - 0.5
+        if not self._active:
+            # idle:白.35 静态空心环(89/255,与 faint 档同值)
+            pen = QPen(QColor(255, 255, 255, 89), ring_w)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), ring_r, ring_r)
+            return
+        # active:外扩圈(2s ease-in-out)→ 蓝环 → 内核
+        u = (self._phase * 0.375) % 1.0        # 750ms 相位折算 2s 周期
+        wave = math.sin(math.pi * u)           # 0→1→0, ease-in-out 对称形
+        halo_r = ring_r + 1.0 + d * 0.36 * wave
+        halo_a = int(89 * (1.0 - wave))        # 起 0.35 → 峰值 0
+        if halo_a > 0:
+            p.setPen(QPen(QColor(96, 205, 255, halo_a), 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), halo_r, halo_r)
+        pen = QPen(QColor(C_ACCENT_DIM), ring_w)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), ring_r, ring_r)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(96, 205, 255, 230))  # 内核 opacity .9
+        p.drawEllipse(QPointF(cx, cy), d * 0.28, d * 0.28)
+
+
+class SparklineWidget(QWidget):
+    """速度趋势控件:固定 sizeHint(卡 72x24 / 横条 44x16 / 竖条 60x14,
+    预览 :153/:226-229/:262-265),paintEvent 全权交给 paint_sparkline。
+    <2 点的显隐由宿主(_apply_snapshot)驱动 setVisible —— 本控件不隐藏
+    自己,保持纯展示件语义;隐藏控件被 _bar_size 跳过(v0.5.0 机制)。"""
+
+    def __init__(self, w: int, h: int, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(int(w), int(h))
+        self._values: list = []
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self.width(), self.height())
+
+    def set_values(self, values) -> None:
+        self._values = [float(v) for v in (values or [])]
+        self.update()
+
+    def paintEvent(self, ev):
+        paint_sparkline(QPainter(self), QRectF(self.rect()), self._values)
+
+
+class RingWidget(QWidget):
+    """环形进度控件:paintEvent 全权交给 paint_ring;diameter 46(卡片,
+    中心 11pt Bold tier 色 N%)或 12(横条,无字)。pct/color 经 set_pct
+    注入 —— tier 色由宿主按 tier_color(pct) 算好传入,本控件不掺业务。"""
+
+    def __init__(self, diameter: int, center_text: bool = True, parent=None):
+        super().__init__(parent)
+        self._d = int(diameter)
+        self.setFixedSize(self._d, self._d)
+        self._center_text = bool(center_text)
+        self._pct: float = 0.0
+        self._color: str = C_WARN              # 首帧前兜底色(段隐藏,不可见)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._d, self._d)
+
+    def set_pct(self, pct: float, color=None) -> None:
+        self._pct = max(0.0, min(100.0, float(pct)))
+        if color is not None:
+            self._color = str(color)
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        paint_ring(p, QRectF(self.rect()), self._pct, self._color)
+        if self._center_text:
+            p.setFont(mk_mono(11, QFont.Bold))
+            p.setPen(QColor(self._color))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                       f"{self._pct:.0f}%")
+
+
 class MeterWindow(QWidget):
     # v0.4.0:新增 燃速/套餐剩余 两行 + 今日用量可能多源第二行,自然高度
     # 实测 314(单源)。v0.5.1 套餐剩余改两行文案(第二行重置倒计时),注入
-    # 实测:0~2 行模型 → 328/328/342,3 行模型 356 —— CARD_H 336 会把 2 行
-    # 模型(342)截断,提到 350(2 行可容、3 行起 356>350 仍截断,与旧 336
-    # 的截断点同点,无回退)。CARD_H 须 ≥ 布局自然高度 ——
+    # 实测:0~2 行模型 → 328/328/342,3 行模型 356。v0.7 T-A 信息层级重排:
+    # 满载 0~4 行模型 → 303/303/317/331/345,全矩阵 max=345,CARD_H=346。
+    # v0.8.0 T5+T2 卡片重绘(spec=design-preview-abd.html .g-card):宽改
+    # 设计宽 313(预览 :36);满载文本自然宽实测 372>313,按 spec『elide/
+    # 固定列宽』修宽度策略(CARD_GRID_COL_W),三态收敛 313。CARD_H 实测
+    # 重估(findings/measure_card_baseline.py,原生平台+停引擎三闸防真实
+    # 数据竞态):满载(plan/burn on,sparkline 12 点,多源)0~4 行模型 →
+    # 276/293/310/327/344,全矩阵 max=344,CARD_H=346 沿用(344 截断点 +2
+    # 余量);0/1 行不再同高(plan section 容器 63px 恒占)。机制不变:
     # _unset_dock/_restore_state/_detach_to_pointer 用它 setGeometry,偏小会
     # 静默截断(ui-verify 只打印不校验,需人工目视)。
-    # v0.7 T-A 信息层级重排(today/plan 两级 hero + timing 合并单格):grid
-    # 少了 今日/首字/整体 三组 caption 行,新增两级 hero 反而更矮,注入实测
-    # (findings/measure_card_baseline.py,原生平台+processEvents):满载
-    # 0~4 行模型 → 303/303/317/331/345,全矩阵 max=345 <400 全容纳,按
-    # ceil(max/2)*2 规则 350→346(多源/plan_sub 行常驻不再撑高,0/1 行同高)。
-    CARD_W, CARD_H = 250, 346
+    CARD_W, CARD_H = 313, 346
+    # grid 六格固定列宽(v0.8.0 T5+T2 宽度策略裁决):满载文本自然宽实测
+    # 372 > CARD_W 313(findings/measure_card_baseline.py),按 spec 的
+    # 『elide/固定列宽』修标签宽度策略 —— 列宽钉死后 v label 走 Ignored
+    # 策略(不被 sizeHint 反推),文本按列宽 QFontMetrics elide(典型值全
+    # 显,极端值 elide 尾段+tooltip 回读全量)。分档以本机实测文本宽为准:
+    # 入/出 101(典型 "1.2M / 88K"=100)/ 缓存命中 81("100.00%"=70、
+    # 均燃同列 "296.0M/h"=80)/ ⏱首/总 111("0.8 / 12.4s"=109)。合计 293 +
+    # 列间距 2×2 + 边距 2×8 = 313,恰好收敛在设计宽内。
+    CARD_GRID_COL_W = (101, 81, 111)
+    _bar_form = None              # 类级默认:paintEvent 可能早于首次 _build_card
     _settle_timer = None          # 类级默认:moveEvent 可能早于 __init__ 定时器创建
     _in_prog_move = False         # 程序性移动(吸附/恢复)期间,moveEvent 不喂防抖
     _dock_guard_until = 0.0       # 贴边保护期:吸附后的连锁 settle 判定直接跳过          # 逻辑像素(DIP),Qt 自动做 DPI 换算
     BAR_H, BAR_V = 24, 38
+    # v0.8.0 T3/F1:竖条定宽 —— 全 spec 唯一明示的尺寸机制变更。宽度侧由
+    # 『max_w 聚合 + min(...,100) cap』改为定宽常量(内容超宽按旧 cap 同款
+    # 哲学硬截;竖条文案已钉死紧凑形,预期不触界);_bar_size 高度侧聚合与
+    # 『跳过 hidden』机制、横向分支均一字不动。
+    BAR_V_W = 116
     EDGE_NEAR = 30
 
     def __init__(self):
@@ -507,6 +762,12 @@ class MeterWindow(QWidget):
 
         self._build_card()
         self.adjustSize()
+        # v0.8.0 T5+T2:adjustSize 按内容取自然宽度,新卡内容(30pt 主数字+
+        # 单位+sparkline)自然宽可能 ≠ 设计宽 313 —— 夹到 CARD_W,防『初始
+        # 路径宽度与常量脱节』(风险表:启动走 adjustSize 而非常量)。高度
+        # 保留自然值,后续 _unset_dock/_restore_state 按 CARD_H 校正。
+        if self.width() != self.CARD_W:
+            self.resize(self.CARD_W, self.height())
         sg = QGuiApplication.primaryScreen().availableGeometry()
         self.move(sg.right() - self.CARD_W - 24, sg.top() + 90)
         self.show()
@@ -532,6 +793,44 @@ class MeterWindow(QWidget):
         self._breath_timer = QTimer(self, interval=60, timeout=self._tick_breath)
         self._breath_timer.start()
         self.eng.start()
+
+    # ---- v0.8.0 T5:窗口背景自绘(替代 QSS #root background/border) ----
+    def paintEvent(self, ev):
+        """深渐变玻璃底(不透明近似版,预览 .g-card/.g-bar/.g-vbar):
+        ① 垂直渐变 #17181d→#131419;② 顶部中央 200x100 径向光晕
+        rgba(96,205,255,0.10)→透明(y 半轴压缩 0.5 成椭圆,裁进圆角);
+        ③ 1px rgba(255,255,255,0.08) 描边。圆角按 _bar_form 分档:
+        卡/竖条 12(预览 :42/:119)、横条 8(预览 :104)—— 圆角归属钉死在
+        形态而非 QSS(QSS_BAR 的 7px 派生已不绘制,见 QSS 注释)。
+        覆盖 paintEvent 即接管控件底色渲染,不调 super(默认实现只做 QSS
+        背景绘制,#root 已无 background,调了也是空转);子控件(QLabel 等)
+        由 Qt 在父窗口之后独立绘制,不受影响。"""
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        radius = 12 if self._bar_form in (None, "v") else 8
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0),
+                            radius, radius)
+        grad = QLinearGradient(0.0, 0.0, 0.0, float(h))
+        grad.setColorAt(0.0, QColor("#17181d"))
+        grad.setColorAt(1.0, QColor("#131419"))
+        p.fillPath(path, grad)
+        # 顶部光晕:径向渐变圆心在顶边中点,半径 100(水平全幅 200);
+        # scale(1, 0.5) 把纵向压成 100px 高的椭圆下半(预览 ::before 的
+        # top:-60px 只露下半 40px 的等价近似),clip 进圆角防溢出。
+        p.save()
+        p.setClipPath(path)
+        p.translate(w / 2.0, 0.0)
+        p.scale(1.0, 0.5)
+        halo = QRadialGradient(QPointF(0.0, 0.0), 100.0)
+        halo.setColorAt(0.0, QColor(96, 205, 255, 26))    # 0.10 ≈ 26/255
+        halo.setColorAt(0.7, QColor(96, 205, 255, 0))
+        p.fillRect(QRectF(-100.0, -100.0, 200.0, 200.0), halo)
+        p.restore()
+        p.setPen(QPen(QColor(255, 255, 255, 20), 1.0))    # 白.08 ≈ 20/255
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
 
     # ---- Win32 润色(唯一保留的互操作,均为一次性安全调用) ----
     def _win_polish(self):
@@ -730,7 +1029,10 @@ class MeterWindow(QWidget):
         line = QFrame()
         line.setStyleSheet(f"background: {C_BORDER}; border: none;")
         if vertical:
-            line.setFixedSize(92, 1)      # 竖条内容区等宽(条宽100-边距16-边框2)
+            # v0.8.0 T3/N1:84 —— 锚『BAR_V_W 116 − 左右边距 8×2(预览 :117
+            # padding 16px 8px 的水平侧)− 边框』(旧 92 锚的是 100 宽条,随
+            # 定宽机制一并重锚);横条侧竖线(1x14)不动
+            line.setFixedSize(84, 1)
         else:
             line.setFixedSize(1, 14)
         return line
@@ -740,24 +1042,24 @@ class MeterWindow(QWidget):
         margins(8,1,8,1) + spacing 6 + 边框 2。
         isHidden() 的控件跳过(v0.5.0):预算段整段隐藏后仍按隐藏 label 计
         会让条宽虚胖、悬空一条分隔线;空文本 QLabel 本身仍占行高,也会撑破
-        stress 的『横条高度≤30』断言 —— 所以数据缺席必须走 setVisible(False)
-        而非 setText("")。"""
+        stress 的『横条高度≤34』断言 —— 所以数据缺席必须走 setVisible(False)
+        而非 setText("")。
+        v0.8.0 T3/F1:竖条宽度侧不再聚合 —— 直接返回定宽 BAR_V_W(删
+        max_w 聚合与 min(...,100) cap);高度侧聚合与跳过 hidden 机制不变,
+        横向分支一字不动。"""
         lay = self.layout()
         if lay is None:
             return 60, 20
         sp = 6
         pad = 3          # 每控件安全余量:中文在 Consolas 回退渲染时 sizeHint 会低估
         if vertical:
-            max_w, total_h = 0, 2 + 2
+            total_h = 2 + 2
             for i in range(lay.count()):
                 w = lay.itemAt(i).widget()
                 if w is None or w.isHidden():
                     continue
-                hs = w.sizeHint()
-                max_w = max(max_w, hs.width())
-                total_h += hs.height() + pad + sp
-            w_out = min(max_w + 4 + 2 + pad, 100)   # 竖条设计宽上限 100:防个别长文本 label 撑爆
-            return w_out, max(total_h - sp, 10)
+                total_h += w.sizeHint().height() + pad + sp
+            return self.BAR_V_W, max(total_h - sp, 10)
         total_w, max_h = 16 + 2, 0
         for i in range(lay.count()):
             w = lay.itemAt(i).widget()
@@ -790,212 +1092,321 @@ class MeterWindow(QWidget):
         lb = QLabel(text)
         lb.setObjectName(cls if cls != "normal" else "")
         if font:
-            lb.setFont(QFont(font, size or 9))
+            # v0.8.0 T1:等宽族经 mk_mono 单点构造(Cascadia 主+Consolas
+            # 回退);其余族(中文 UI/Segoe)维持单族 QFont 构造
+            lb.setFont(mk_mono(size or 9) if font == C_MONO
+                       else QFont(font, size or 9))
         return lb
 
     def _build_card(self):
         self._clear()
-        # 形态标记(v0.5.0):_apply_snapshot 的预算段渲染按它分支 —— 卡片=
-        # 纯文本切换(现状),条形态=按数据显隐;每次重建后与实际标签集合
-        # 一一对应(stress 尺寸稳定断言依赖此约定)
+        # 形态标记(v0.5.0):_apply_snapshot 按 _bar_form 分支 —— 卡片走
+        # _apply_card(v0.8.0 新结构),条形态走 T3 重绘后的条分支;
+        # 每次重建后与实际标签集合一一对应(F4 属性表卡列,stress 断言锚)
         self._bar_form = None
-        self._budget_sep = None
         root = QVBoxLayout(self)
-        root.setContentsMargins(SP["l"], SP["m"], SP["l"], SP["s"])
+        # 边距 m(8) 而非 l(12):grid 固定列宽预算(293+间距 4+边距 16=313)
+        # 需要这 8px —— 宽度优先于留白,预览 16px 边距在 13pt 字号下不可得
+        root.setContentsMargins(SP["m"], SP["m"], SP["m"], SP["s"])
         root.setSpacing(SP["xs"])
 
+        # ---- v0.8.0 T5+T2 卡片结构(预览 .g-card :145-191,自上而下) ----
+        # ① 状态行:PulseIndicator(14)+状态文本(elapsed 并入:idle『空闲』/
+        # generating『生成中 Ns』)+右侧当前模型名。会话标题不再占行(F3
+        # 裁决):完整标题+📌 前缀进窗口 setToolTip,_apply_card 维护。
         head = QHBoxLayout()
-        self.dot = self._mk_lbl("●", "dim", "Segoe UI", 9)
-        self.state_lbl = self._mk_lbl("空闲", "dim", "Microsoft YaHei UI", 9)
-        self.title_lbl = self._mk_lbl("当前会话", "dim", "Microsoft YaHei UI", 8)
+        head.setSpacing(SP["s"])
+        self.dot = PulseIndicator(14)         # 替换旧 QLabel『●』(M5 分派)
         head.addWidget(self.dot)
+        self.state_lbl = self._mk_lbl("空闲", "dim", "Microsoft YaHei UI", 9)
         head.addWidget(self.state_lbl)
         head.addStretch(1)
-        head.addWidget(self.title_lbl)
+        # 模型名超宽 elide 由 _apply_card 用 QFontMetrics 钳宽完成(布局侧
+        # 只给它 Ignored 水平策略,防长名反推撑宽卡片)
+        self.model_name_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 8)
+        head.addWidget(self.model_name_lbl)
         root.addLayout(head)
 
+        # ② 主数字行:速度 30pt Bold 蓝 + 单位 11pt faint + Sparkline(72x24,
+        # 预览 :150-157)。旧 est_lbl(『~估算』)删除:流式估算改为速度文本
+        # 的 ~ 前缀(README『速度带~=流式估算』口径);旧 elapsed_lbl 并入
+        # ①状态文本。单位拆独立 label 是为 30pt/11pt 双字号共存(sizeHint
+        # 可测,stress 可断言)—— 不入 F4 属性表但遵守同款 None 纪律。
         big = QHBoxLayout()
-        self.tps_lbl = self._mk_lbl("-- tok/s", "accent", C_MONO, 20)
-        self.tps_lbl.setFont(QFont(C_MONO, 20, QFont.Bold))
-        self.est_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
-        self.elapsed_lbl = self._mk_lbl("", "warn", C_MONO, 9)
+        big.setSpacing(SP["s"])
+        self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 30)
+        self.tps_lbl.setFont(mk_mono(30, QFont.Bold))
         big.addWidget(self.tps_lbl)
-        big.addWidget(self.est_lbl)
+        self.tps_unit_lbl = self._mk_lbl("tok/s", "faint", C_MONO, 11)
+        big.addWidget(self.tps_unit_lbl, 0, Qt.AlignBottom)
+        self.spark = SparklineWidget(72, 24)
+        big.addWidget(self.spark, 0, Qt.AlignBottom)
         big.addStretch(1)
-        big.addWidget(self.elapsed_lbl)
         root.addLayout(big)
 
-        # ---- v0.7 T-A(提案#3):today 从 grid 搬出到 big 行正下方,升为
-        # 第二主数字。hero 显式传 cls="normal"(空 objectName → QSS 基础
-        # QLabel 色 C_FG;_mk_lbl 缺省 dim,漏传会落灰字);字体两步写与
-        # 上方 tps_lbl 同款(先 _mk_lbl 带字号、再 setFont 补 Bold 权重)
-        self.today_lbl = self._mk_lbl("--", "normal", C_MONO, 13)
-        self.today_lbl.setFont(QFont(C_MONO, 13, QFont.Bold))
-        root.addWidget(self.today_lbl)
-        # 多源拆分行:>1 源才有文案(8pt 副文本),文案口径沿旧 today 第二行
+        # ③ 今日 hero 三段 baseline:fmt_k 19pt Bold 白.9(C_FG)/金额 13pt
+        # 白.55 600(DemiBold,140 档)/『今日』10pt faint(89 档)。
+        # 金额段 cost=0 整段隐藏、partial ≈ 前缀 —— 口径逐字沿 v0.7 实现。
+        today = QHBoxLayout()
+        today.setSpacing(SP["s"])
+        self.today_lbl = self._mk_lbl("--", "normal", C_MONO, 19)
+        self.today_lbl.setFont(mk_mono(19, QFont.Bold))
+        today.addWidget(self.today_lbl)
+        self.today_cost_lbl = self._mk_lbl("", "dim", C_MONO, 13)
+        self.today_cost_lbl.setFont(mk_mono(13, QFont.DemiBold))
+        today.addWidget(self.today_cost_lbl)
+        today.addStretch(1)
+        today.addWidget(self._mk_lbl("今日", "faint", "Microsoft YaHei UI", 10))
+        root.addLayout(today)
+        # 多源拆分行:>1 源才有文案(README『多源今日』行,口径不动)
         self.today_src_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
         root.addWidget(self.today_src_lbl)
 
-        sep = QFrame(); sep.setObjectName("sep")
-        root.addWidget(sep)
+        # ④ 套餐 section 容器化(评审钉死):分节线+RingWidget46+右信息三行
+        # 包进同一 QWidget,_plan_pct None 时整组 setVisible(False) —— 分节
+        # 线随段隐藏不悬空(旧实现分节线恒显,数据缺席时孤线漂浮)。
+        self.plan_section = QWidget()
+        pv = QVBoxLayout(self.plan_section)
+        pv.setContentsMargins(0, SP["s"], 0, 0)
+        pv.setSpacing(SP["xs"])
+        plan_line = self._mk_card_sep("rgba(255,255,255,0.07)")
+        pv.addWidget(plan_line)
+        prow = QHBoxLayout()
+        prow.setSpacing(SP["m"])
+        self.plan_ring = RingWidget(46)     # 中心 N% 11pt tier 色
+        prow.addWidget(self.plan_ring)
+        info = QVBoxLayout()
+        info.setSpacing(0)
+        self.plan_cap_lbl = self._mk_lbl("套餐剩余", "faint",
+                                         "Microsoft YaHei UI", 9)
+        info.addWidget(self.plan_cap_lbl)
+        self.plan_tok_lbl = self._mk_lbl("—", "normal", C_MONO, 14)
+        self.plan_tok_lbl.setFont(mk_mono(14, QFont.DemiBold))
+        info.addWidget(self.plan_tok_lbl)
+        self.plan_sub_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 8)
+        info.addWidget(self.plan_sub_lbl)
+        prow.addLayout(info, 1)
+        pv.addLayout(prow)
+        root.addWidget(self.plan_section)
+        # plan_lbl(F4 属性表:三形态恒建):卡形态的 % 由 ring 中心呈现,本
+        # label 不进布局、保持隐藏,但文本/颜色同步刷新 —— 横竖条(T3)以
+        # 它为 % 文本载体,置 None 会让形态循环摸已销毁对象;不设 parent、
+        # 不 addWidget,重建时随 Python 引用释放,不泄漏进 findChildren。
+        self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 13)
+        self.plan_lbl.hide()
 
-        grid = QHBoxLayout()
-        left = QVBoxLayout(); right = QVBoxLayout()
-        left.setSpacing(2); right.setSpacing(2)   # 豁免:字段矩阵行距刻意<xs,密度优先
-        self.in_lbl = self._mk_lbl("--", "", C_MONO, 9)
-        left.addWidget(self._mk_lbl("输入", "dim", "Microsoft YaHei UI", 8))
-        left.addWidget(self.in_lbl)
-        self.cache_lbl = self._mk_lbl("--", "", C_MONO, 9)
-        right.addWidget(self._mk_lbl("缓存", "dim", "Microsoft YaHei UI", 8))
-        right.addWidget(self.cache_lbl)
-        self.out_lbl = self._mk_lbl("--", "", C_MONO, 9)
-        left.addWidget(self._mk_lbl("输出", "dim", "Microsoft YaHei UI", 8))
-        left.addWidget(self.out_lbl)
-        self.rate_lbl = self._mk_lbl("--", "", C_MONO, 9)
-        right.addWidget(self._mk_lbl("命中率", "dim", "Microsoft YaHei UI", 8))
-        right.addWidget(self.rate_lbl)
-        self.avg_lbl = self._mk_lbl("--", "", C_MONO, 9)
-        left.addWidget(self._mk_lbl("平均速度", "dim", "Microsoft YaHei UI", 8))
-        left.addWidget(self.avg_lbl)
-        # ttft/dur 合并单格:右列第 3 槽与左列 3 行配平,无 caption;分段
-        # 占位、整串结构恒保留(缺数据显示 --,不做整行隐藏)—— ⏱ 字形
-        # Consolas 缺字时走 Qt 字体回退(Segoe UI Symbol)
-        self.timing_lbl = self._mk_lbl("⏱ 首字 -- · 总 --", "", C_MONO, 9)
-        right.addWidget(self.timing_lbl)
-        grid.addLayout(left, 1)
-        grid.addLayout(right, 1)
+        # ⑤ grid 六格 3 列(预览 :179-185):入/出、缓存命中、⏱首/总、燃速、
+        # 均燃、均速;k 9pt faint(89)、v 13pt soft(204,N2 档)。六格结构
+        # 恒建恒显,缺参 -- (与旧卡 timing 缺参同语义,不做整行隐藏)。
+        # 列宽固定(CARD_GRID_COL_W 宽度策略):v label 水平 Ignored,文本
+        # 由 _apply_card 按列宽 elide —— 不固定会被长文本反推出 372px。
+        root.addWidget(self._mk_card_sep("rgba(255,255,255,0.07)"))
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(2)  # 豁免:列距让位于列宽预算(CARD_GRID_COL_W)
+        grid.setVerticalSpacing(2)   # 豁免:k/v 行距刻意<xs,密度优先(v0.7 先例)
+        for c, cw in enumerate(self.CARD_GRID_COL_W):
+            grid.setColumnMinimumWidth(c, cw)
+
+        def cell(txt, cls=""):
+            lb = self._mk_lbl("--", cls, C_MONO, 13)
+            lb.setFont(mk_mono(13, QFont.DemiBold))
+            lb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            return lb
+
+        self.in_out_lbl = cell("--")
+        self.rate_lbl = cell("--")
+        self.timing_lbl = cell("-- / --")
+        self.burn_lbl = cell("--")
+        self.avg_burn_lbl = cell("--")
+        self.avg_lbl = cell("--")
+        for col, (k, v) in enumerate((
+                ("入 / 出", self.in_out_lbl), ("缓存命中", self.rate_lbl),
+                ("⏱ 首 / 总", self.timing_lbl), ("燃速", self.burn_lbl),
+                ("均燃", self.avg_burn_lbl), ("均速", self.avg_lbl))):
+            grid.addWidget(self._mk_lbl(k, "faint", "Microsoft YaHei UI", 9),
+                           col // 3, col % 3)
+            grid.addWidget(v, col // 3 + 1, col % 3)
         root.addLayout(grid)
 
-        # 卡片专属两行(有数据才显示):燃速+耗尽预估 / 套餐剩余。
-        # v0.5.0 起条形态也有预算段(横条 plan+burn、竖条紧凑 plan),由
-        # _build_bar 各自创建 —— 尾部置 None 纪律只保留真正不创建的 label。
-        # v0.7 T-A:plan 两级化 —— hero 主数字(warn 色,C_MONO 13 Bold,
-        # 基线宽度按 Consolas 13 Bold 量得)+ faint 副文本(比 dim 更淡);
-        # burn 文案与样式不动,仅随新序移到 plan 两级之后
-        self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 13)
-        self.plan_lbl.setFont(QFont(C_MONO, 13, QFont.Bold))
-        root.addWidget(self.plan_lbl)
-        self.plan_sub_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 8)
-        root.addWidget(self.plan_sub_lbl)
-        self.burn_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
-        root.addWidget(self.burn_lbl)
+        # ⑥ 模型列表 rows[:4](预览 :187-190):容器+每行 HBox(名左 10pt
+        # faint 89 档/速度右 10pt half 128 档),替换 v0.7 单 QLabel 多行
+        # join —— 独立 label 才能左右分栏且行内距受布局 spacing 管。
+        # 四行结构恒建、按数据显隐(_apply_card),rows 不足 4 不撑高。
+        root.addWidget(self._mk_card_sep("rgba(255,255,255,0.05)"))
+        self.model_rows = QWidget()
+        mv = QVBoxLayout(self.model_rows)
+        mv.setContentsMargins(0, 0, 0, 0)
+        mv.setSpacing(0)
+        self._model_rows_items = []          # [(name_lbl, tps_lbl)]×4,随容器重建
+        for _i in range(4):
+            row = QHBoxLayout()
+            row.setSpacing(SP["s"])
+            nm = self._mk_lbl("", "faint", "Microsoft YaHei UI", 10)
+            row.addWidget(nm, 1)
+            sp = self._mk_lbl("", "half", C_MONO, 10)
+            row.addWidget(sp)
+            mv.addLayout(row)
+            self._model_rows_items.append((nm, sp))
+        root.addWidget(self.model_rows)
 
-        # 次分节:内联样式自诞生即渲染(D4 裁决)—— 零 QSS/objectName 依赖,
-        # 与 _mk_sep 的内联机制同款;T-B 仅把 C_BORDER 字面换成分级色,
-        # 跨 ticket 无中间态(主 sep 维持 QSS #sep 现机制不动)
-        sep2 = QFrame()
-        sep2.setStyleSheet(f"background: {C_BORDER_SUB}; border: none; max-height: 1px;")
-        root.addWidget(sep2)
+        # ---- 尾部 None 纪律(F4 属性表卡列):本形态不创建的 label 显式
+        # 置 None —— 残留上次布局的已销毁对象引用会让条形态分支摸炸
+        # (v0.4.0 压力循环教训,test_stress 文件头记载) ----
+        self.in_lbl = self.out_lbl = None    # 卡用 in_out_lbl;out 并入其文本
+        self.title_lbl = self.est_lbl = self.elapsed_lbl = None
+        self.cache_lbl = self.ttft_lbl = self.dur_lbl = None
+        self.model_lbl = None                # 已由 model_rows 容器替代(v0.7→v0.8)
+        # v0.8.0 T3 条形态件(F4 属性表):卡形态不建,同点显式置 None
+        self.plan_cd_lbl = None              # 横建(倒计时独立段)
+        self.vbar_in_cap = self.vbar_burn_cap = None   # 竖建(入出/燃速组 k 行)
+        self.sep_plan = self.sep_burn = self.sep_today = None      # 横建
+        self.vsep_plan = self.vsep_burn = self.vsep_today = self.vsep_in = None  # 竖建
 
-        self.model_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 8)
-        root.addWidget(self.model_lbl)
-        # 卡片不再建 ttft/dur(已并入 timing_lbl):显式置 None —— 残留上次
-        # 布局的已销毁对象引用会让 is-not-None 分支摸炸(v0.4.0 None 纪律)
-        self.ttft_lbl = self.dur_lbl = None
+    def _mk_card_sep(self, rgba: str) -> QFrame:
+        """卡片主分节线(v0.8.0 T5+T2):rgba 白内联字面(预览 .07/.05 两档)。
+        内联样式自诞生即渲染(D4 裁决先例),零 QSS/objectName 依赖 —— 与
+        _mk_sep 的内联机制同款;不进 F4 属性表(卡侧恒建,无跨形态引用,
+        ④的分节线随 plan_section 容器整组隐藏)。"""
+        line = QFrame()
+        line.setStyleSheet(f"background: {rgba}; border: none; max-height: 1px;")
+        return line
 
     def _build_bar(self, vertical: bool = False):
+        """v0.8.0 T3 横竖条重绘(spec=design-preview-abd.html :222-237/:258-274)。
+
+        横条段序钉死:脉冲环10|速度 14pt Bold 蓝+『t/s』|sparkline 44x16|
+        sep_plan|套餐段(RingWidget12 实画小环 + plan_lbl『N% ~X』tier 色
+        600 + plan_cd_lbl 倒计时 dim)|sep_today|今日段|sep_burn|燃速段。
+        旧 avg/ttft/dur/in/out/rate/elapsed 段全删(F4:横竖条 None)。
+        竖条全 AlignHCenter 分组钉死:脉冲环12|速度 24pt Bold 蓝|『TOK/S』|
+        sparkline 60x14|四 vsep 分隔的今日/套餐/燃速/入出四组(v=vstrong
+        217 档,k=faint 89 档 9pt);定宽 BAR_V_W=116,水平边距 8(N1)。
+        分隔线命名=其【后】段/组(与横条 sep 约定一致,F4 属性表唯一权威):
+        段/组数据缺席时其前 sep/vsep 一并隐藏,不悬空 —— spec 段序行内的
+        vsep 名字有一处错位,以属性表为准修正(今日组前=vsep_today 恒显、
+        套餐组前=vsep_plan 跟套餐、燃速组前=vsep_burn 跟燃速、入出组前=
+        vsep_in 恒显)。"""
         self._clear()
         root = QVBoxLayout(self) if vertical else QHBoxLayout(self)
-        root.setContentsMargins(2, 0, 2, 0)   # 四周最小留白(收窄);上下 0 使内容贴窗口边框
+        if vertical:
+            # 水平边距钉 8(N1):内容宽 116−16=100;上下 0 使内容贴窗口边框
+            root.setContentsMargins(8, 0, 8, 0)
+        else:
+            root.setContentsMargins(2, 0, 2, 0)   # 四周最小留白(收窄)
         root.setSpacing(SP["xs"])
         self._bar_form = "v" if vertical else "h"
         if vertical:
             root.addStretch(1)   # 首尾对称弹性:条高富余时内容整体垂直居中(用户要求)
         if not vertical:
-            self.dot = self._mk_lbl("●", "dim", "Segoe UI", 8)
+            self.dot = PulseIndicator(10)
             root.addWidget(self.dot)
-            # 分组:速率 | 延迟 | 用量 | 计时,组间细竖线分隔
-            self.tps_lbl = self._mk_lbl("-- tok/s", "accent", C_MONO, 9)
+            self.tps_lbl = self._mk_lbl("-- t/s", "accent", C_MONO, 14)
+            self.tps_lbl.setFont(mk_mono(14, QFont.Bold))
             root.addWidget(self.tps_lbl)
-            root.addWidget(self._mk_sep(False))
-            self.avg_lbl = self._mk_lbl("", "dim", C_MONO, 9)
-            root.addWidget(self.avg_lbl)
-            root.addWidget(self._mk_sep(False))
-            self.ttft_lbl = self._mk_lbl("", "dim", C_MONO, 9)
-            root.addWidget(self.ttft_lbl)
-            self.dur_lbl = self._mk_lbl("", "dim", C_MONO, 9)
-            root.addWidget(self.dur_lbl)
-            root.addWidget(self._mk_sep(False))
-            self.in_lbl = self._mk_lbl("", "dim", C_MONO, 9)
-            root.addWidget(self.in_lbl)
-            self.out_lbl = self._mk_lbl("", "dim", C_MONO, 9)
-            root.addWidget(self.out_lbl)
-            self.rate_lbl = self._mk_lbl("", "dim", C_MONO, 9)
-            root.addWidget(self.rate_lbl)
-            root.addWidget(self._mk_sep(False))
+            self.spark = SparklineWidget(44, 16)
+            root.addWidget(self.spark)
+            self.sep_plan = self._mk_sep(False)
+            root.addWidget(self.sep_plan)
+            # 套餐段:实画小环(RingWidget12,不用 ⊙ 字形 —— Cascadia 无该
+            # 字形保证,风险表引 ⏱ 字体合并先例 CHANGELOG v0.7:12)
+            self.plan_ring = RingWidget(12, center_text=False)
+            root.addWidget(self.plan_ring)
+            self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 9)
+            self.plan_lbl.setFont(mk_mono(9, QFont.DemiBold))   # 600(tier 色由 _apply_snapshot 注入)
+            root.addWidget(self.plan_lbl)
+            self.plan_cd_lbl = self._mk_lbl("", "dim", C_MONO, 8)
+            root.addWidget(self.plan_cd_lbl)
+            self.sep_today = self._mk_sep(False)
+            root.addWidget(self.sep_today)
+            # 今日段:『今X』+金额段 f" ≈¥N"(金额取整;cost=0 省段/N3、
+            # partial ≈ 前缀 —— 与卡片同守卫,由 _apply_snapshot 拼装)
             self.today_lbl = self._mk_lbl("", "dim", C_MONO, 9)
             root.addWidget(self.today_lbl)
-            root.addWidget(self._mk_sep(False))
-            # 预算段(v0.5.0):『套餐剩余 N%』(warn 色,quota 轨有数据才
-            # 可见)+『燃速 x/h』(dim 色)。数据缺席时 _apply_snapshot 把
-            # label 与 _budget_sep 整段隐藏 → 布局回落到原样(today|线|计时),
-            # _bar_size 跳过隐藏控件,条宽不虚胖
-            self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 9)
-            root.addWidget(self.plan_lbl)
+            self.sep_burn = self._mk_sep(False)
+            root.addWidget(self.sep_burn)
+            # 燃速段:瞬时优先口径不变(dim),文案由 _apply_snapshot 拼装
             self.burn_lbl = self._mk_lbl("", "dim", C_MONO, 9)
             root.addWidget(self.burn_lbl)
-            self._budget_sep = self._mk_sep(False)
-            root.addWidget(self._budget_sep)
-            self.elapsed_lbl = self._mk_lbl("", "warn", C_MONO, 9)
-            root.addWidget(self.elapsed_lbl)
+            # ---- 竖条专属件置 None(F4 横列) ----
+            self.plan_sub_lbl = None
+            self.in_lbl = None
+            self.vbar_in_cap = self.vbar_burn_cap = None
+            self.vsep_plan = self.vsep_burn = self.vsep_today = self.vsep_in = None
         else:
-            # v0.7.x 竖条改分组结构:主数字/今日/套餐 三组,组间分隔线,
-            # 组内『数值+小字说明』节奏 —— 替代旧一列直排的密集堆叠。
-            # 宽度 90→100(stress 断言同步),空间足够补回燃速与重置倒计时。
             def vnum(txt="", cls="", size=9):
                 lb = self._mk_lbl(txt, cls, C_MONO, size)
-                lb.setAlignment(Qt.AlignCenter)
+                lb.setAlignment(Qt.AlignHCenter)
                 return lb
-            def vcap(txt):
-                lb = self._mk_lbl(txt, "dim", "Microsoft YaHei UI", 8)
-                lb.setAlignment(Qt.AlignCenter)
+
+            def vcap(txt, mono=False):
+                # k 行/caption:faint 89 档 9pt(N2 映射:k/caption=89);中文
+                # 走 YaHei、纯 ASCII(TOK/S)走 mono,中文不列进 mk_mono 的
+                # families 才不抬成首选(T1 注释同款理由)
+                lb = self._mk_lbl(txt, "faint",
+                                  C_MONO if mono else "Microsoft YaHei UI", 9)
+                lb.setAlignment(Qt.AlignHCenter)
                 return lb
-            # 组1 主数字:实时速度(状态点紧贴其上,状态与"速度在变"同义)
-            self.dot = self._mk_lbl("●", "dim", "Segoe UI", 8)
-            self.dot.setAlignment(Qt.AlignCenter)
+
+            # 组1 主数字:脉冲环+速度+单位+sparkline
+            self.dot = PulseIndicator(12)
             root.addWidget(self.dot, 0, Qt.AlignHCenter)
-            self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 12)
-            self.tps_lbl.setFont(QFont(C_MONO, 12, QFont.Bold))
-            self.tps_lbl.setAlignment(Qt.AlignCenter)
+            self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 24)
+            self.tps_lbl.setFont(mk_mono(24, QFont.Bold))
+            self.tps_lbl.setAlignment(Qt.AlignHCenter)
             root.addWidget(self.tps_lbl, 0, Qt.AlignHCenter)
-            root.addWidget(vcap("tok/s"))
-            # 组2 今日消耗
-            sep = self._mk_sep(True); root.addWidget(sep, 0, Qt.AlignHCenter)
-            self.today_lbl = vnum("--")
-            root.addWidget(self.today_lbl)
-            root.addWidget(vcap("今日"))
-            # 组3 套餐状态:plan(百分比)+plan_sub(倒计时)两 label 与今日组
-            # 同构,行距走布局 spacing —— 合并多行 label 的行内距不齐的病根
-            sep = self._mk_sep(True); root.addWidget(sep, 0, Qt.AlignHCenter)
-            self.plan_lbl = vnum("", "warn")
+            root.addWidget(vcap("TOK/S", mono=True), 0, Qt.AlignHCenter)
+            self.spark = SparklineWidget(60, 14)
+            root.addWidget(self.spark, 0, Qt.AlignHCenter)
+            # 组2 今日(v=fmt_k vstrong)
+            self.vsep_today = self._mk_sep(True)
+            root.addWidget(self.vsep_today, 0, Qt.AlignHCenter)
+            self.today_lbl = vnum("--", "vstrong")
+            root.addWidget(self.today_lbl, 0, Qt.AlignHCenter)
+            root.addWidget(vcap("今日"), 0, Qt.AlignHCenter)
+            # 组3 套餐:v=N% tier 色、k=[~lt, cd]『 · 』join(空列表→置空但
+            # 组结构保留,v 行仍显 —— N3 缺段自然省略同现状口径明文化)
+            self.vsep_plan = self._mk_sep(True)
+            root.addWidget(self.vsep_plan, 0, Qt.AlignHCenter)
+            self.plan_lbl = vnum("", "warn")   # tier 色由 _apply_snapshot 注入
             root.addWidget(self.plan_lbl, 0, Qt.AlignHCenter)
-            self.plan_sub_lbl = vnum("", "faint")   # 倒计时行(独立 label)
+            self.plan_sub_lbl = vcap("")
             root.addWidget(self.plan_sub_lbl, 0, Qt.AlignHCenter)
-            self.burn_lbl = vnum("", "dim")
+            # 组4 燃速:v=『296M/h』式 vstrong、k=『燃速 · 均137』式含均燃
+            self.vsep_burn = self._mk_sep(True)
+            root.addWidget(self.vsep_burn, 0, Qt.AlignHCenter)
+            self.burn_lbl = vnum("", "vstrong")
             root.addWidget(self.burn_lbl, 0, Qt.AlignHCenter)
-            # 组4 会话累计
-            sep = self._mk_sep(True); root.addWidget(sep, 0, Qt.AlignHCenter)
-            self.in_lbl = vnum("--")
+            self.vbar_burn_cap = vcap("燃速")
+            root.addWidget(self.vbar_burn_cap, 0, Qt.AlignHCenter)
+            # 组5 入出:入 v 行 + 出并入 k 行(out_lbl 三形态 None)
+            self.vsep_in = self._mk_sep(True)
+            root.addWidget(self.vsep_in, 0, Qt.AlignHCenter)
+            self.in_lbl = vnum("--", "vstrong")
             root.addWidget(self.in_lbl, 0, Qt.AlignHCenter)
-            self.out_lbl = vnum("--")
-            root.addWidget(self.out_lbl, 0, Qt.AlignHCenter)
-            root.addWidget(vcap("会话"))
-            self.rate_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
-            self.rate_lbl.setAlignment(Qt.AlignCenter)
-            root.addWidget(self.rate_lbl)
-            self._budget_sep = None
-            root.addStretch(1)   # 保留:把内容顶对齐,底部留白由条高决定
-            # 竖条分组结构不显示 avg/elapsed/ttft/dur:显式置 None,
-            # 否则保留已销毁旧对象的悬空引用(历史 bug)
-            self.avg_lbl = self.elapsed_lbl = self.ttft_lbl = self.dur_lbl = None
-        # 横条与竖条共通:卡片专属 label 两种条形态都不创建,统一置 None
-        # (只在一种形态置 None 会让另一形态的压力循环摸到已销毁 QLabel
-        #  —— test_stress.py 的存在理由;burn/plan 已改由各形态自行创建)
+            self.vbar_in_cap = vcap("入 · 出--")
+            root.addWidget(self.vbar_in_cap, 0, Qt.AlignHCenter)
+            root.addStretch(1)   # 保留:与顶部 stretch 对称,内容垂直居中
+            # ---- 横条专属件置 None(F4 竖列) ----
+            self.plan_ring = None
+            self.plan_cd_lbl = None
+            self.sep_plan = self.sep_burn = self.sep_today = None
+        # ---- 两形态共通(F4 修正版属性总表,唯一权威)----
+        # 卡建件两种条形态都不建;三形态全 None 的已删件(title/est/elapsed/
+        # cache/ttft/dur/out)与卡建横竖 None 件(avg/rate)在此显式置 None ——
+        # 漏一处即形态循环摸已销毁对象(v0.4.0 教训,test_stress 文件头)
         self.state_lbl = self.model_lbl = self.est_lbl = self.cache_lbl = None
-        self.title_lbl = None
-        # v0.7 T-A 新增的三个卡片专属 label(今日多源副文本/计时合并单格/
-        # 套餐副文本)同样两形态都不建,同点显式置 None
+        self.title_lbl = self.elapsed_lbl = self.ttft_lbl = self.dur_lbl = None
+        self.out_lbl = None               # 出量并入 vbar_in_cap 文本(F4:三形态 None)
         self.today_src_lbl = self.timing_lbl = None
+        self.avg_lbl = self.rate_lbl = None
+        self.plan_section = None
+        self.plan_cap_lbl = self.plan_tok_lbl = None
+        self.in_out_lbl = self.avg_burn_lbl = None
+        self.model_rows = None
+        self.model_name_lbl = None
+        self.today_cost_lbl = None
+        self.tps_unit_lbl = None
+        self._model_rows_items = []
 
     # ---- 菜单 ----
     def _popup_menu(self, pos):
@@ -1315,170 +1726,220 @@ class MeterWindow(QWidget):
         if self.tray is not None:
             self.tray.notify("zcode-meter 预算提醒", text)
 
+    def _set_dot_active(self, active: bool):
+        """dot 状态设置。v0.8.0 T3:三形态 dot 均 PulseIndicator(卡14/横10/
+        竖12),M5 中间态的 QLabel『●』分支随条形态重绘删除 —— isinstance
+        分派使命完成,不再保留旧色逻辑。"""
+        self.dot.set_active(active)
+
     def _apply_snapshot(self, s: Snapshot):
         generating = s.state == "generating"
-        self.dot.setText("●")
-        self.dot.setStyleSheet(
-            f"color: {C_ACCENT};" if generating else f"color: {C_DIM};")
-        if self.state_lbl is not None:
-            self.state_lbl.setText("生成中" if generating else "空闲")
-        if self.title_lbl is not None:
-            self.title_lbl.setText(("📌 " if s.manual else "") + (s.title or "当前会话"))
+        self._set_dot_active(generating)     # 三形态均脉冲环(T3 后无 QLabel 分支)
         tps = s.tps_est if (generating and s.tps_est) else s.tps_exact
-        txt = f"{tps:.1f}" if tps else "--"
-        unit = " tok/s" if self.dock in (None, "top", "bottom") else ""
-        self.tps_lbl.setText(txt + unit)
-        if self.est_lbl is not None:
-            self.est_lbl.setText("~估算" if (generating and s.tps_est) else "")
-        if self.elapsed_lbl is not None:
-            self.elapsed_lbl.setText(f"{s.gen_elapsed:.0f}s" if generating else "")
-        self.in_lbl.setText(f"入 {fmt_k(s.session_in)}")
-        self.out_lbl.setText(f"出 {fmt_k(s.session_out)}")
-        self.rate_lbl.setText((f"缓存 {s.cache_rate:.2f}%" if self.dock in (None, "top", "bottom")
-                               else f"{s.cache_rate:.2f}%"))
-        if self.cache_lbl is not None:
-            self.cache_lbl.setText(fmt_k(s.session_cache))
-        if self.avg_lbl is not None:
-            if self.dock in ("top", "bottom"):
-                self.avg_lbl.setText(f"均 {s.tps_avg:.1f} tok/s" if s.tps_avg else "")
-            else:
-                self.avg_lbl.setText((f"{s.tps_avg:.1f} tok/s" if s.tps_avg else "--"))
-        if self.model_lbl is not None:
-            rows = s.speed_by_model or []
-            lines = []
-            for i, (prov, model, tps, out_tok) in enumerate(rows[:4]):
-                t = f"{tps:.1f}" if tps else "--"
-                if i == 0:
-                    lines.append(f"{prov}/{model} · 均 {t} tok/s")
-                else:
-                    lines.append(f"{prov}/{model} · {t} tok/s")
-            self.model_lbl.setText("\n".join(lines))
-        if self.today_lbl is not None:
-            # 今日用量并入金额版:partial(存在未知模型,金额为下限)带 ≈。
-            # 横条同 label 追加金额段不新增 label;竖条空间受限只保 token。
-            cost = s.today_cost_cny or 0.0
-            cost_txt = (f" · {'≈' if s.today_cost_partial else ''}¥{cost:.2f}"
-                        if self.dock in (None, "top", "bottom") and cost else "")
-            if self.dock in ("top", "bottom"):
-                self.today_lbl.setText(f"今 {fmt_k(s.today_tokens)}{cost_txt}")
-            elif self.dock in ("left", "right"):
-                self.today_lbl.setText(fmt_k(s.today_tokens))
-            else:
-                # v0.7 T-A:卡片 today 升 hero —— 加『今日』前缀;金额段守卫
-                # (cost=0 整段省略)与 partial ≈ 口径逐字沿旧实现
-                self.today_lbl.setText(f"今日 {fmt_k(s.today_tokens)}{cost_txt}")
-                # 多源聚合(>1 源才显示,避免"只有 ZCode"的噪音行)从 hero
-                # 第二行拆到独立 8pt 副文本,join 文案不变
-                if self.today_src_lbl is not None:
-                    srcs = s.today_by_source
-                    self.today_src_lbl.setText(
-                        " · ".join(f"{n} {fmt_k(t)}" for n, t in srcs)
-                        if srcs and len(srcs) > 1 else "")
-        # ---- 预算段(v0.5.0 起条形态也有):卡片=纯文本切换(现状不动);
-        # 条形态=按数据显隐 —— 数据缺席整段 setVisible(False)(label+分隔线),
-        # 隐藏控件被 _bar_size 跳过,条宽不虚胖;横条 burn 不带卡片 est 后缀
-        # (一行放不下);竖条只保紧凑套餐剩余,文案压到 90px 宽度断言内。
-        burn = s.burn_tokens_per_hour or 0.0
         if self._bar_form is None:
-            if self.burn_lbl is not None:
-                if burn > 0:
-                    t = f"燃速 {fmt_k(int(burn))}/h"
-                    if s.est_hours_left is not None:
-                        t += (" · 预算已超支" if s.est_hours_left <= 0
-                              else f" · 预算还可撑 {s.est_hours_left:.1f}h")
-                    self.burn_lbl.setText(t)
-                else:
-                    self.burn_lbl.setText("")   # 无燃速(今日尚未活跃)不显示
-            if self.plan_lbl is not None:
-                if self._plan_pct is None:
-                    self.plan_lbl.setText("")
-                else:
-                    # v0.7 T-A 两级化:hero 只留主数字,新鲜度/重置倒计时降
-                    # 为 plan_sub_lbl 副文本(faint 色,明显弱于正文)
-                    t = f"剩 {self._plan_pct:.0f}%"
-                    lt = self._plan_left_tok
-                    if lt is not None:
-                        t += f" · ~{fmt_k(int(lt))}"
-                    self.plan_lbl.setText(t)
-            if self.plan_sub_lbl is not None:
-                if self._plan_pct is None:
-                    self.plan_sub_lbl.setText("")
-                else:
-                    # 副文本拼段规则(D3 钉死表):对在场段各拼『· 』前缀、段
-                    # 间以空格相连 —— 双在场『· 3分钟前 · 1h 30m 后重置』,
-                    # 仅 age『· 3分钟前』,仅 cd『· 1h 30m 后重置』;缺
-                    # fetched_at/next_reset 该段自然省略;pct 缺席则整行置空
-                    # (与 hero 同语义,v0.5.1 单 label 置空语义同源)
-                    age = format_age_zh(self._plan_fetched_at)
-                    cd = format_countdown_hm(self._plan_next_reset)
-                    self.plan_sub_lbl.setText(" ".join(
-                        f"· {seg}" for seg in
-                        (age, f"{cd} 后重置" if cd else None) if seg))
+            # v0.8.0 T5+T2:卡片新结构渲染(_apply_card),此后即返回 ——
+            # 下方条分支消费的 in_lbl/plan_ring 等在卡形态是 None(F4 表)
+            self._apply_card(s, generating, tps)
+            self._refit_dock()
+            return
+        # ---- v0.8.0 T3 条形态渲染(F4 属性表横/竖列)----
+        # 恒显件每拍显式 setVisible(True):无父构造再 addWidget 的子控件
+        # 在『加入已可见父』后不自动 show(无事件循环的 stress 环境恒
+        # isHidden),显式置位让显隐状态可断言、也不依赖布局激活时机;
+        # setVisible 幂等,200ms 一跳无重绘 churn
+        if self._bar_form == "h":
+            self.tps_lbl.setVisible(True)
+            self.today_lbl.setVisible(True)
+            self.sep_today.setVisible(True)      # 今日恒在 → sep_today 恒显
         else:
-            plan_on = self._plan_pct is not None
-            burn_on = burn > 0
-            if self.plan_lbl is not None:
-                self.plan_lbl.setVisible(plan_on)
-                if plan_on:
-                    # 重置倒计时一并入条(纯本地计算,零请求);无数据自然省略
-                    cd = format_countdown_hm(self._plan_next_reset)
-                    if self._bar_form == "h":
-                        t = f"剩 {self._plan_pct:.0f}%"
-                        lt = self._plan_left_tok
-                        if lt is not None:
-                            t += f" · ~{fmt_k(int(lt))}"
-                        if cd:
-                            t += f" · {cd}后重置"
-                        self.plan_lbl.setText(t)
-                    else:
-                        # 竖条分组结构:plan 主数字行 + plan_sub 倒计时行
-                        # (独立 label,行距走布局 spacing,与今日组同构)
-                        self.plan_lbl.setText(f"{self._plan_pct:.0f}%")
-                        if self.plan_sub_lbl is not None:
-                            sub = cd or ""
-                            lt = self._plan_left_tok
-                            if lt is not None:
-                                sub = (f"~{fmt_k(int(lt))}" + (f" · {sub}" if sub else ""))
-                            self.plan_sub_lbl.setText(sub)
-            if self.burn_lbl is not None:
-                self.burn_lbl.setVisible(burn_on)
-                if burn_on:
-                    if self._bar_form == "v":
-                        # 竖条分组:纯数值(组语义由上方套餐组的延续性表达)
-                        self.burn_lbl.setText(fmt_k(int(burn)) + "/h")
-                    else:
-                        # 横条:瞬时燃速(最近请求吞吐)优先,无单请求数据退回
-                        # 60min 窗口值;后接会话平均燃速
-                        shown = s.burn_instant_per_hour or burn
-                        t = f"燃速 {fmt_k(int(shown))}/h"
-                        ab = s.burn_avg_tokens_per_hour
-                        if ab:
-                            t += f" · 均燃 {fmt_k(int(ab))}/h"
-                        self.burn_lbl.setText(t)
-            if self._budget_sep is not None:
-                self._budget_sep.setVisible(plan_on or burn_on)
-        if self.ttft_lbl is not None:
-            if s.last_ttft is None:
-                self.ttft_lbl.setText("--")
-            elif self.dock in ("top", "bottom"):
-                self.ttft_lbl.setText(f"首字 {s.last_ttft:.1f}s")
-            else:
-                self.ttft_lbl.setText(f"{s.last_ttft:.1f}s")
-        if self.dur_lbl is not None:
-            if s.last_duration is None:
-                self.dur_lbl.setText("--")
-            elif self.dock in ("top", "bottom"):
-                self.dur_lbl.setText(f"总 {s.last_duration:.1f}s")
-            else:
-                self.dur_lbl.setText(f"{s.last_duration:.1f}s")
-        if self.timing_lbl is not None:
-            # v0.7 T-A 卡片专属合并单格:分段占位、整串结构恒保留 —— 卡片
-            # 不做整行隐藏,缺数据显示 --(与条形态 ttft/dur 各自『--』同
-            # 语义);⏱ 字形 Consolas 缺字走 Qt 字体回退
-            tt = f"{s.last_ttft:.1f}s" if s.last_ttft is not None else "--"
-            du = f"{s.last_duration:.1f}s" if s.last_duration is not None else "--"
-            self.timing_lbl.setText(f"⏱ 首字 {tt} · 总 {du}")
+            self.tps_lbl.setVisible(True)
+            self.today_lbl.setVisible(True)
+            self.in_lbl.setVisible(True)
+            self.vbar_in_cap.setVisible(True)
+            self.vsep_today.setVisible(True)     # 今日/入出组恒在 → 恒显
+            self.vsep_in.setVisible(True)
+        speed_txt = f"{tps:.1f}" if tps else "--"
+        if self._bar_form == "h":
+            self.tps_lbl.setText(speed_txt + " t/s")   # 14pt Bold 蓝 + 单位
+        else:
+            self.tps_lbl.setText(speed_txt)            # 单位由『TOK/S』caption 表达
+        # sparkline 三形态恒建:<2 点隐藏不闪空(与卡片同口径,T-4 风险);
+        # 隐藏控件被 _bar_size 跳过,条宽/高不虚胖
+        vals = s.recent_speeds or []
+        self.spark.set_values(vals)
+        self.spark.setHidden(len(vals) < 2)
+        # 今日段:横条『今X[ ≈¥N]』(金额取整;cost=0 整段省略、partial ≈
+        # 前缀 —— 与卡片同守卫,N3);竖条组 v 只保 token(空间受限)
+        cost = s.today_cost_cny or 0.0
+        if self._bar_form == "h":
+            cost_txt = (f" {'≈' if s.today_cost_partial else ''}¥{cost:.0f}"
+                        if cost else "")
+            self.today_lbl.setText(f"今{fmt_k(s.today_tokens)}{cost_txt}")
+        else:
+            self.today_lbl.setText(fmt_k(s.today_tokens))
+        # ---- 套餐段(plan_on)/燃速段(burn_on):段/组数据缺席时其前
+        # sep/vsep 一并隐藏(F4:sep_plan 跟套餐、sep_burn 跟燃速、
+        # sep_today/vsep_today/vsep_in 恒显),不残留悬空线 ----
+        plan_on = self._plan_pct is not None
+        burn = s.burn_tokens_per_hour or 0.0
+        burn_on = burn > 0
+        cd = format_countdown_hm(self._plan_next_reset)
+        if self._bar_form == "h":
+            self.sep_plan.setVisible(plan_on)
+            self.sep_burn.setVisible(burn_on)   # sep_today 恒显(今日恒在),无显隐逻辑
+            self.plan_ring.setVisible(plan_on)
+            self.plan_lbl.setVisible(plan_on)
+            # cd 缺 → 置空并隐藏(条形态隐藏非空文本纪律,v0.5.1 同款)
+            self.plan_cd_lbl.setVisible(plan_on and bool(cd))
+            if plan_on:
+                pct = self._plan_pct
+                color = tier_color(pct)
+                self.plan_ring.set_pct(pct, color)
+                lt = self._plan_left_tok
+                self.plan_lbl.setText(
+                    f"{pct:.0f}%" + (f" ~{fmt_k(int(lt))}" if lt is not None else ""))
+                self.plan_lbl.setStyleSheet(f"color: {color};")
+                if cd:
+                    self.plan_cd_lbl.setText(cd)
+            if burn_on:
+                # 瞬时燃速(最近请求吞吐)优先,无单请求数据退回 60min 窗口值;
+                # 后接会话平均燃速 —— 口径一字不动(v0.7 既有分支)
+                shown = s.burn_instant_per_hour or burn
+                t = f"燃速 {fmt_k(int(shown))}/h"
+                ab = s.burn_avg_tokens_per_hour
+                if ab:
+                    t += f" · 均燃 {fmt_k(int(ab))}/h"
+                self.burn_lbl.setText(t)
+            self.burn_lbl.setVisible(burn_on)
+        else:
+            self.vsep_plan.setVisible(plan_on)
+            self.vsep_burn.setVisible(burn_on)  # vsep_today/vsep_in 恒显
+            self.plan_lbl.setVisible(plan_on)
+            self.plan_sub_lbl.setVisible(plan_on)
+            if plan_on:
+                pct = self._plan_pct
+                self.plan_lbl.setText(f"{pct:.0f}%")
+                self.plan_lbl.setStyleSheet(f"color: {tier_color(pct)};")
+                # k 行段列表 [~lt, cd] 以『 · 』join:空列表 → 置空但组结构
+                # 保留(v 行 N% 仍显);lt/cd 缺段自然省略(N3,现状口径明文化)
+                lt = self._plan_left_tok
+                self.plan_sub_lbl.setText(" · ".join(
+                    seg for seg in (f"~{fmt_k(int(lt))}" if lt is not None else None,
+                                    cd or None) if seg))
+            self.burn_lbl.setVisible(burn_on)
+            self.vbar_burn_cap.setVisible(burn_on)
+            if burn_on:
+                self.burn_lbl.setText(fmt_k(int(burn)) + "/h")
+                ab = s.burn_avg_tokens_per_hour
+                self.vbar_burn_cap.setText(
+                    "燃速" + (f" · 均{fmt_k(int(ab))}" if ab else ""))
+            # 入出组恒显:入 v 行 + 出并入 k 行文本(out_lbl 三形态 None,
+            # session_out 不再单独占行)
+            self.in_lbl.setText(fmt_k(s.session_in))
+            self.vbar_in_cap.setText(f"入 · 出{fmt_k(s.session_out)}")
         self._refit_dock()
+
+    def _apply_card(self, s: Snapshot, generating: bool, tps) -> None:
+        """v0.8.0 T5+T2 卡片渲染(预览 .g-card 结构,_build_card ①-⑥ 对应)。
+        条形态走 _apply_snapshot 的 T3 新分支;本方法只消费 F4 属性表卡列的
+        件,条形态件(plan_ring(横)/in_lbl(竖)等)一律不碰。"""
+        # ① 状态行:elapsed 并入状态文本(idle『空闲』);会话标题降级为窗口
+        # tooltip(F3 裁决:卡片行数减法由 tooltip+告警气泡补偿);模型名
+        # manual 前缀 📌、超宽 elide(固定 150px 钳宽,不反推撑宽卡片)
+        self.state_lbl.setText(
+            f"生成中 {s.gen_elapsed:.0f}s" if generating else "空闲")
+        self.setToolTip(("📌 " if s.manual else "") + (s.title or "当前会话"))
+        fm = QFontMetrics(self.model_name_lbl.font())
+        name = ("📌 " if s.manual else "") + (s.model or "")
+        # 190px:内容宽 289 − 速度列(最宽 "999.9 t/s" 实测 87)− 间距 6 的
+        # 余量内取整;模型行不改列宽策略(name label 本就在拉伸侧)
+        self.model_name_lbl.setText(fm.elidedText(name, Qt.ElideRight, 190))
+        # ② 主数字行:流式估算以速度 ~ 前缀表达(旧 est_lbl 删除,README
+        # 『速度带~=流式估算』口径);sparkline <2 点隐藏不闪空(T-4 风险)
+        self.tps_lbl.setText(
+            ("~" if (generating and s.tps_est) else "")
+            + (f"{tps:.1f}" if tps else "--"))
+        vals = s.recent_speeds or []
+        self.spark.set_values(vals)
+        self.spark.setHidden(len(vals) < 2)
+        # ③ 今日 hero 三段:cost=0 省金额段、partial ≈ 前缀(口径逐字沿旧)
+        self.today_lbl.setText(fmt_k(s.today_tokens))
+        cost = s.today_cost_cny or 0.0
+        self.today_cost_lbl.setText(
+            f"{'≈' if s.today_cost_partial else ''}¥{cost:.2f}" if cost else "")
+        self.today_cost_lbl.setHidden(not cost)
+        srcs = s.today_by_source
+        self.today_src_lbl.setText(
+            " · ".join(f"{n} {fmt_k(t)}" for n, t in srcs)
+            if srcs and len(srcs) > 1 else "")
+        # ④ 套餐 section 容器化:_plan_pct None → 分节线随段整组隐藏(不悬
+        # 空);ring 中心 N% tier 色;lt 缺占位『—』;r 行段序与旧 D3 表相反
+        # 是有意变更(评审第 3 轮):倒计时在前、『 · 』join、无前导点
+        pct = self._plan_pct
+        self.plan_section.setHidden(pct is None)
+        if pct is None:
+            self.plan_lbl.setText("")
+            self.plan_lbl.setStyleSheet("")
+        else:
+            color = tier_color(pct)
+            self.plan_ring.set_pct(pct, color)
+            # plan_lbl(恒建,卡形态隐藏):同步 % 文本与 tier 色 —— 条形态
+            # 的消费载体,也是 stress tier 注入断言的锚
+            self.plan_lbl.setText(f"{pct:.0f}%")
+            self.plan_lbl.setStyleSheet(f"color: {color};")
+            lt = self._plan_left_tok
+            self.plan_tok_lbl.setText(
+                f"~{fmt_k(int(lt))} tokens" if lt is not None else "—")
+            cd = format_countdown_hm(self._plan_next_reset)
+            age = format_age_zh(self._plan_fetched_at)
+            self.plan_sub_lbl.setText(" · ".join(
+                seg for seg in (f"{cd} 后重置" if cd else None, age) if seg))
+        # ⑤ grid 六格:k 恒显、v 缺参 --、按列宽 elide(CARD_GRID_COL_W
+        # 宽度策略);燃速格 est_hours_left 降级为 tooltip(F3 取舍:
+        # 『还可撑 X 小时』不再占行,悬停补偿;elide 丢失的全量原文同走
+        # 该格 tooltip,悬停可回读)
+        def _elide(lb, text, maxw):
+            fmv = QFontMetrics(lb.font())
+            el = fmv.elidedText(text, Qt.ElideRight, maxw)
+            lb.setText(el)
+            lb.setToolTip(text if el != text else "")
+
+        cw = self.CARD_GRID_COL_W
+        in_out_txt = f"{fmt_k(s.session_in)} / {fmt_k(s.session_out)}"
+        _elide(self.in_out_lbl, in_out_txt, cw[0])
+        _elide(self.rate_lbl, f"{s.cache_rate:.2f}%", cw[1])
+        tt = f"{s.last_ttft:.1f}" if s.last_ttft is not None else "--"
+        du = f"{s.last_duration:.1f}s" if s.last_duration is not None else "--"
+        _elide(self.timing_lbl, f"{tt} / {du}", cw[2])
+        burn = s.burn_tokens_per_hour or 0.0
+        burn_txt = f"{fmt_k(int(burn))}/h"
+        _elide(self.burn_lbl, burn_txt, cw[0])
+        if s.est_hours_left is not None:
+            self.burn_lbl.setToolTip(
+                burn_txt + (" · 预算已超支" if s.est_hours_left <= 0
+                            else f" · 预算还可撑 {s.est_hours_left:.1f}h"))
+        else:
+            self.burn_lbl.setToolTip("")
+        ab = s.burn_avg_tokens_per_hour
+        _elide(self.avg_burn_lbl,
+               f"{fmt_k(int(ab))}/h" if ab is not None else "--", cw[1])
+        _elide(self.avg_lbl, f"{s.tps_avg:.1f} t/s" if s.tps_avg else "--", cw[2])
+        # ⑥ 模型列表 rows[:4]:首行不带『均』前缀(v0.7→v0.8 有意变更),
+        # 行数不足隐藏(容器高度随可见行收缩)
+        rows = (s.speed_by_model or [])[:4]
+        for i, (nm, sp_lbl) in enumerate(self._model_rows_items):
+            on = i < len(rows)
+            nm.setHidden(not on)
+            sp_lbl.setHidden(not on)
+            if on:
+                prov, model, tps_m, _out = rows[i]
+                # elide 必须用『本行名 label』的 10pt 字体量宽 —— 用状态行
+                # 8pt 字体的 metrics 会低估 ~25%,长名穿透上限反推撑宽卡
+                # (实测 model_rows 462px 假峰的病根)
+                fmn = QFontMetrics(nm.font())
+                nm.setText(fmn.elidedText(f"{prov}/{model}",
+                                          Qt.ElideRight, 190))
+                sp_lbl.setText(f"{tps_m:.1f} t/s" if tps_m else "-- t/s")
 
     def _refit_dock(self):
         """条模式下数据文字变长时重算条尺寸(防截断);几何统一由
@@ -1492,12 +1953,11 @@ class MeterWindow(QWidget):
         self._apply_dock_geometry()
 
     def _tick_breath(self):
+        """60ms 呼吸相位推进(v0.4.0 起)。v0.8.0 T3:三形态 dot 均脉冲环,
+        只推相位(set_phase 内部仅 generating 时 update,idle 零重绘);旧
+        QLabel 绿算式分支随 T3 删除(M5 中间态退役)。"""
         self._breath = (self._breath + 0.08) % 1.0
-        if self.snap.state == "generating":
-            a = 0.45 + 0.55 * abs(2 * self._breath - 1)
-            g = int(0x60 + 0x40 * a)
-            r_ = int(0x30 + 0x18 * a)
-            self.dot.setStyleSheet(f"color: #{r_:02x}{g:02x}70;")
+        self.dot.set_phase(self._breath)
 
     # ---- 自检 ----
     def _verify(self):
@@ -1588,7 +2048,7 @@ class BarChart(QWidget):
         bar_max = max(right - x0 - val_w - 6, 20)
         row_h = min(26, max((h - 8) / max(n, 1), 13))
         f_lbl = QFont("Microsoft YaHei UI", 8)
-        f_val = QFont(C_MONO, 8)
+        f_val = mk_mono(8)
         fm = QFontMetrics(f_lbl)
         fm_val = QFontMetrics(f_val)
         for i, (label, val) in enumerate(self._items):
@@ -1643,7 +2103,7 @@ class BarChart(QWidget):
           不抽稀;按可用对角线长度 elide(首尾标签另受左缘钳制),bot 边距
           按旋转投影自适应并设上限,防矮窗口被标签区吃光。"""
         n = len(self._items)
-        f_val, f_lbl = QFont(C_MONO, 8), QFont("Microsoft YaHei UI", 8)
+        f_val, f_lbl = mk_mono(8), QFont("Microsoft YaHei UI", 8)
         fm = QFontMetrics(f_lbl)
         line_h = fm.height()
         w_max = max((fm.horizontalAdvance(t[0]) for t in self._items), default=0)
@@ -1685,8 +2145,9 @@ class BarChart(QWidget):
             p.drawText(QRectF(0, -6, 56, 12), Qt.AlignLeft | Qt.AlignVCenter,
                        fmt_k(val) if val else "0")
             # 第二行数值(¥ 金额):沿柱身另一侧平行竖排,暗色不抢 token 主数值
+            # (faint 档 hex,v0.8.0 与 QSS QLabel#faint 字面同步换值)
             if self._extra and i < len(self._extra) and self._extra[i]:
-                p.setPen(QColor("#565a66"))
+                p.setPen(QColor("#68696c"))
                 p.drawText(QRectF(0, 6, 64, 12), Qt.AlignLeft | Qt.AlignVCenter,
                            self._extra[i])
             p.restore()

@@ -1,5 +1,137 @@
 # Changelog
 
+## v0.8.0 (未发布)
+
+- **玻璃仪表视觉改版**(spec=`design/design-preview-abd.html` 归档件,方案
+  A+B+D 融合的**不透明近似版**:D 的玻璃质感底 + A 的仪表层次(脉冲环/大数字/
+  氛围光晕)+ B 的图形化(sparkline/环形进度),accent 绿→系统蓝亮变体、警示
+  琥珀。DWM/亚克力/真窗口透明按 spec 风险区**不做**,setWindowOpacity 既有
+  frozen 0.8 冻结机制原样保留;贴边/吸附/保护期几何与全部数据口径零改动。
+  五票分批合入:基建(T1)/数据层(T4)→ 卡片(T5+T2)→ 条(T3))
+- **色板/字体基建(T1)**:旧名改值、引用零改动(四常量名在 app.py 引用
+  54 处/41 行,本会话 grep 词边界实测;重命名大 diff 高风险):`C_ACCENT`
+  `#5ad6a0→#7ad7ff`、`C_WARN #e8c268→#ffd166`;`C_FG/C_DIM` 与 QSS faint
+  字面改**白 alpha 叠 #17181d 的逐通道实算合成 hex**(白.9→`#e8e8e8`/
+  白.55→`#979799`/白.35→`#68696c`)。**F2 硬约束**:`C_FG/C_DIM/C_BG/
+  C_BORDER/C_ACCENT/C_WARN` 连同新增 `C_ACCENT_DIM=#60cdff`、`C_TIER_OK=
+  #6ee7a8`、`C_TIER_DANGER=#ff6b6b` 必须保持 QColor 可解析 hex —— BarChart
+  直接 `QColor(C_FG/C_DIM)` 消费且历史窗零测试覆盖,rgba 字面实测
+  `isValid()==False` 会静默画黑;半透明白只允许出现在 QSS 字面与 painter 的
+  `QColor(255,255,255,a)` 构造。**补充白梯度档(N2)**:主三档外补 soft=204
+  (卡片 grid 六格 v)/half=128(模型行速度)/vstrong=217(竖条组 v),仅以
+  QSS objectName selector(`QLabel#soft/#half/#vstrong`)rgba 字面落地,
+  不新增 C_* 常量(hex 约束不破)。字体:等宽主族 Consolas→**Cascadia Code**,
+  新 `mk_mono(size, weight)`(`setFamilies(['Cascadia Code','Consolas'])`,
+  未装 Cascadia 的机器回退 Consolas 数字宽度不漂;中文/⏱ 不列进 families、
+  走 Qt 字体合并,v0.7 ⏱ 先例),`_mk_lbl` 内部单点接线+直接 QFont 调用点
+  逐处换。**tier_color(pct) 纯函数**(同 frozen_opacity 单测先例):
+  `>50→C_TIER_OK;20≤pct≤50→C_WARN;<20→C_TIER_DANGER`,边界 50.0/20.0 归
+  WARN、19.9 归 DANGER;**与用户 alert_pct 刻意不动态绑定** —— 阈值可配多级
+  (如 30/10),分档色是视觉语言非告警状态,动态绑定会让该配置退化成两档;
+  20 与默认告警首阈值 `[20,10]` 巧合对齐纯属巧合。test_stress 补 F2 hex
+  可解析守卫与三档/边界注入断言
+- **速度趋势数据层(T4)**:`DataEngine.fetch_recent_speeds(n=12,
+  session_id=None)` —— `status='completed' AND session_id=? AND
+  query_source='main_turn'`(与 _poll_stats 主速度查询同型,v0.2.0 subagent
+  劫持会话统计事故红线:混入即曲线与主速度口径不符)再叠加
+  `duration_ms IS NOT NULL AND output_tokens>0`(分母/分子无意义的行不进
+  曲线);`ORDER BY rowid DESC LIMIT n` 后 Python 侧反转成**时间正序**;
+  `speed = output/(max(duration−COALESCE(ttft,0),1)/1000)`(max(,1) 防零除,
+  与 _poll_new_completed 同式)。sqlite3.Error→返回 `[]`(与 _poll_stats
+  同吞法,坏库不炸引擎线程,UI 按 <2 点隐藏不闪空),con.close 置 finally;
+  `Snapshot.recent_speeds` 由引擎线程在 snap_lock 内 1s 一查填充(与
+  today_by_source 同款,_switch_session 重建后下一拍补全)。test_data_engine
+  按合成库约定新增断言:多行值手算对账/时间正序/n 截断/subagent 与
+  cancelled 排除/异常路径空表;README 口径表新增『速度趋势(sparkline)』行
+- **可复用绘制件+卡片重绘(T5+T2,依赖 T1)**:模块级 `paint_sparkline`
+  (#60cdff 1.5px 圆帽折线+末端点 #7ad7ff r=2;x 均分、y min-max 线性映射
+  上下各 1px inset;min==max 画水平中线;n<2 return)、`paint_ring`(底环
+  白.10 3.5px、前景 3.5px 圆帽、12 点起顺时针 pct%·360°,pct 钳 [0,100],
+  中心文字由调用方叠加)。三 QWidget(sizeHint 固定):**PulseIndicator**
+  (替换旧 QLabel 呼吸点:active=蓝环+内核+外扩圈 2s ease-in-out,相位复用
+  _breath/60ms timer 折算不新建定时器,仅 generating 时 update(),idle=白.35
+  静态空心环;卡 14/横条 10/竖条 12)、**SparklineWidget**(卡 72x24/横条
+  44x16/竖条 60x14)、**RingWidget**(卡片 46px 中心 N% 11pt tier 色 Bold/
+  横条 12px 无字)。M5 中间态分派 `_set_dot_active`(isinstance
+  PulseIndicator→set_active,else 旧 QLabel 分支)随 T3 合入删除。**窗口背景
+  改自绘**(唯一样式机制切换点):QSS `#root` 删 background/border(QSS_BAR
+  的 replace 派生链保留防静默断链,无 background 时 border-radius 不绘制
+  任何东西),`MeterWindow.paintEvent` 画垂直渐变 `#17181d→#131419`+顶部
+  中央 200x100 径向光晕 rgba(96,205,255,.10)→透明(裁进圆角)+1px 白.08
+  描边;**圆角归属钉死在形态**:卡/竖条 12、横条 8。卡片新结构(预览
+  .g-card):①状态行=Pulse14+『生成中 Xs』(elapsed 并入,idle『空闲』)+
+  右侧模型名(📌 前缀、超宽 elide)——**会话标题不再占行,完整标题+📌 进
+  窗口 setToolTip**;②主数字行=速度 30pt Bold 蓝+『tok/s』11pt 白.35+
+  sparkline;③今日 hero 三段:fmt_k 19pt Bold 白.9+金额 13pt 白.55 600+
+  『今日』10pt 白.35(cost=0 省金额段、partial `≈` 逐字保留);④套餐
+  section **容器化**:分节线+Ring46+右信息三行包进同一 QWidget,`_plan_pct`
+  缺席整组 `setVisible(False)`、分节线不悬空;⑤grid 六格 3 列(入/出
+  `v=f"{fmt_k(in)} / {fmt_k(out)}"` **直取 session_in/out 禁碰 session_cache**
+  (v0.2.0 input 双计 cache 回归红线)、缓存命中、⏱首/总、燃速、均燃、均速),
+  k 9pt faint/v 13pt soft,固定列宽 `CARD_GRID_COL_W=(101,81,111)`(满载
+  文本自然宽实测 372>313,elide+tooltip 回读,合计恰收敛 313);⑥模型列表
+  rows[:4] 容器化(名左 faint/速度右 half,替换旧单 QLabel join)。**尺寸
+  重估**(禁拍脑布,v0.5.1『336 截 342』教训):`CARD_W=313`(设计宽,
+  `__init__` adjustSize 后 clamp,防启动路径与常量脱节)、`CARD_H=346` 沿用
+  —— `findings/measure_card_baseline.py` 三道闸(原生平台/processEvents 后
+  adjustSize/满载<300 判 INVALID)实测满载(plan/burn on+sparkline 12 点+
+  多源)0-4 行模型 276/293/310/327/344,max=344、+2 余量;0/1 行不再同高
+  (plan 容器恒占)
+- **横竖条重绘(T3,依赖 T1+T5+T2)**:横条新段序:脉冲 10|速度 14pt Bold
+  蓝+『t/s』|sparkline 44x16|sep_plan|套餐段=Ring12(**实画小环,不用 ⊙
+  字形** —— Cascadia 无字形保证,⏱ 先例)+『N% ~X』tier 色 600+倒计时
+  dim|sep_today|今日段(`今{fmt_k}`+` ≈¥{cost:.0f}` 金额取整;**cost=0
+  整个金额段省略**、partial `≈` 前缀保留,与卡片同守卫)|sep_burn|燃速段
+  (瞬时优先口径不动)。**旧横条的 avg/ttft/dur/in/out/rate/elapsed 段全删**
+  (不做迁移补偿 UI,除已裁决的 tooltip 两处)。竖条(全 AlignHCenter):
+  脉冲 12|速度 24pt Bold 蓝|『TOK/S』9pt|sparkline 60x14|今日组|套餐组
+  (v=N% tier 色/k=『~X · cd』,lt/cd 缺段自然省略、空列表置空但组结构保留)
+  |燃速组(v=`296M/h` 式/k=『燃速 · 均137』式含均燃)|入出组(**v=入量、
+  k=『入 · 出X』 —— 出量并入 k 行文本,竖条缓存率随之移除**)。**竖条定宽
+  116(F1,全 spec 唯一明示的尺寸机制变更)**:新类常量 `BAR_V_W=116`,
+  `_bar_size` 竖向分支宽度侧由 max_w 聚合+`min(...,100)` cap 改定宽常量
+  (高度侧聚合与跳过 hidden 不变;横向分支一字不动;_apply_dock_geometry/
+  _settle 零改动)—— 与旧 cap 同款哲学,文案已钉死紧凑形,超宽硬截属预期。
+  vsep 竖向线宽 92→84 重锚(BAR_V_W 116−左右边距 8−边框),竖条水平边距
+  钉 8。**分隔线显隐(F4)**:横条 sep_plan 跟套餐段/sep_burn 跟燃速段/
+  sep_today 恒显(今日恒在;旧 _budget_sep 机制升格为逐段 sep 属性);竖条
+  vsep_plan 跟套餐组/vsep_burn 跟燃速组/vsep_today/vsep_in 恒显 —— 数据
+  缺席时段与其前分隔线一并隐藏,无悬空线。**None/属性总表(第 2 轮评审
+  修正,卡|横|竖三列逐属性,唯一权威)**:三形态恒建=dot/tps/today/burn/
+  plan 五 label+spark;卡建条 None=state/model_rows/today_src/timing/
+  in_out/avg_burn/rate/avg+plan_cap/plan_tok(细分件 model_name/today_cost/
+  tps_unit/plan_section 容器同列);卡+竖建=plan_sub(横条套餐段
+  自带文案不建);plan_ring=卡 46/横 12、竖 None;plan_cd=横建(cd 缺→置空
+  并隐藏,条形态隐藏非空文本纪律);in_lbl/vbar_in_cap/vbar_burn_cap=竖建;
+  **out_lbl 三
+  形态全 None**(出量并入 vbar_in_cap 文本);sep_*=横建、vsep_*=竖建、卡片
+  三主分节线恒建;**title/est/elapsed/cache/ttft/dur 三形态全 None**(ttft/
+  dur 已并 timing,卡片也 None)—— 实现与 stress 属性×形态矩阵断言同源,
+  漏置 None 会让形态循环摸已销毁对象(v0.4.0 教训)
+- **可见信息取舍(补偿已裁决)**:est_hours_left『还可撑 X 小时』从横条
+  段+卡片行**降为卡片燃速格 tooltip**(『预算还可撑 X.Xh/预算已超支』,
+  预算告警气泡保留作主动提醒 —— 直读习惯被打破的补偿);会话标题行取消,
+  完整标题+📌 进窗口悬停提示。两处均为已发布文档化行为的有意变更,README
+  五处同步(特性行/交互表/图例行/口径表『还可撑』行+sparkline 新行)
+- **stress 断言整批同步**:**『条形态文案一字不动』红线(本文件 v0.7 条目
+  记载)此次作废**,断言批量重写只发生在 T3/T5+T2 步:①属性×形态全组合
+  矩阵(按 None/属性总表);②尺寸断言:竖条宽 `≤90`→`==BAR_V_W(116)`、
+  横条高 `≤30`→`≤34`(14pt+16px sparkline 实测上限,注释写明);③套餐/
+  倒计时/timing(『0.8 / 12.4s』式)/plan 钉死表/today 三段式+cost=0 省金额
+  段新文案;④tier 三档注入(87/40/15→RingWidget 与文本色==tier_color);
+  ⑤sparkline <2 点三形态隐藏;⑥分隔线显隐(数据缺席时段与其前 sep/vsep
+  一并隐藏);frozen_opacity 断言一字不动
+- 归档:spec 预览原件 `design-preview-abd.html` 普通移动入 `design/`
+  (git status 实测 ?? 未跟踪,无历史可保;design-preview.html /
+  design-preview-cd.html 不动)
+- 人工目视清单(回归与 offscreen 截图均不能替代,发版前过一遍):①三形态
+  深渐变底/圆角 12-8-12、**无白底闪现**(QSS background 移除+paintEvent
+  自绘是唯一样式机制切换点,ui-verify 无自动检测手段);②顶部光晕可辨
+  (rgba 蓝 .10,弱但应在);③三档色环注入 87/40/15 对照(绿/琥珀/红,
+  ring 与文本同步);④脉冲环三尺寸(14/10/12)动画与 idle 静态空心环;
+  ⑤sparkline 末端点(蓝点 r=2)在场;⑥125%(及如有 100/150%)DPI 下 hero
+  三段不横向截断(v0.7 清单⑧先例)
+
 ## v0.7.0 (未发布)
 
 - **卡片信息层级重排**(提案#3):卡片重排为 tok/s 20pt 主数字(不动)→

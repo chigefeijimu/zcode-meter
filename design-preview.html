@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>zcode-meter · 样式升级预览(A+B 仪表盘方案)</title>
+<style>
+/* ============ 基础 ============ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0d0e12;
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  color: #e8eaf0;
+  padding: 40px;
+  min-height: 100vh;
+}
+h1 { font-size: 18px; font-weight: 600; margin-bottom: 6px; color: #fff; }
+.sub { font-size: 12px; color: #6b7080; margin-bottom: 32px; font-family: "Microsoft YaHei UI", sans-serif; }
+.section { margin-bottom: 44px; }
+.section h2 {
+  font-size: 13px; color: #8b8f9c; margin-bottom: 16px;
+  font-family: "Microsoft YaHei UI", sans-serif;
+  display: flex; align-items: center; gap: 8px;
+}
+.section h2 .tag {
+  font-size: 10px; padding: 2px 8px; border-radius: 4px;
+  background: #1e2027; color: #5ad6a0; border: 1px solid #2c2f3a;
+}
+
+/* ============ 当前样式(对照组) ============ */
+.old-card {
+  width: 313px; background: #16171c; border: 1px solid #2c2f3a;
+  border-radius: 10px; padding: 10px 12px 8px;
+  font-family: "Microsoft YaHei UI", sans-serif;
+}
+.old-card .row { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #8b8f9c; }
+.old-card .big { font-family: Consolas, monospace; font-size: 26px; color: #5ad6a0; font-weight: 700; margin: 4px 0; }
+.old-card .hero { font-family: Consolas, monospace; font-size: 17px; color: #e8eaf0; font-weight: 700; }
+.old-card .grid { display: grid; grid-template-columns: auto auto; gap: 2px 16px; font-size: 12px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #2c2f3a; }
+.old-card .k { color: #8b8f9c; font-size: 11px; }
+.old-card .v { font-family: Consolas, monospace; font-size: 12px; color: #e8eaf0; }
+.old-card .plan { font-family: Consolas, monospace; font-size: 17px; color: #e8c268; font-weight: 700; margin-top: 8px; }
+.old-card .plan-sub { font-size: 10px; color: #565a66; }
+.old-card .sep { border-top: 1px solid #232631; margin: 8px 0 6px; }
+.old-card .model { font-size: 10px; color: #565a66; line-height: 1.7; }
+
+/* ============ 新样式(A+B 仪表盘) ============ */
+.new-card {
+  width: 313px; background: linear-gradient(160deg, #17181d 0%, #131419 100%);
+  border: 1px solid #262a35; border-radius: 12px;
+  padding: 14px 16px 12px; position: relative; overflow: hidden;
+}
+/* 氛围:顶部极淡的强调色光晕 */
+.new-card::before {
+  content: ""; position: absolute; top: -60px; left: 50%; transform: translateX(-50%);
+  width: 200px; height: 100px;
+  background: radial-gradient(ellipse, rgba(90,214,160,0.08), transparent 70%);
+  pointer-events: none;
+}
+.nc-status { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #7a7f8e;
+  font-family: "Microsoft YaHei UI", sans-serif; letter-spacing: 1px; }
+/* 脉冲环 */
+.pulse-ring {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid #5ad6a0; position: relative;
+  animation: pulse 2s ease-in-out infinite;
+}
+.pulse-ring::after {
+  content: ""; position: absolute; inset: 3px; border-radius: 50%;
+  background: #5ad6a0; opacity: 0.9;
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(90,214,160,0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(90,214,160,0); }
+}
+.nc-model { margin-left: auto; font-size: 10px; color: #565a66; }
+
+/* 主数字 + sparkline */
+.nc-main { display: flex; align-items: flex-end; gap: 10px; margin: 8px 0 2px; }
+.nc-speed { font-size: 30px; font-weight: 700; color: #6ee7a8; line-height: 1;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }
+.nc-unit { font-size: 11px; color: #565a66; margin-bottom: 3px; }
+.spark { margin-bottom: 4px; }
+
+/* 今日 hero */
+.nc-today { display: flex; align-items: baseline; gap: 8px; margin: 10px 0 0; }
+.nc-today .num { font-size: 19px; font-weight: 700; color: #e8eaf0; font-variant-numeric: tabular-nums; }
+.nc-today .cny { font-size: 13px; color: #9aa3b2; font-weight: 600; }
+.nc-today .approx { color: #6b7080; font-size: 12px; }
+
+/* 剩余:环形 + 数字 */
+.nc-plan { display: flex; align-items: center; gap: 12px; margin-top: 12px;
+  padding-top: 10px; border-top: 1px solid #232631; }
+.ring { position: relative; width: 44px; height: 44px; }
+.ring svg { transform: rotate(-90deg); }
+.ring .val {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: #e8c268; font-variant-numeric: tabular-nums;
+}
+.nc-plan-info { flex: 1; }
+.nc-plan-info .lbl { font-size: 10px; color: #565a66; font-family: "Microsoft YaHei UI", sans-serif; letter-spacing: 1px; }
+.nc-plan-info .left { font-size: 14px; color: #e8eaf0; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.nc-plan-info .reset { font-size: 10px; color: #565a66; margin-top: 2px; }
+
+/* 字段矩阵 */
+.nc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 12px;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid #232631; }
+.nc-cell .k { font-size: 9px; color: #565a66; font-family: "Microsoft YaHei UI", sans-serif;
+  letter-spacing: 0.5px; text-transform: uppercase; }
+.nc-cell .v { font-size: 13px; color: #c6cbd8; font-weight: 600; margin-top: 1px; font-variant-numeric: tabular-nums; }
+
+/* 模型列表 */
+.nc-models { margin-top: 10px; padding-top: 8px; border-top: 1px solid #1d2029; }
+.nc-models .m { display: flex; justify-content: space-between; font-size: 10px; color: #565a66; line-height: 1.8; }
+.nc-models .m b { color: #7a7f8e; font-weight: 600; }
+
+/* ============ 横条(新旧) ============ */
+.bar-old {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: #16171c; border: 1px solid #2c2f3a; border-radius: 8px;
+  padding: 3px 10px; font-family: "Microsoft YaHei UI", sans-serif;
+  font-size: 12px; color: #8b8f9c;
+}
+.bar-old .n { font-family: Consolas, monospace; }
+.bar-old .sep { width: 1px; height: 12px; background: #2c2f3a; }
+.bar-new {
+  display: inline-flex; align-items: center; gap: 10px;
+  background: linear-gradient(180deg, #17181d, #131419);
+  border: 1px solid #262a35; border-radius: 8px;
+  padding: 5px 14px; font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.bar-new .spd { color: #6ee7a8; font-weight: 700; font-size: 14px; }
+.bar-new .dim { color: #7a7f8e; }
+.bar-new .warn { color: #e8c268; font-weight: 600; }
+.bar-new .sep { width: 1px; height: 14px; background: #262a35; }
+.mini-spark { opacity: 0.9; }
+
+/* ============ 竖条(新) ============ */
+.vbar-new {
+  display: inline-flex; flex-direction: column; align-items: center; gap: 8px;
+  width: 116px; padding: 16px 8px;
+  background: linear-gradient(180deg, #17181d, #131419);
+  border: 1px solid #262a35; border-radius: 12px;
+}
+.vb-main { font-size: 24px; font-weight: 700; color: #6ee7a8; font-variant-numeric: tabular-nums; }
+.vb-cap { font-size: 9px; color: #565a66; letter-spacing: 1px; font-family: "Microsoft YaHei UI", sans-serif; }
+.vb-sep { width: 84px; height: 1px; background: #232631; }
+.vb-cell { text-align: center; }
+.vb-cell .v { font-size: 14px; font-weight: 600; color: #c6cbd8; font-variant-numeric: tabular-nums; }
+.vb-cell.warn .v { color: #e8c268; }
+.vb-cell .k { font-size: 9px; color: #565a66; margin-top: 1px; font-family: "Microsoft YaHei UI", sans-serif; }
+
+/* 布局 */
+.compare { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+.label { font-size: 10px; color: #565a66; margin-bottom: 8px; letter-spacing: 1px;
+  font-family: "Microsoft YaHei UI", sans-serif; }
+</style>
+</head>
+<body>
+
+<h1>zcode-meter 样式升级预览</h1>
+<p class="sub">方案 A+B：精密仪表盘 —— Cascadia Code 显示字体 · 脉冲环 · sparkline · 环形进度 · 氛围光晕（左：当前 / 右：新方案）</p>
+
+<!-- ================= 卡片对比 ================= -->
+<div class="section">
+  <h2><span class="tag">形态 1</span> 卡片（悬浮态）</h2>
+  <div class="compare">
+    <div>
+      <div class="label">当前样式</div>
+      <div class="old-card">
+        <div class="row"><span style="color:#5ad6a0">●</span> 生成中 <span style="margin-left:auto;font-size:10px">GLM-5.3</span></div>
+        <div class="big">24.3 tok/s</div>
+        <div class="hero">今日 52.1M · ≈¥143.61</div>
+        <div style="font-size:10px;color:#565a66">ZCode 52.1M · Claude 3.2M</div>
+        <div class="grid">
+          <span class="k">输入</span><span class="v">11.8M</span>
+          <span class="k">缓存</span><span class="v">11.5M</span>
+          <span class="k">输出</span><span class="v">88.4K</span>
+          <span class="k">命中率</span><span class="v">97.31%</span>
+          <span class="k">平均速度</span><span class="v">69.6 tok/s</span>
+          <span class="k">⏱ 首字 · 总</span><span class="v">0.8s · 12.4s</span>
+        </div>
+        <div class="plan">剩 87% · ~2.1B</div>
+        <div class="plan-sub">· 3分钟前 · 1h 23m 后重置</div>
+        <div style="font-size:12px;color:#e8eaf0;margin-top:6px">燃速 296.0M/h · 均燃 136.6M/h</div>
+        <div class="sep"></div>
+        <div class="model">bigmodel-api/GLM-5.3 · 均 69.6 tok/s<br>builtin:bigmodel/GLM-5.3-Flash · 44.0 tok/s</div>
+      </div>
+    </div>
+    <div>
+      <div class="label">新方案 A+B</div>
+      <div class="new-card">
+        <div class="nc-status">
+          <div class="pulse-ring"></div> 生成中
+          <span class="nc-model">GLM-5.3</span>
+        </div>
+        <div class="nc-main">
+          <div class="nc-speed">24.3</div>
+          <div class="nc-unit">tok/s</div>
+          <!-- sparkline: 最近12轮速度 -->
+          <svg class="spark" width="72" height="24" viewBox="0 0 72 24">
+            <polyline points="0,18 6,14 12,16 18,9 24,11 30,7 36,12 42,8 48,10 54,6 60,9 66,5 72,8"
+              fill="none" stroke="#5ad6a0" stroke-width="1.5" stroke-linecap="round" opacity="0.85"/>
+            <circle cx="72" cy="8" r="2" fill="#6ee7a8"/>
+          </svg>
+        </div>
+        <div class="nc-today">
+          <span class="num">52.1M</span>
+          <span class="cny">≈¥143.61</span>
+          <span class="approx">今日</span>
+        </div>
+        <div class="nc-plan">
+          <div class="ring">
+            <svg width="44" height="44">
+              <circle cx="22" cy="22" r="18" fill="none" stroke="#232631" stroke-width="3.5"/>
+              <circle cx="22" cy="22" r="18" fill="none" stroke="#e8c268" stroke-width="3.5"
+                stroke-dasharray="98.7 113" stroke-linecap="round"/>
+            </svg>
+            <div class="val">87%</div>
+          </div>
+          <div class="nc-plan-info">
+            <div class="lbl">套餐剩余</div>
+            <div class="left">~2.1B tokens</div>
+            <div class="reset">1h 23m 后重置 · 3分钟前</div>
+          </div>
+        </div>
+        <div class="nc-grid">
+          <div class="nc-cell"><div class="k">输入</div><div class="v">11.8M</div></div>
+          <div class="nc-cell"><div class="k">输出</div><div class="v">88.4K</div></div>
+          <div class="nc-cell"><div class="k">缓存命中</div><div class="v">97.3%</div></div>
+          <div class="nc-cell"><div class="k">燃速</div><div class="v">296M/h</div></div>
+          <div class="nc-cell"><div class="k">均燃</div><div class="v">137M/h</div></div>
+          <div class="nc-cell"><div class="k">⏱ 首/总</div><div class="v">0.8/12s</div></div>
+        </div>
+        <div class="nc-models">
+          <div class="m"><span>bigmodel-api / GLM-5.3</span><b>69.6 t/s</b></div>
+          <div class="m"><span>builtin / GLM-5.3-Flash</span><b>44.0 t/s</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 横条对比 ================= -->
+<div class="section">
+  <h2><span class="tag">形态 2</span> 横条（贴顶/贴底）</h2>
+  <div class="compare">
+    <div>
+      <div class="label">当前样式</div>
+      <div class="bar-old">
+        <span style="color:#5ad6a0">●</span>
+        <span class="n" style="color:#5ad6a0;font-weight:700">24.3 tok/s</span>
+        <span class="sep"></span>
+        <span class="n">均 69.6 tok/s</span>
+        <span class="sep"></span>
+        <span class="n">首字 0.8s 总 12.4s</span>
+        <span class="sep"></span>
+        <span class="n">入 11.8M 出 88.4K</span>
+        <span class="sep"></span>
+        <span class="n">缓存 97.31%</span>
+        <span class="sep"></span>
+        <span class="n">今 481M</span>
+        <span class="sep"></span>
+        <span class="n" style="color:#e8c268">剩 87% · ~2.1B · 1h23m后重置</span>
+        <span class="sep"></span>
+        <span class="n" style="color:#e8c268">燃速 296M/h · 均燃 137M/h</span>
+        <span class="sep"></span>
+        <span class="n">12s</span>
+      </div>
+    </div>
+    <div>
+      <div class="label">新方案 A+B</div>
+      <div class="bar-new">
+        <div class="pulse-ring" style="width:10px;height:10px;border-width:1.5px"></div>
+        <span class="spd">24.3</span><span class="dim">t/s</span>
+        <svg class="mini-spark" width="44" height="16" viewBox="0 0 44 16">
+          <polyline points="0,12 4,9 8,11 12,6 16,8 20,4 24,8 28,5 32,7 36,4 40,6 44,4"
+            fill="none" stroke="#5ad6a0" stroke-width="1.2" opacity="0.7"/>
+        </svg>
+        <span class="sep"></span>
+        <span class="dim">均 69.6</span>
+        <span class="sep"></span>
+        <span class="warn">⊙ 87% ~2.1B</span>
+        <span class="dim">1h23m</span>
+        <span class="sep"></span>
+        <span class="dim">今 481M ≈¥143</span>
+        <span class="sep"></span>
+        <span class="dim">燃 296M/h</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 竖条(仅新) ================= -->
+<div class="section">
+  <h2><span class="tag">形态 3</span> 竖条（贴左/贴右）— 新方案</h2>
+  <div class="compare">
+    <div>
+      <div class="label">新方案 A+B</div>
+      <div class="vbar-new">
+        <div class="pulse-ring" style="width:12px;height:12px"></div>
+        <div class="vb-main">24.3</div>
+        <div class="vb-cap">TOK/S</div>
+        <svg width="60" height="14" viewBox="0 0 60 14">
+          <polyline points="0,10 5,8 10,9 15,5 20,7 25,3 30,6 35,4 40,5 45,3 50,4 55,2 60,3"
+            fill="none" stroke="#5ad6a0" stroke-width="1.2" opacity="0.7"/>
+        </svg>
+        <div class="vb-sep"></div>
+        <div class="vb-cell"><div class="v">52.1M</div><div class="k">今日</div></div>
+        <div class="vb-sep"></div>
+        <div class="vb-cell warn"><div class="v">87%</div><div class="k">~2.1B · 1h23m</div></div>
+        <div class="vb-sep"></div>
+        <div class="vb-cell"><div class="v">296M/h</div><div class="k">燃速 · 均137</div></div>
+        <div class="vb-sep"></div>
+        <div class="vb-cell"><div class="v">11.8M</div><div class="k">入 · 出88K</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p style="margin-top:8px;color:#565a66;font-size:11px;font-family:'Microsoft YaHei UI',sans-serif;line-height:1.8">
+新方案要素:Cascadia Code(Win11 自带)· 脉冲环呼吸 · 速度 sparkline(最近12轮) · 套餐环形进度 ·
+渐变背景+顶部微光晕 · tabular-nums 表格数字 · 字段 3 列矩阵带大写微标签。满意即按此实现。
+</p>
+
+</body>
+</html>

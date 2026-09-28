@@ -1648,6 +1648,125 @@ def test_trend_forecast_hand_computed():
           trend_forecast(rows) is not None)
 
 
+# ========== 速度趋势 sparkline 数据源(v0.8.0 T4:合成库手算对账) ==========
+
+def test_fetch_recent_speeds_synthetic():
+    """fetch_recent_speeds(速度趋势 sparkline 数据源)合成 temp 库对账:
+    ①逐条速度手算 + 时间正序(值/序);②n 截断取最近 n 条且仍正序;
+    ③排除项:同会话 subagent(v0.2.0 劫持事故红线)/cancelled/零输出/
+    缺时长/他会话;④COALESCE(ttft,0) 与 max(,1) 防零除两边界;⑤异常路径
+    空表(connect 失败 ⊂ sqlite3.Error,与 _poll_stats 同吞法不炸);
+    ⑥Snapshot.recent_speeds 接线:_poll_stats 填充后非 None 且与直查同值
+    (_switch_session 重建后同款补全,不闪空)。DB_PATH 双 patch 单点
+    (test_fetch_total_usage 同款),finally 恢复,绝不碰真实 ~/.zcode 库。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_spd_"))
+    orig = zsrc.DB_PATH
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        # part 只需 session_id 列:_latest_session 的跟随查询就够用,
+        # 让构造器自然锚到 sess_main(顺带覆盖缺省参数=当前会话路径)
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        # model_usage 全列:_poll_stats 接线断言要完整跑一轮(缺列会让整段
+        # 查询被 sqlite3.Error 吞掉,recent_speeds 停留 None —— 那正是要测的)
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER)")
+        t0 = de.today0_ms()
+
+        def mu(sid, src, status, out, dur, ttft):
+            return (sid, src, status, t0, "GLM-5.3", "bigmodel",
+                    1_000, 0, out, dur, ttft)
+
+        con.executemany(
+            "INSERT INTO model_usage (session_id, query_source, status,"
+            " started_at, model_id, provider_id, input_tokens,"
+            " cache_read_input_tokens, output_tokens, duration_ms,"
+            " time_to_first_token_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                # ---- 计入行(rowid 1..5 = 时间序,速度全部手算)----
+                # r1: 900 / ((10000-1000)/1000) = 900/9 = 100.0
+                mu("sess_main", "main_turn", "completed", 900, 10_000, 1_000),
+                # r2: ttft NULL → COALESCE 0:1800 / (10000/1000) = 180.0
+                mu("sess_main", "main_turn", "completed", 1_800, 10_000, None),
+                # r3: 1350 / 9 = 150.0
+                mu("sess_main", "main_turn", "completed", 1_350, 10_000, 1_000),
+                # r4: 450 / 9 = 50.0
+                mu("sess_main", "main_turn", "completed", 450, 10_000, 1_000),
+                # r5: dur==ttft → 净生成 0 → max(,1)=1ms 防零除:100/0.001=100000.0
+                mu("sess_main", "main_turn", "completed", 100, 1_000, 1_000),
+                # ---- 排除行(插在尾部:漏入任何一条都会撑爆列表长度/混入
+                # 1000.0 档速度,逐条可归因)----
+                # 同会话 subagent:不得进曲线(与主速度口径不符)
+                mu("sess_main", "subagent", "completed", 9_000, 10_000, 1_000),
+                # cancelled:status 不符
+                mu("sess_main", "main_turn", "cancelled", 9_000, 10_000, 1_000),
+                # 零输出:output_tokens>0 滤掉(0 速点无信息量)
+                mu("sess_main", "main_turn", "completed", 0, 10_000, 1_000),
+                # 缺时长:duration_ms IS NOT NULL 滤掉(速度无分母)
+                mu("sess_main", "main_turn", "completed", 5_000, None, 1_000),
+                # 其他会话:session 过滤(该会话单独查时应回它自己)
+                mu("sess_other", "main_turn", "completed", 9_000, 10_000, 1_000),
+            ])
+        con.execute("INSERT INTO part (session_id) VALUES ('sess_main')")
+        con.commit()
+        con.close()
+
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        e = de.DataEngine(queue.Queue(maxsize=1))     # 不 start,同步路径已完整
+
+        check("sparkline:引擎跟随 sess_main", e.session_id == "sess_main",
+              e.session_id)
+        expect_full = [100.0, 180.0, 150.0, 50.0, 100_000.0]
+        full = e.fetch_recent_speeds()                # 缺省 = 当前会话 n=12
+        check("sparkline:多行值+时间正序(手算)",
+              len(full) == 5 and all(abs(a - b) < 1e-9
+                                     for a, b in zip(full, expect_full)),
+              f"got {full}")
+        check("sparkline:显式 session_id 同结果",
+              e.fetch_recent_speeds(12, "sess_main") == full, "")
+        got_other = e.fetch_recent_speeds(12, "sess_other")
+        check("sparkline:他会话只回该会话行",
+              len(got_other) == 1 and abs(got_other[0] - 1000.0) < 1e-9,
+              f"got {got_other}")
+        got3 = e.fetch_recent_speeds(3)               # 截断取最近 3 条(r3/r4/r5)
+        check("sparkline:n=3 截断取最近仍正序",
+              len(got3) == 3 and all(abs(a - b) < 1e-9 for a, b in
+                                     zip(got3, [150.0, 50.0, 100_000.0])),
+              f"got {got3}")
+        check("sparkline:无记录会话空表",
+              e.fetch_recent_speeds(12, "sess_none") == [])
+        # 接线:_poll_stats 在 snap_lock 内填充(直调与 _switch_session 内部
+        # 同一调用点;不 start 免线程竞态)
+        e._poll_stats()
+        rs = e.snap.recent_speeds
+        check("sparkline:Snapshot.recent_speeds 已接线(_poll_stats)",
+              isinstance(rs, list) and len(rs) == 5
+              and all(abs(a - b) < 1e-9 for a, b in zip(rs, expect_full)),
+              f"got {rs}")
+        e.stop()
+
+        # 异常路径:DB_PATH 指向不存在的库 → connect_ro 抛 OperationalError
+        # ⊂ sqlite3.Error → 返回 [](UI 按 <2 点隐藏不闪空,引擎线程不炸)
+        zsrc.DB_PATH = str(tmp / "nope.sqlite"); de.DB_PATH = zsrc.DB_PATH
+        e2 = de.DataEngine(queue.Queue(maxsize=1))
+        check("sparkline:查询异常 → 空表",
+              e2.fetch_recent_speeds() == [] and e2.snap.recent_speeds is None)
+        e2.stop()
+    finally:
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     print("== test_fetch_total_usage =="); test_fetch_total_usage()
     print("== test_active_session_not_subagent =="); test_active_session_not_subagent()
@@ -1694,6 +1813,8 @@ if __name__ == "__main__":
     print("== test_quota_refresh_optional_key ==");       test_quota_refresh_optional_key()
     # ---- 趋势外推(T3:trend_forecast 纯函数,合成行手算对账,零网络零库) ----
     print("== test_trend_forecast_hand_computed ==");     test_trend_forecast_hand_computed()
+    # ---- 速度趋势 sparkline 数据源(v0.8.0 T4:合成库手算对账,值/序/截断/排除/异常) ----
+    print("== test_fetch_recent_speeds_synthetic ==");    test_fetch_recent_speeds_synthetic()
     if FAILED:
         print(f"\nFAILED: {FAILED}")
         sys.exit(1)

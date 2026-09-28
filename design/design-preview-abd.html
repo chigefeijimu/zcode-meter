@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>zcode-meter · 方案 A+B+D 融合版</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0d0e12; color: #e8eaf0; padding: 40px;
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+h1 { font-size: 18px; margin-bottom: 6px; color: #fff; }
+.sub { font-size: 12px; color: #6b7080; margin-bottom: 32px; font-family: "Microsoft YaHei UI", sans-serif; }
+.section { margin-bottom: 44px; }
+.section h2 { font-size: 13px; color: #8b8f9c; margin-bottom: 16px;
+  font-family: "Microsoft YaHei UI", sans-serif; display: flex; gap: 8px; align-items: center; }
+.tag { font-size: 10px; padding: 2px 8px; border-radius: 4px; background: #1e2027;
+  color: #5ad6a0; border: 1px solid #2c2f3a; }
+.compare { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+.label { font-size: 10px; color: rgba(255,255,255,0.4); margin-bottom: 8px; letter-spacing: 1px;
+  font-family: "Microsoft YaHei UI", sans-serif; }
+.note { margin-top: 10px; color: #565a66; font-size: 11px; font-family: "Microsoft YaHei UI", sans-serif; line-height: 1.8; }
+
+/* 模拟桌面壁纸(衬出玻璃感) */
+.desktop {
+  padding: 32px; border-radius: 14px;
+  background:
+    radial-gradient(ellipse 320px 220px at 18% 28%, #2d5a3d 0%, transparent 60%),
+    radial-gradient(ellipse 300px 240px at 78% 72%, #1a3a5c 0%, transparent 55%),
+    radial-gradient(ellipse 260px 200px at 58% 15%, #4a3050 0%, transparent 50%),
+    linear-gradient(135deg, #1a2530, #252a35);
+}
+
+/* ============ 融合卡片: D的玻璃底 + A的仪表层次 + B的图形 ============ */
+.g-card {
+  width: 313px;
+  background: rgba(24, 26, 34, 0.58);
+  backdrop-filter: blur(24px) saturate(1.35);
+  -webkit-backdrop-filter: blur(24px) saturate(1.35);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 14px 16px 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06);
+  font-family: "Segoe UI Variable", "Microsoft YaHei UI", sans-serif;
+  position: relative; overflow: hidden;
+}
+/* A 的氛围光晕,但用 D 的 accent 蓝 */
+.g-card::before {
+  content: ""; position: absolute; top: -60px; left: 50%; transform: translateX(-50%);
+  width: 200px; height: 100px; border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(96,205,255,0.10), transparent 70%);
+  pointer-events: none;
+}
+.g-num { font-family: "Cascadia Code", Consolas, monospace; font-variant-numeric: tabular-nums; }
+.g-status { display: flex; align-items: center; gap: 8px; font-size: 11px; color: rgba(255,255,255,0.5); letter-spacing: 1px; }
+/* 脉冲环(A),蓝色系(D) */
+.pulse {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid #60cdff; position: relative;
+  animation: pulse 2s ease-in-out infinite;
+}
+.pulse::after { content:""; position:absolute; inset:3px; border-radius:50%; background:#60cdff; opacity:.9; }
+@keyframes pulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(96,205,255,0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(96,205,255,0); }
+}
+.g-model { margin-left: auto; font-size: 10px; color: rgba(255,255,255,0.35); }
+/* 主数字 + B 的 sparkline */
+.g-main { display: flex; align-items: flex-end; gap: 10px; margin: 8px 0 2px; }
+.g-speed { font-size: 30px; font-weight: 700; color: #7ad7ff; line-height: 1; letter-spacing: -0.5px; }
+.g-unit { font-size: 11px; color: rgba(255,255,255,0.35); margin-bottom: 3px; }
+/* 今日 hero */
+.g-today { display: flex; align-items: baseline; gap: 8px; margin-top: 10px; }
+.g-today .n { font-size: 19px; font-weight: 700; color: #fff; }
+.g-today .c { font-size: 13px; color: rgba(255,255,255,0.55); font-weight: 600; }
+.g-today .t { color: rgba(255,255,255,0.35); font-size: 10px; }
+/* B 的环形进度 + 倒计时 */
+.g-plan { display: flex; align-items: center; gap: 12px; margin-top: 12px;
+  padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.07); }
+.ring { position: relative; width: 46px; height: 46px; }
+.ring svg { transform: rotate(-90deg); }
+.ring .v { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: #ffd166; }
+.g-plan-info { flex: 1; }
+.g-plan-info .k { font-size: 9px; color: rgba(255,255,255,0.35); letter-spacing: 1px; }
+.g-plan-info .n { font-size: 14px; color: rgba(255,255,255,0.9); font-weight: 600; margin-top: 2px; }
+.g-plan-info .r { font-size: 10px; color: rgba(255,255,255,0.35); margin-top: 2px; }
+/* 字段矩阵(A 的三列) */
+.g-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 12px;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.07); }
+.g-cell .k { font-size: 9px; color: rgba(255,255,255,0.35); letter-spacing: 0.5px; }
+.g-cell .v { font-size: 13px; color: rgba(255,255,255,0.8); font-weight: 600; margin-top: 1px; }
+.g-models { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); }
+.g-models .m { display: flex; justify-content: space-between; font-size: 10px;
+  color: rgba(255,255,255,0.35); line-height: 1.8; }
+.g-models .m b { color: rgba(255,255,255,0.5); font-weight: 600; }
+
+/* ============ 融合横条 ============ */
+.g-bar {
+  display: inline-flex; align-items: center; gap: 10px;
+  background: rgba(24, 26, 34, 0.55);
+  backdrop-filter: blur(20px) saturate(1.3);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px; padding: 5px 14px; font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+}
+.g-bar .spd { color: #7ad7ff; font-weight: 700; font-size: 14px; }
+.g-bar .dim { color: rgba(255,255,255,0.55); }
+.g-bar .warn { color: #ffd166; font-weight: 600; }
+.g-bar .sep { width: 1px; height: 14px; background: rgba(255,255,255,0.1); }
+
+/* ============ 融合竖条 ============ */
+.g-vbar {
+  display: inline-flex; flex-direction: column; align-items: center; gap: 8px;
+  width: 116px; padding: 16px 8px;
+  background: rgba(24, 26, 34, 0.55);
+  backdrop-filter: blur(20px) saturate(1.3);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+.g-vbar .main { font-size: 24px; font-weight: 700; color: #7ad7ff; }
+.g-vbar .cap { font-size: 9px; color: rgba(255,255,255,0.35); letter-spacing: 1px;
+  font-family: "Microsoft YaHei UI", sans-serif; }
+.g-vbar .vsep { width: 84px; height: 1px; background: rgba(255,255,255,0.09); }
+.g-vbar .cell { text-align: center; }
+.g-vbar .cell .v { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.85); }
+.g-vbar .cell.warn .v { color: #ffd166; }
+.g-vbar .cell .k { font-size: 9px; color: rgba(255,255,255,0.35); margin-top: 1px;
+  font-family: "Microsoft YaHei UI", sans-serif; }
+</style>
+</head>
+<body>
+
+<h1>zcode-meter · 方案 A+B+D 融合版</h1>
+<p class="sub">D 的玻璃质感底 · A 的仪表层次(脉冲环/大数字/氛围光晕) · B 的图形化(sparkline/环形进度) · accent 从绿换为系统蓝,警示用琥珀</p>
+
+<div class="section">
+  <h2><span class="tag">融合</span> 三形态(衬模拟壁纸)</h2>
+  <div class="desktop">
+    <div class="compare">
+
+      <div>
+        <div class="label">卡片</div>
+        <div class="g-card">
+          <div class="g-status">
+            <div class="pulse"></div> 生成中
+            <span class="g-model">GLM-5.3</span>
+          </div>
+          <div class="g-main">
+            <div class="g-speed g-num">24.3</div>
+            <div class="g-unit">tok/s</div>
+            <svg width="72" height="24" viewBox="0 0 72 24">
+              <polyline points="0,18 6,14 12,16 18,9 24,11 30,7 36,12 42,8 48,10 54,6 60,9 66,5 72,8"
+                fill="none" stroke="#60cdff" stroke-width="1.5" stroke-linecap="round" opacity="0.85"/>
+              <circle cx="72" cy="8" r="2" fill="#7ad7ff"/>
+            </svg>
+          </div>
+          <div class="g-today">
+            <span class="n g-num">52.1M</span>
+            <span class="c g-num">≈¥143.61</span>
+            <span class="t">今日</span>
+          </div>
+          <div class="g-plan">
+            <div class="ring">
+              <svg width="46" height="46">
+                <circle cx="23" cy="23" r="19" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="3.5"/>
+                <circle cx="23" cy="23" r="19" fill="none" stroke="#ffd166" stroke-width="3.5"
+                  stroke-dasharray="104.2 119.4" stroke-linecap="round"/>
+              </svg>
+              <div class="v g-num" style="color:#6ee7a8">87%</div>
+            </div>
+            <div class="g-plan-info">
+              <div class="k">套餐剩余</div>
+              <div class="n g-num">~2.1B tokens</div>
+              <div class="r">1h 23m 后重置 · 3分钟前</div>
+            </div>
+          </div>
+          <div class="g-grid">
+            <div class="g-cell"><div class="k">入 / 出</div><div class="v g-num">11.8M / 88K</div></div>
+            <div class="g-cell"><div class="k">缓存命中</div><div class="v g-num">97.3%</div></div>
+            <div class="g-cell"><div class="k">⏱ 首 / 总</div><div class="v g-num">0.8 / 12s</div></div>
+            <div class="g-cell"><div class="k">燃速</div><div class="v g-num">296M/h</div></div>
+            <div class="g-cell"><div class="k">均燃</div><div class="v g-num">137M/h</div></div>
+            <div class="g-cell"><div class="k">均速</div><div class="v g-num">69.6 t/s</div></div>
+          </div>
+          <div class="g-models">
+            <div class="m"><span>bigmodel-api / GLM-5.3</span><b class="g-num">69.6 t/s</b></div>
+            <div class="m"><span>builtin / GLM-5.3-Flash</span><b class="g-num">44.0 t/s</b></div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="label" style="margin-top:4px">套餐剩余 · 颜色分档(绿 &gt;50% / 黄 20-50% / 红 &lt;20%)</div>
+        <div style="display:flex;gap:12px;margin-bottom:18px">
+          <div class="g-bar" style="gap:8px">
+            <svg width="30" height="30" viewBox="0 0 30 30" style="transform:rotate(-90deg)">
+              <circle cx="15" cy="15" r="12" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="3"/>
+              <circle cx="15" cy="15" r="12" fill="none" stroke="#6ee7a8" stroke-width="3"
+                stroke-dasharray="67.9 75.4" stroke-linecap="round"/>
+            </svg>
+            <span class="g-num" style="color:#6ee7a8;font-weight:700">87%</span><span class="dim g-num">~2.1B</span>
+          </div>
+          <div class="g-bar" style="gap:8px">
+            <svg width="30" height="30" viewBox="0 0 30 30" style="transform:rotate(-90deg)">
+              <circle cx="15" cy="15" r="12" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="3"/>
+              <circle cx="15" cy="15" r="12" fill="none" stroke="#ffd166" stroke-width="3"
+                stroke-dasharray="30.1 75.4" stroke-linecap="round"/>
+            </svg>
+            <span class="g-num" style="color:#ffd166;font-weight:700">40%</span><span class="dim g-num">~1.0B</span>
+          </div>
+          <div class="g-bar" style="gap:8px">
+            <svg width="30" height="30" viewBox="0 0 30 30" style="transform:rotate(-90deg)">
+              <circle cx="15" cy="15" r="12" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="3"/>
+              <circle cx="15" cy="15" r="12" fill="none" stroke="#ff6b6b" stroke-width="3"
+                stroke-dasharray="11.3 75.4" stroke-linecap="round"/>
+            </svg>
+            <span class="g-num" style="color:#ff6b6b;font-weight:700">15%</span><span class="dim g-num">~360M</span>
+          </div>
+        </div>
+        <div class="label">横条</div>
+        <div class="g-bar">
+          <div class="pulse" style="width:10px;height:10px;border-width:1.5px"></div>
+          <span class="spd g-num">24.3</span><span class="dim">t/s</span>
+          <svg width="44" height="16" viewBox="0 0 44 16">
+            <polyline points="0,12 4,9 8,11 12,6 16,8 20,4 24,8 28,5 32,7 36,4 40,6 44,4"
+              fill="none" stroke="#60cdff" stroke-width="1.2" opacity="0.7"/>
+          </svg>
+          <span class="sep"></span>
+          <span class="g-num" style="color:#6ee7a8;font-weight:600">⊙ 87% ~2.1B</span>
+          <span class="dim g-num">1h23m</span>
+          <span class="sep"></span>
+          <span class="dim g-num">今481M ≈¥143</span>
+          <span class="sep"></span>
+          <span class="dim g-num">燃296M/h</span>
+        </div>
+        <div class="label" style="margin-top:10px">横条 · 套餐段三档变色</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div class="g-bar">
+            <span class="dim g-num">24.3 t/s · ▁▄▆█</span>
+            <span class="sep"></span>
+            <span class="g-num" style="color:#6ee7a8;font-weight:600">⊙ 87% ~2.1B</span><span class="dim g-num">1h23m</span>
+          </div>
+          <div class="g-bar">
+            <span class="dim g-num">24.3 t/s · ▁▄▆█</span>
+            <span class="sep"></span>
+            <span class="g-num" style="color:#ffd166;font-weight:600">⊙ 40% ~1.0B</span><span class="dim g-num">48m</span>
+          </div>
+          <div class="g-bar">
+            <span class="dim g-num">24.3 t/s · ▁▄▆█</span>
+            <span class="sep"></span>
+            <span class="g-num" style="color:#ff6b6b;font-weight:600">⊙ 15% ~360M</span><span class="dim g-num">18m</span>
+          </div>
+        </div>
+        <div style="height:16px"></div>
+        <div class="label">竖条</div>
+        <div class="g-vbar">
+          <div class="pulse" style="width:12px;height:12px"></div>
+          <div class="main g-num">24.3</div>
+          <div class="cap">TOK/S</div>
+          <svg width="60" height="14" viewBox="0 0 60 14">
+            <polyline points="0,10 5,8 10,9 15,5 20,7 25,3 30,6 35,4 40,5 45,3 50,4 55,2 60,3"
+              fill="none" stroke="#60cdff" stroke-width="1.2" opacity="0.7"/>
+          </svg>
+          <div class="vsep"></div>
+          <div class="cell"><div class="v g-num">52.1M</div><div class="k">今日</div></div>
+          <div class="vsep"></div>
+          <div class="cell"><div class="v g-num" style="color:#6ee7a8">87%</div><div class="k">~2.1B · 1h23m</div></div>
+          <div class="vsep"></div>
+          <div class="cell"><div class="v g-num">296M/h</div><div class="k">燃速 · 均137</div></div>
+          <div class="vsep"></div>
+          <div class="cell"><div class="v g-num">11.8M</div><div class="k">入 · 出88K</div></div>
+        </div>
+        <div class="label" style="margin-top:14px">竖条 · 套餐组三档变色</div>
+        <div style="display:flex;gap:10px">
+          <div class="g-vbar" style="width:92px;padding:10px 6px;gap:5px">
+            <div class="cell"><div class="v g-num" style="color:#6ee7a8">87%</div><div class="k">~2.1B</div></div>
+          </div>
+          <div class="g-vbar" style="width:92px;padding:10px 6px;gap:5px">
+            <div class="cell"><div class="v g-num" style="color:#ffd166">40%</div><div class="k">~1.0B</div></div>
+          </div>
+          <div class="g-vbar" style="width:92px;padding:10px 6px;gap:5px">
+            <div class="cell"><div class="v g-num" style="color:#ff6b6b">15%</div><div class="k">~360M</div></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<p class="note">
+融合公式:D 的亚克力玻璃底+白色半透明分隔线(rgba 白) · A 的脉冲环/Cascadia 大数字/顶部微光晕/三列矩阵 · B 的 sparkline+环形进度。<br>
+配色:主 accent <span style="color:#7ad7ff">#7ad7ff</span>(系统蓝亮变体,速度/图形) · 警示 <span style="color:#ffd166">#ffd166</span>(琥珀,套餐/倒计时) · 文字用白色透明度梯度(玻璃语言)。<br>
+⚠ 实现注:Qt 侧亚克力需 DWM(风险区) —— 可先做<strong>不透明近似版</strong>(深色渐变+白分隔线+同布局,零风险),视觉达成 85%,玻璃感后续再开。
+</p>
+
+</body>
+</html>

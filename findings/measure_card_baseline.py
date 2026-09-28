@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """T-A/T-B 需求分析基线测量:卡片自然高度矩阵(test_stress 同款注入 +
 adjustSize 实测法,先例见 app.py MeterWindow.CARD_H 注释 v0.5.1 条目)。
+v0.8.0 T5+T2 复用同一工具重估新卡(结构见 app.py _build_card):注入补
+recent_speeds(满 12 点,sparkline 可见的主数字行是最高的行态)与
+burn_avg_tokens_per_hour/est_hours_left(均燃格与燃速 tooltip 满载)。
 
 方法红线(评审 D1 修订):
 1. 必须原生平台 —— offscreen 下 adjustSize 全部塌成 200x22 废值
@@ -14,7 +17,8 @@ adjustSize 实测法,先例见 app.py MeterWindow.CARD_H 注释 v0.5.1 条目)�
    度(首轮 rows1=370 离群即此伪影,复测已不出现)。
 
 只读测量,不改任何源码;输出 0~4 行模型 × 多源 × plan/burn 的自然 w×h。
-本文件为 CARD_H 重估的钦定工具(v0.7 T-A/T-B spec),改动须同步 spec。"""
+本文件为 CARD_H 重估的钦定工具(v0.7 T-A/T-B spec;v0.8.0 T5+T2 沿用),
+改动须同步 spec。"""
 import os
 import sys
 import time
@@ -34,6 +38,17 @@ SANITY_MIN_H = 300   # 红线 3:满载自然高度下限(基线满载 328~370)
 def main() -> int:
     app = QApplication(sys.argv)
     win = m.MeterWindow()
+    # v0.8.0 修正:必须先停引擎+停 UI 轮询再测量。MeterWindow.__init__ 会
+    # start 引擎线程与 200ms _poll_timer;measurement 的 processEvents() 里
+    # _poll_queue 可能把真实快照推进 _apply_snapshot —— 注入态被真实数据
+    # 覆盖,矩阵出现离群假峰(实测 486x326/347,today_src 出现 'ZCode 1.1B
+    # · Claude 0' 等真实串即铁证)。eng.stop() 最长 1s 后线程才退、期间还
+    # 会入队,故三闸齐下:停线程 + 清队列 + 停 _poll_timer(测量期间
+    # _apply_snapshot 只由本脚本注入驱动)。_breath_timer 一并停,零重绘噪声。
+    win.eng.stop()
+    win.q.queue.clear()
+    win._poll_timer.stop()
+    win._breath_timer.stop()
     print(f"DPI scale = {win.devicePixelRatioF()}")
 
     def measure(rows: int, multi: bool, pb: bool):
@@ -46,6 +61,11 @@ def main() -> int:
         s.tps_avg = 52.1
         s.session_in, s.session_cache, s.session_out = 900_000, 880_000, 123_456
         s.cache_rate = 97.8
+        # v0.8.0 T5+T2:sparkline 满载(12 点)—— 主数字行含 24px 曲线,
+        # 是该行高度的组成部分;<2 点会被隐藏,量的是不可见形态,假矮
+        s.recent_speeds = [10.0 + 3.0 * i for i in range(12)]
+        # 均燃格满载(有值 → 文本更长,grid 列不换行不影响高度,口径对齐)
+        s.burn_avg_tokens_per_hour = 123_456.0
         # 红线 4:真实形态模型名(长度对齐 glm-5.3-flash)
         s.speed_by_model = [
             (f"bigmodel", f"glm-5.3-flash", 12.3 + i, 1000 * (i + 1))
@@ -58,10 +78,12 @@ def main() -> int:
             win._plan_pct = 42.0
             win._plan_fetched_at = time.time() - 180
             win._plan_next_reset = time.time() * 1000 + 90 * 60_000
+            win._plan_left_tok = 2_100_000_000.0
         else:
             win._plan_pct = None
             win._plan_fetched_at = None
             win._plan_next_reset = None
+            win._plan_left_tok = None
         win._build_card()
         win.snap = s
         win._apply_snapshot(s)
@@ -81,6 +103,7 @@ def main() -> int:
     win._plan_pct = None
     win._plan_fetched_at = None
     win._plan_next_reset = None
+    win._plan_left_tok = None
     win.close()
 
     max_h = max(res.values())

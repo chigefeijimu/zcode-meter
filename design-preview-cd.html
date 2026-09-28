@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>zcode-meter · 方案 C/D 预览</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0d0e12; color: #e8eaf0; padding: 40px;
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+h1 { font-size: 18px; margin-bottom: 6px; color: #fff; }
+.sub { font-size: 12px; color: #6b7080; margin-bottom: 32px; font-family: "Microsoft YaHei UI", sans-serif; }
+.section { margin-bottom: 44px; }
+.section h2 { font-size: 13px; color: #8b8f9c; margin-bottom: 16px;
+  font-family: "Microsoft YaHei UI", sans-serif; display: flex; gap: 8px; align-items: center; }
+.tag { font-size: 10px; padding: 2px 8px; border-radius: 4px; background: #1e2027;
+  color: #5ad6a0; border: 1px solid #2c2f3a; }
+.compare { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+.label { font-size: 10px; color: #565a66; margin-bottom: 8px; letter-spacing: 1px;
+  font-family: "Microsoft YaHei UI", sans-serif; }
+.note { margin-top: 10px; color: #565a66; font-size: 11px; font-family: "Microsoft YaHei UI", sans-serif; }
+
+/* ============ 方案C 终端美学 ============ */
+.c-card {
+  width: 313px; background: #0c0f0d;
+  border: 1px solid #1e3328; border-radius: 4px;
+  padding: 12px 14px; position: relative; overflow: hidden;
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+.c-card::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(0deg, transparent 0 2px, rgba(0,0,0,0.14) 2px 4px);
+  opacity: 0.5;
+}
+.c-green { color: #33ff99; }
+.c-dim { color: #2d8a63; }
+.c-bar {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: #0c0f0d; border: 1px solid #1e3328; border-radius: 4px;
+  padding: 4px 12px; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px;
+}
+.c-block { border-left: 3px solid #33ff99; padding-left: 8px; margin: 7px 0; }
+.c-block .k { color: #2d8a63; font-size: 10px; letter-spacing: 0.5px; }
+.c-block .v { color: #33ff99; font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.c-ascii { color: #2d8a63; font-size: 10px; letter-spacing: -1px; }
+.c-ascii b { color: #33ff99; font-weight: 400; }
+
+/* ============ 方案D Win11 玻璃 ============ */
+.d-card {
+  width: 313px;
+  background: rgba(28, 30, 38, 0.55);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 12px;
+  padding: 14px 16px 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06);
+  font-family: "Segoe UI Variable", "Microsoft YaHei UI", sans-serif;
+}
+.d-num { font-family: "Cascadia Code", Consolas, monospace; font-variant-numeric: tabular-nums; }
+.d-accent { color: #60cdff; }
+.d-dim { color: rgba(255,255,255,0.55); }
+.d-bar {
+  display: inline-flex; align-items: center; gap: 10px;
+  background: rgba(30,32,40,0.5);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px; padding: 5px 14px; font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+}
+.d-sep { width: 1px; height: 14px; background: rgba(255,255,255,0.1); }
+.d-desktop {
+  padding: 28px; border-radius: 14px;
+  background:
+    radial-gradient(ellipse 300px 200px at 20% 30%, #2d5a3d 0%, transparent 60%),
+    radial-gradient(ellipse 280px 220px at 75% 70%, #1a3a5c 0%, transparent 55%),
+    radial-gradient(ellipse 240px 180px at 55% 20%, #4a3050 0%, transparent 50%),
+    linear-gradient(135deg, #1a2530, #252a35);
+}
+.d-cell .k { font-size: 9px; color: rgba(255,255,255,0.45); }
+.d-cell .v { font-size: 12px; color: rgba(255,255,255,0.85); margin-top: 1px; }
+</style>
+</head>
+<body>
+
+<h1>zcode-meter · 方案 C / D 预览</h1>
+<p class="sub">C = 终端美学(CRT 磷光绿/扫描线/ASCII) · D = Win11 玻璃拟态(亚克力/系统蓝 accent)</p>
+
+<!-- ============ C ============ -->
+<div class="section">
+  <h2><span class="tag">方案 C</span> 终端美学</h2>
+  <div class="compare">
+    <div>
+      <div class="label">卡片</div>
+      <div class="c-card">
+        <div style="font-size:11px" class="c-dim">$ zcode-meter --live</div>
+        <div class="c-block">
+          <div class="k">SPEED</div>
+          <div class="v">24.3 <span style="font-size:10px">tok/s</span></div>
+          <div class="c-ascii">▁▂▄▆█▆▄▂▁▂▄▆<b>█</b>▆▄▂</div>
+        </div>
+        <div class="c-block">
+          <div class="k">TODAY</div>
+          <div class="v">52.1M <span style="font-size:11px;color:#2d8a63">≈¥143.61</span></div>
+        </div>
+        <div class="c-block">
+          <div class="k">PLAN · 5H WINDOW</div>
+          <div class="v">87% <span style="font-size:11px">~2.1B · 1h23m</span></div>
+          <div class="c-ascii">█████████<b>█</b>░░ 87%</div>
+        </div>
+        <div class="c-block">
+          <div class="k">BURN 296M/h · AVG 137M/h</div>
+          <div class="c-ascii">in 11.8M [██████████] out 88K [▌]</div>
+        </div>
+        <div style="font-size:10px;margin-top:8px" class="c-dim">GLM-5.3 · main_turn · cache 97.3%</div>
+      </div>
+    </div>
+    <div>
+      <div class="label">横条</div>
+      <div class="c-bar">
+        <span class="c-green">▶</span>
+        <span class="c-green" style="font-weight:700">24.3</span><span class="c-dim">t/s ▂▄▆█▆</span>
+        <span style="color:#1e3328">|</span>
+        <span class="c-dim">87%</span><span class="c-green">~2.1B</span>
+        <span style="color:#1e3328">|</span>
+        <span class="c-dim">今52.1M · 燃296M/h</span>
+      </div>
+      <div style="height:16px"></div>
+      <div class="label">竖条</div>
+      <div class="c-bar" style="flex-direction:column;padding:14px 10px;gap:7px;display:inline-flex">
+        <span class="c-green">▶</span>
+        <span class="c-green" style="font-size:22px;font-weight:700">24.3</span>
+        <span class="c-dim" style="font-size:9px">TOK/S ▂▄▆</span>
+        <div style="width:70px;height:1px;background:#1e3328"></div>
+        <span class="c-green" style="font-size:14px">52.1M</span>
+        <span class="c-dim" style="font-size:9px">TODAY</span>
+        <div style="width:70px;height:1px;background:#1e3328"></div>
+        <span class="c-green" style="font-size:14px">87% ~2.1B</span>
+        <span class="c-dim" style="font-size:9px">███████<b style="color:#33ff99">█</b>░ 1h23m</span>
+        <div style="width:70px;height:1px;background:#1e3328"></div>
+        <span style="font-size:12px;color:#33ff99">296M/h</span>
+        <span class="c-dim" style="font-size:9px">BURN · AVG 137</span>
+      </div>
+    </div>
+  </div>
+  <p class="note">极客味最浓 · 与 ZCode 终端场景天然同构 · ASCII 进度条和块缩进有独特记忆点 · 磷光绿单色调风格强烈,可能两极分化</p>
+</div>
+
+<!-- ============ D ============ -->
+<div class="section">
+  <h2><span class="tag">方案 D</span> Win11 玻璃拟态</h2>
+  <div class="d-desktop">
+    <div class="compare">
+      <div>
+        <div class="label" style="color:rgba(255,255,255,0.4)">卡片(衬模拟壁纸看玻璃感)</div>
+        <div class="d-card">
+          <div style="display:flex;align-items:center;gap:8px;font-size:11px" class="d-dim">
+            <span class="d-accent">●</span> 生成中
+            <span style="margin-left:auto;font-size:10px">GLM-5.3</span>
+          </div>
+          <div style="display:flex;align-items:baseline;gap:6px;margin:8px 0 2px">
+            <span class="d-num d-accent" style="font-size:30px;font-weight:700">24.3</span>
+            <span class="d-dim" style="font-size:11px">tok/s</span>
+          </div>
+          <div style="display:flex;align-items:baseline;gap:8px;margin-top:8px">
+            <span class="d-num" style="font-size:19px;font-weight:700;color:#fff">52.1M</span>
+            <span class="d-num d-dim" style="font-size:13px">≈¥143.61</span>
+            <span class="d-dim" style="font-size:10px">今日</span>
+          </div>
+          <div style="margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08)">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div class="d-num d-accent" style="font-size:18px;font-weight:700">87%</div>
+              <div class="d-dim" style="font-size:11px;line-height:1.5">~2.1B tokens<br>1h 23m 后重置</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px 10px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08)">
+            <div class="d-cell"><div class="k">入/出</div><div class="v d-num">11.8M/88K</div></div>
+            <div class="d-cell"><div class="k">缓存</div><div class="v d-num">97.3%</div></div>
+            <div class="d-cell"><div class="k">燃速</div><div class="v d-num">296M/h</div></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="label" style="color:rgba(255,255,255,0.4)">横条</div>
+        <div class="d-bar">
+          <span class="d-accent">●</span>
+          <span class="d-num d-accent" style="font-weight:700;font-size:14px">24.3</span><span class="d-dim">t/s</span>
+          <span class="d-sep"></span>
+          <span class="d-num" style="color:rgba(255,255,255,0.8)">87% ~2.1B</span>
+          <span class="d-sep"></span>
+          <span class="d-dim">今481M</span>
+          <span class="d-sep"></span>
+          <span class="d-num d-dim">燃296M/h</span>
+        </div>
+        <div style="height:16px"></div>
+        <div class="label" style="color:rgba(255,255,255,0.4)">竖条</div>
+        <div class="d-bar" style="flex-direction:column;padding:14px 12px;gap:8px;display:inline-flex">
+          <span class="d-accent">●</span>
+          <span class="d-num d-accent" style="font-size:22px;font-weight:700">24.3</span>
+          <span class="d-dim" style="font-size:9px">TOK/S</span>
+          <span class="d-sep" style="width:60px;height:1px"></span>
+          <span class="d-num" style="color:rgba(255,255,255,0.85);font-size:14px">52.1M</span>
+          <span class="d-dim" style="font-size:9px">今日</span>
+          <span class="d-sep" style="width:60px;height:1px"></span>
+          <span class="d-num d-accent" style="font-size:14px">87% ~2.1B</span>
+          <span class="d-dim" style="font-size:9px">1h23m</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note">与 Win11 系统小组件同质感 · 半透明能透出桌面 · ⚠ 实现风险高:Qt + DWM 亚克力是本项目 Win32 伤疤最重的区域(layered 崩溃/DPI 打架的前科),收益配不上风险 —— 我仍不推荐首选</p>
+</div>
+
+<p class="note" style="margin-top:24px">对比:方案 A+B(design-preview.html)现代仪表 · 方案 C 极客终端 · 方案 D 系统融合但高风险。可混搭,如 C 的色调 + A+B 的 sparkline/环形。</p>
+
+</body>
+</html>
