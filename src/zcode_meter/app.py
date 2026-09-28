@@ -632,8 +632,8 @@ class MeterWindow(QWidget):
         self._apply_snapshot(self.snap)          # 先填文字
         w, h = self._bar_size(vertical)
         if vertical:
-            cy = sg.center().y()                 # 贴边自动沿边轴居中(用户指定)
-            y = max(min(cy - h // 2, sg.bottom() - h - 2), sg.top() + 2)
+            # 左右贴边:垂直居中(条高=内容高);x 向完全贴边无留白
+            y = sg.top() + (sg.height() - h) // 2
             x = sg.left() if side == "left" else sg.right() - w + 1
         else:
             cx = sg.center().x()
@@ -1124,6 +1124,7 @@ class MeterWindow(QWidget):
         self._apply_snapshot(self.snap)
         self._check_alerts()
         self._apply_freshness()
+        self._refit_dock()   # 数据变化后重算条尺寸(留白根因:此调用在历代重构中丢失)
 
     def _apply_freshness(self):
         """数据新鲜度 → 整窗透明度:贴边条形态且套餐数据 >15 分钟未更新
