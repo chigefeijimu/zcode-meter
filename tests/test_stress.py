@@ -50,8 +50,8 @@ def main() -> int:
     # == 保证机制不漂);横条 14pt 速度+16px sparkline 的实测上限 34(旧 9pt
     # 时代 ≤30 的档位随字号抬升,注释写明)
     check("横条高度=一行文字级(<=34 逻辑px)", hs[0][1] <= 34, str(hs[0]))
-    check("竖条宽度==BAR_V_W(104,定宽机制不漂)",
-          vs[0][0] == m.MeterWindow.BAR_V_W == 104, str(vs[0]))
+    check("竖条宽度==BAR_V_W(100,定宽机制不漂)",
+          vs[0][0] == m.MeterWindow.BAR_V_W == 100, str(vs[0]))
 
     # 动态 refit:卡片模式应 no-op 不崩
     win._refit_dock()
