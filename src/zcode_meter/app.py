@@ -646,7 +646,7 @@ class MeterWindow(QWidget):
         line = QFrame()
         line.setStyleSheet(f"background: {C_BORDER}; border: none;")
         if vertical:
-            line.setFixedSize(28, 1)
+            line.setFixedSize(76, 1)      # 竖条内容区等宽(条宽100-边距16-边框2)
         else:
             line.setFixedSize(1, 14)
         return line
@@ -814,6 +814,8 @@ class MeterWindow(QWidget):
         root.setContentsMargins(SP["m"], 1, SP["m"], 1)   # 垂直 1px 豁免:横条高度≤30 红线
         root.setSpacing(SP["s"])
         self._bar_form = "v" if vertical else "h"
+        if vertical:
+            root.addStretch(1)   # 首尾对称弹性:条高富余时内容整体垂直居中(用户要求)
         self.dot = self._mk_lbl("●", "dim", "Segoe UI", 8)
         root.addWidget(self.dot)
         if not vertical:
@@ -870,18 +872,18 @@ class MeterWindow(QWidget):
             root.addWidget(self.tps_lbl)
             root.addWidget(vcap("tok/s"))
             # 组2 今日消耗
-            root.addWidget(self._mk_sep(True))
+            sep = self._mk_sep(True); root.addWidget(sep, 0, Qt.AlignHCenter)
             self.today_lbl = vnum("--")
             root.addWidget(self.today_lbl)
             root.addWidget(vcap("今日"))
             # 组3 套餐状态
-            root.addWidget(self._mk_sep(True))
+            sep = self._mk_sep(True); root.addWidget(sep, 0, Qt.AlignHCenter)
             self.plan_lbl = vnum("", "warn")
             root.addWidget(self.plan_lbl)
             self.burn_lbl = vnum("", "dim")
             root.addWidget(self.burn_lbl)
             # 组4 会话累计
-            root.addWidget(self._mk_sep(True))
+            sep = self._mk_sep(True); root.addWidget(sep, 0, Qt.AlignHCenter)
             self.in_lbl = vnum("--")
             root.addWidget(self.in_lbl)
             self.out_lbl = vnum("--")
@@ -891,7 +893,7 @@ class MeterWindow(QWidget):
             self.rate_lbl.setAlignment(Qt.AlignCenter)
             root.addWidget(self.rate_lbl)
             self._budget_sep = None
-            root.addStretch(1)
+            root.addStretch(1)   # 保留:把内容顶对齐,底部留白由条高决定
             # 竖条分组结构不显示 avg/elapsed/ttft/dur:显式置 None,
             # 否则保留已销毁旧对象的悬空引用(历史 bug)
             self.avg_lbl = self.elapsed_lbl = self.ttft_lbl = self.dur_lbl = None
