@@ -876,10 +876,13 @@ class MeterWindow(QWidget):
             self.today_lbl = vnum("--")
             root.addWidget(self.today_lbl)
             root.addWidget(vcap("今日"))
-            # 组3 套餐状态
+            # 组3 套餐状态:plan(百分比)+plan_sub(倒计时)两 label 与今日组
+            # 同构,行距走布局 spacing —— 合并多行 label 的行内距不齐的病根
             sep = self._mk_sep(True); root.addWidget(sep, 0, Qt.AlignHCenter)
             self.plan_lbl = vnum("", "warn")
             root.addWidget(self.plan_lbl)
+            self.plan_sub_lbl = vnum("", "faint")   # 倒计时行(独立 label)
+            root.addWidget(self.plan_sub_lbl)
             self.burn_lbl = vnum("", "dim")
             root.addWidget(self.burn_lbl)
             # 组4 会话累计
@@ -897,7 +900,6 @@ class MeterWindow(QWidget):
             # 竖条分组结构不显示 avg/elapsed/ttft/dur:显式置 None,
             # 否则保留已销毁旧对象的悬空引用(历史 bug)
             self.avg_lbl = self.elapsed_lbl = self.ttft_lbl = self.dur_lbl = None
-            self.burn_lbl = None
         # 横条与竖条共通:卡片专属 label 两种条形态都不创建,统一置 None
         # (只在一种形态置 None 会让另一形态的压力循环摸到已销毁 QLabel
         #  —— test_stress.py 的存在理由;burn/plan 已改由各形态自行创建)
@@ -905,7 +907,7 @@ class MeterWindow(QWidget):
         self.title_lbl = None
         # v0.7 T-A 新增的三个卡片专属 label(今日多源副文本/计时合并单格/
         # 套餐副文本)同样两形态都不建,同点显式置 None
-        self.today_src_lbl = self.timing_lbl = self.plan_sub_lbl = None
+        self.today_src_lbl = self.timing_lbl = None
 
     # ---- 菜单 ----
     def _popup_menu(self, pos):

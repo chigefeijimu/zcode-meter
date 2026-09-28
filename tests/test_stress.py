@@ -61,8 +61,9 @@ def main() -> int:
           win.plan_lbl is not None and win.burn_lbl is not None)
     check("横条构建:_bar_form='h'", win._bar_form == "h")
     win._build_bar(vertical=True)
-    check("竖条构建:plan 非 None 且 burn 为 None",
-          win.plan_lbl is not None and win.burn_lbl is None)
+    check("竖条构建:plan/plan_sub/burn 均 None 安全且存在",
+          win.plan_lbl is not None and win.plan_sub_lbl is not None
+          and win.burn_lbl is not None)
     check("竖条构建:_bar_form='v'", win._bar_form == "v")
 
     # 注入套餐剩余/燃速后再跑双形态循环:显隐切换直接影响 _bar_size(隐藏
@@ -121,13 +122,11 @@ def main() -> int:
           and win.plan_sub_lbl is not None
           and win.ttft_lbl is None and win.dur_lbl is None)
     win._build_bar()
-    check("横条构建:timing/today_src/plan_sub 均为 None",
-          win.timing_lbl is None and win.today_src_lbl is None
-          and win.plan_sub_lbl is None)
+    check("横条构建:timing/today_src 为 None(plan_sub 横条不建)",
+          win.timing_lbl is None and win.today_src_lbl is None)
     win._build_bar(vertical=True)
-    check("竖条构建:timing/today_src/plan_sub 均为 None",
-          win.timing_lbl is None and win.today_src_lbl is None
-          and win.plan_sub_lbl is None)
+    check("竖条构建:timing/today_src 为 None(plan_sub 竖条在用)",
+          win.timing_lbl is None and win.today_src_lbl is None)
 
     # D3 钉死表:卡片 timing 合并单格逐串断言(分段占位,整串结构恒保留)
     win.snap.last_ttft, win.snap.last_duration = 0.8, 12.4
