@@ -14,6 +14,7 @@ from __future__ import annotations
 import ctypes
 import csv
 import calendar
+import ctypes.wintypes as wt
 import datetime as dt
 import json
 import math
@@ -48,6 +49,26 @@ from zcode_meter.data_engine import (
     format_age_zh, format_countdown_hm, load_config, quota_reset_event,
     save_config, trend_forecast,
 )
+
+user32 = ctypes.windll.user32   # 模块级(snap 校正用;_win_polish 内的局部变量不动)
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT),
+                ("dwFlags", wt.DWORD)]
+
+
+def monitor_workarea_of(hwnd) -> tuple[int, int, int, int]:
+    """窗口所在显示器的物理工作区(贴边终审校正依赖)。"""
+    hmon = user32.MonitorFromWindow(ctypes.c_void_p(hwnd), 1)   # MONITOR_DEFAULTTONEAREST
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if not user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+        rc = wt.RECT()
+        user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rc), 0)
+        return rc.left, rc.top, rc.right, rc.bottom
+    return mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom
+
 
 C_BG, C_BORDER = "#16171c", "#2c2f3a"
 C_FG, C_DIM, C_ACCENT, C_WARN = "#e8eaf0", "#8b8f9c", "#5ad6a0", "#e8c268"
@@ -631,6 +652,8 @@ class MeterWindow(QWidget):
             rc = wt.RECT()
             user32.GetWindowRect(hwnd, ctypes.byref(rc))
             l, t, r_, b_ = (monitor_workarea_of(hwnd))
+            dbg(f"snap: dock={self.dock} rect=({rc.left},{rc.top},{rc.right},{rc.bottom})"
+                f" workarea=({l},{t},{r_},{b_})")
             if self.dock == "right":
                 user32.SetWindowPos(hwnd, None, r_ - (rc.right - rc.left),
                                     rc.top, 0, 0, 0x0001 | 0x0010)  # NOSIZE|NOACTIVATE
@@ -1150,7 +1173,8 @@ class MeterWindow(QWidget):
         self._apply_snapshot(self.snap)
         self._check_alerts()
         self._apply_freshness()
-        self._refit_dock()   # 数据变化后重算条尺寸(留白根因:此调用在历代重构中丢失)
+        self._refit_dock()          # 数据变化后重算条尺寸
+        self._snap_physical_edge()  # 物理贴边终审(refit 尺寸未变时会提前返回,故独立调用)
 
     def _apply_freshness(self):
         """数据新鲜度 → 整窗透明度:贴边条形态且套餐数据 >15 分钟未更新
