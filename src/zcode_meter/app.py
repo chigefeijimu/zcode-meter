@@ -434,7 +434,8 @@ class MeterWindow(QWidget):
     # (findings/measure_card_baseline.py,原生平台+processEvents):满载
     # 0~4 行模型 → 303/303/317/331/345,全矩阵 max=345 <400 全容纳,按
     # ceil(max/2)*2 规则 350→346(多源/plan_sub 行常驻不再撑高,0/1 行同高)。
-    CARD_W, CARD_H = 250, 346          # 逻辑像素(DIP),Qt 自动做 DPI 换算
+    CARD_W, CARD_H = 250, 346
+    _settle_timer = None          # 类级默认:moveEvent 可能早于 __init__ 定时器创建          # 逻辑像素(DIP),Qt 自动做 DPI 换算
     BAR_H, BAR_V = 24, 38
     EDGE_NEAR = 30
 
@@ -510,6 +511,12 @@ class MeterWindow(QWidget):
 
         self._poll_timer = QTimer(self, interval=200, timeout=self._poll_queue)
         self._poll_timer.start()
+        # 贴边判定防抖:系统拖动模态循环会吞 ButtonRelease,release 路径
+        # 时灵时不灵;改由 moveEvent 触发 — 窗口停止移动 150ms 后判定
+        self._settle_timer = QTimer(self)
+        self._settle_timer.setSingleShot(True)
+        self._settle_timer.setInterval(150)
+        self._settle_timer.timeout.connect(self._settle)
         self._breath_timer = QTimer(self, interval=60, timeout=self._tick_breath)
         self._breath_timer.start()
         self.eng.start()
@@ -584,12 +591,10 @@ class MeterWindow(QWidget):
                   w, h)
         if st["dock"]:
             self.move(g.topLeft())
-            self._set_dock(st["dock"])     # 复用贴边夹取(锚定边+居中轴)
-            # 多屏保险:_set_dock 依赖的 self.screen() 在跨屏移动后可能滞后,
-            # 以恢复时选中的目标屏为准再夹一次
-            gg = self.geometry()
-            self.move(max(min(gg.x(), best.right() - gg.width() - 2), best.left() + 2),
-                      max(min(gg.y(), best.bottom() - gg.height() - 2), best.top() + 2))
+            # _set_dock 走 _apply_dock_geometry(物理坐标唯一权威,含夹取),
+            # 事后不得再用 Qt 坐标二次 move —— DPI≠100% 下两套坐标互相
+            # 否定,是"贴边后位置漂移/闪烁"的病根之一(旧多屏保险已删)
+            self._set_dock(st["dock"])
         else:
             self.setGeometry(g)
 
@@ -602,9 +607,15 @@ class MeterWindow(QWidget):
         elif event.button() == Qt.RightButton:
             self._popup_menu(event.globalPosition().toPoint())
 
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        # 拖动/任何窗口移动:重置防抖,停止移动 150ms 后做贴边判定
+        if self._settle_timer is not None:
+            self._settle_timer.start()
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
-            QTimer.singleShot(90, self._settle)
+            QTimer.singleShot(90, self._settle)   # 保留双保险(release 到达时立即判定)
 
     def _detach_to_pointer(self):
         pos = QCursor.pos()
@@ -621,51 +632,65 @@ class MeterWindow(QWidget):
 
     # ---- 贴边判定(全 Qt 逻辑坐标,无 DPI 手算) ----
     def _pointer_pos(self):
-        """松手时的指针位置(封装成方法便于自检时 override)。"""
-        return QCursor.pos()
+        """松手时的指针位置 —— Win32 物理坐标(与贴边判定同坐标系)。
+        QCursor.pos() 返回逻辑像素,DPI≠100% 下与真实鼠标位置有换算
+        偏差(125% 时约 48px):鼠标已怼到物理屏边,逻辑判定却差几十px
+        永不触发 —— 实测拖拽贴右失效、窗口被拖出屏幕的病根。"""
+        try:
+            pt = wt.POINT()
+            user32.GetCursorPos(ctypes.byref(pt))
+            return QPoint(pt.x, pt.y)
+        except Exception:
+            return QCursor.pos()
 
     def _settle(self):
-        """贴边判定按【鼠标触边】:指针怼到屏幕边缘即贴对应边,
-        不再要求窗口本体侧边接近 —— 拖着窗口让鼠标碰一下屏边松手即可。"""
-        sg = self.screen().availableGeometry()
+        """贴边判定按【鼠标触边】:指针怼到屏幕边缘即贴对应边。
+        指针(物理)与工作区(物理)同坐标系比较,鼠标碰到真实边缘必触发。"""
         pos = self._pointer_pos()
-        edge = 6                              # 指针距屏边的判定阈值(px)
+        try:
+            hwnd = int(self.winId())
+            sl, st_, sr_, sb_ = monitor_workarea_of(hwnd)
+        except Exception:
+            sg = self.screen().availableGeometry()
+            sl, st_, sr_, sb_ = sg.left(), sg.top(), sg.right(), sg.bottom()
+        edge = 8                              # 物理像素阈值
         want = None
-        if pos.y() <= sg.top() + edge: want = "top"
-        elif pos.y() >= sg.bottom() - edge + 1: want = "bottom"
-        elif pos.x() <= sg.left() + edge: want = "left"
-        elif pos.x() >= sg.right() - edge + 1: want = "right"
+        if pos.y() <= st_ + edge: want = "top"
+        elif pos.y() >= sb_ - edge + 1: want = "bottom"
+        elif pos.x() <= sl + edge: want = "left"
+        elif pos.x() >= sr_ - edge + 1: want = "right"
         if want and want != self.dock:
             self._set_dock(want)
         elif not want and self.dock:
             self._unset_dock()
 
-    def _snap_physical_edge(self):
-        """物理级贴边校正:Qt setGeometry 走逻辑像素,DPI≠100% 时与
-        Win32 物理工作区存在换算偏差(实测 125% 下右贴边可超出 20px,
-        内容被屏幕外缘遮挡)。此处直接以 GetWindowRect/MonitorFromWindow
-        的物理坐标把窗口吸附回真实边缘 —— 对任何换算误差免疫的终审。"""
+    def _apply_dock_geometry(self):
+        """贴边状态的唯一几何权威:尺寸按 Qt 逻辑算(_bar_size),换算物理后
+        连位置带尺寸一次 SetWindowPos 完成。此前 _set_dock(Qt 逻辑)/
+        _refit(Qt 逻辑)/_snap(Win32 物理)三方混管,DPI≠100% 时逻辑↔物理
+        换算偏差互相否定,窗口在两个位置间每 200ms 跳一次(用户所见"闪")
+        且可能停在错乱状态。单一权威 + 单一坐标系后不存在打架。"""
         if self.dock not in ("left", "right", "top", "bottom"):
             return
         try:
+            vertical = self.dock in ("left", "right")
+            w, h = self._bar_size(vertical)
+            scale = self.devicePixelRatioF()
+            pw, ph = round(w * scale), round(h * scale)
             hwnd = int(self.winId())
-            rc = wt.RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rc))
-            l, t, r_, b_ = (monitor_workarea_of(hwnd))
-            dbg(f"snap: dock={self.dock} rect=({rc.left},{rc.top},{rc.right},{rc.bottom})"
-                f" workarea=({l},{t},{r_},{b_})")
+            l, t, r_, b_ = monitor_workarea_of(hwnd)
             if self.dock == "right":
-                user32.SetWindowPos(hwnd, None, r_ - (rc.right - rc.left),
-                                    rc.top, 0, 0, 0x0001 | 0x0010)  # NOSIZE|NOACTIVATE
+                x, y = r_ - pw, t + (b_ - t - ph) // 2
             elif self.dock == "left":
-                user32.SetWindowPos(hwnd, None, l, rc.top, 0, 0, 0x0001 | 0x0010)
+                x, y = l, t + (b_ - t - ph) // 2
             elif self.dock == "top":
-                user32.SetWindowPos(hwnd, None, rc.left, t, 0, 0, 0x0001 | 0x0010)
+                x, y = l + (r_ - l - pw) // 2, t
             else:
-                user32.SetWindowPos(hwnd, None, rc.left,
-                                    b_ - (rc.bottom - rc.top), 0, 0, 0x0001 | 0x0010)
+                x, y = l + (r_ - l - pw) // 2, b_ - ph
+            user32.SetWindowPos(hwnd, None, x, y, pw, ph, 0x0010)  # NOACTIVATE
         except Exception:
-            pass
+            import traceback
+            dbg("apply_dock_geometry failed: " + traceback.format_exc()[-200:])
 
     def _set_dock(self, side: str):
         """贴边成胶囊条:宽高按各 label 的 sizeHint 聚合计算,恰好包住文字。
@@ -678,17 +703,8 @@ class MeterWindow(QWidget):
         self._build_bar(vertical=vertical)
         self.setStyleSheet(QSS_BAR)
         self._apply_snapshot(self.snap)          # 先填文字
-        w, h = self._bar_size(vertical)
-        if vertical:
-            # 左右贴边:垂直居中(条高=内容高);x 向完全贴边无留白
-            y = sg.top() + (sg.height() - h) // 2
-            x = sg.left() if side == "left" else sg.right() - w + 1
-        else:
-            cx = sg.center().x()
-            x = max(min(cx - w // 2, sg.right() - w - 2), sg.left() + 2)
-            y = sg.top() if side == "top" else sg.bottom() - h + 1
-        self.setGeometry(x, y, w, h)     # 不锁死:_refit_dock 周期校验,自愈任何几何漂移
-        self._snap_physical_edge()       # 物理级终审:DPI 换算偏差在此校正
+        w, h = self._bar_size(vertical)   # 仅供 _apply_dock_geometry 内部重算,此处不再自设几何
+        self._apply_dock_geometry()      # 唯一几何权威(物理坐标,尺寸+位置一次到位)
         self._save_state()               # 形态变化即时落盘,兜强杀/崩溃路径
 
     def _mk_sep(self, vertical: bool) -> QFrame:
@@ -721,7 +737,8 @@ class MeterWindow(QWidget):
                 hs = w.sizeHint()
                 max_w = max(max_w, hs.width())
                 total_h += hs.height() + pad + sp
-            return max_w + 16 + 2 + pad, max(total_h - sp, 10)
+            w_out = min(max_w + 4 + 2 + pad, 100)   # 竖条设计宽上限 100:防个别长文本 label 撑爆
+            return w_out, max(total_h - sp, 10)
         total_w, max_h = 16 + 2, 0
         for i in range(lay.count()):
             w = lay.itemAt(i).widget()
@@ -1174,7 +1191,7 @@ class MeterWindow(QWidget):
         self._check_alerts()
         self._apply_freshness()
         self._refit_dock()          # 数据变化后重算条尺寸
-        self._snap_physical_edge()  # 物理贴边终审(refit 尺寸未变时会提前返回,故独立调用)
+        # 几何已由 _refit_dock/_apply_dock_geometry 统一管理,无独立校正需要
 
     def _apply_freshness(self):
         """数据新鲜度 → 整窗透明度:贴边条形态且套餐数据 >15 分钟未更新
@@ -1395,26 +1412,15 @@ class MeterWindow(QWidget):
         self._refit_dock()
 
     def _refit_dock(self):
-        """条模式下数据文字变长(如 空→'均 52.1 tok/s')时重算条宽,防截断;
-        贴边侧锚定不动,另一轴保持中心。稳定期尺寸不变,零开销跳过。"""
+        """条模式下数据文字变长时重算条尺寸(防截断);几何统一由
+        _apply_dock_geometry(物理坐标)设置 —— 此处只做"变了才设"的判定。"""
         if not self.dock:
             return
         vertical = self.dock in ("left", "right")
         w, h = self._bar_size(vertical)
-        if (w, h) == (self.width(), self.height()):
+        if (w, h) == (self.width(), self.height()):   # 逻辑对逻辑:尺寸未变不动几何
             return
-        sg = self.screen().availableGeometry()
-        g = self.geometry()
-        # 沿边轴保持屏幕居中(与 _set_dock 的居中策略一致,防止重算把居中拉回松手点)
-        if self.dock == "top":
-            self.setGeometry(sg.center().x() - w // 2, sg.top(), w, h)
-        elif self.dock == "bottom":
-            self.setGeometry(sg.center().x() - w // 2, sg.bottom() - h + 1, w, h)
-        elif self.dock == "left":
-            self.setGeometry(sg.left(), sg.center().y() - h // 2, w, h)
-        else:
-            self.setGeometry(sg.right() - w + 1, sg.center().y() - h // 2, w, h)
-        self._snap_physical_edge()
+        self._apply_dock_geometry()
 
     def _tick_breath(self):
         self._breath = (self._breath + 0.08) % 1.0
@@ -1429,9 +1435,9 @@ class MeterWindow(QWidget):
         self._apply_snapshot(self.snap)
         n = sum(1 for c in self.findChildren(QLabel))
         print(f"window: {self.width()}x{self.height()} labels={n}")
-        # 模拟鼠标触底边(真实 QCursor 不受测试控制,override _pointer_pos)
-        sg = self.screen().availableGeometry()
-        self._pointer_pos = lambda: QPoint(sg.center().x(), sg.bottom())
+        # 模拟鼠标触底边:override _pointer_pos 返回物理坐标(与 _settle 判定同系)
+        l, t, r_, b_ = monitor_workarea_of(int(self.winId()))
+        self._pointer_pos = lambda: QPoint((l + r_) // 2, b_)
         QTimer.singleShot(120, self._verify_dock)
 
     def _verify_dock(self):
