@@ -45,9 +45,10 @@ if __package__ in (None, "") and not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # .../src
 
 from zcode_meter.data_engine import (
-    BudgetAlerts, DataEngine, QuotaMonitor, Snapshot, app_dir, dbg,
-    format_age_zh, format_countdown_hm, load_config, quota_reset_event,
-    save_config, trend_forecast,
+    BAR_SEGMENT_LABELS_H, BAR_SEGMENT_LABELS_V, BAR_SEGMENTS_H,
+    BAR_SEGMENTS_V, BudgetAlerts, DataEngine, QuotaMonitor, Snapshot,
+    app_dir, dbg, format_age_zh, format_countdown_hm, load_config,
+    quota_reset_event, save_config, trend_forecast,
 )
 
 user32 = ctypes.windll.user32   # 模块级(snap 校正用;_win_polish 内的局部变量不动)
@@ -747,6 +748,12 @@ class MeterWindow(QWidget):
         # 组注入 ZM_NO_STATE=1)。
         cfg = load_config()
         self.daily_budget_cny = cfg["daily_budget_cny"]
+        # 贴边条可勾选段(v0.8.0 对版期,用户『靠边停放自定义显示内容』):
+        # h=顶/底共用、v=左/右共用;速度+圆点恒显不进清单。右键菜单勾选
+        # 即时重建+save_config 持久化
+        self.bar_segments = cfg.get("bar_segments",
+                                    {"h": list(BAR_SEGMENTS_H),
+                                     "v": list(BAR_SEGMENTS_V)})
         # key 内存基准(v0.5.0 设置窗):设置保存后的 monitor 对账必须与它
         # 比较 —— 严禁落盘后回读文件(恒等 → monitor 永不重启 → 残留旧账号
         # 套餐数据)。用完即弃,只在保存成功后更新。
@@ -1402,6 +1409,16 @@ class MeterWindow(QWidget):
             root.setContentsMargins(14, 5, 14, 5)
         root.setSpacing(8 if vertical else 10)   # 预览 gap:竖条 8、横条 10
         self._bar_form = "v" if vertical else "h"
+        # 本形态的段开关(v0.8.0 对版期『靠边停放自定义显示内容』):速度+
+        # 圆点恒显不进清单;未选段不构建(F4 None 纪律:对应该件显式置 None,
+        # _apply_snapshot 的消费分支按 seg_on 短路)
+        segs = self.bar_segments.get(self._bar_form,
+                                     list(BAR_SEGMENTS_H if not vertical
+                                          else BAR_SEGMENTS_V))
+
+        def seg_on(key: str) -> bool:
+            return key in segs
+
         if vertical:
             root.addStretch(1)   # 首尾对称弹性:条高富余时内容整体垂直居中(用户要求)
         if not vertical:
@@ -1414,36 +1431,54 @@ class MeterWindow(QWidget):
             # 旧单 label 全蓝 14。文本恒 "t/s",_apply_snapshot 只更新数字)
             self.tps_unit_lbl = self._mk_lbl("t/s", "dim", C_MONO, 12)
             root.addWidget(self.tps_unit_lbl)
-            self.spark = SparklineWidget(44, 16)
-            root.addWidget(self.spark)
-            self.sep_plan = self._mk_sep(False)
-            root.addWidget(self.sep_plan)
+            if seg_on("spark"):
+                self.spark = SparklineWidget(44, 16)
+                root.addWidget(self.spark)
+            self.sep_plan = self._mk_sep(False) if seg_on("plan") else None
+            if self.sep_plan is not None:
+                root.addWidget(self.sep_plan)
             # 套餐段:实画小环(RingWidget12,不用 ⊙ 字形 —— Cascadia 无该
             # 字形保证,风险表引 ⏱ 字体合并先例 CHANGELOG v0.7:12)。
             # 段文字 9→12px(预览 .g-bar 基准 12,用户对版 2026-09-28)
-            self.plan_ring = RingWidget(12, center_text=False)
-            root.addWidget(self.plan_ring)
-            self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 12)
-            self.plan_lbl.setFont(mk_mono(12, QFont.DemiBold))   # 600(tier 色由 _apply_snapshot 注入)
-            root.addWidget(self.plan_lbl)
-            self.plan_cd_lbl = self._mk_lbl("", "dim", C_MONO, 12)
-            root.addWidget(self.plan_cd_lbl)
-            self.sep_today = self._mk_sep(False)
-            root.addWidget(self.sep_today)
+            if seg_on("plan"):
+                self.plan_ring = RingWidget(12, center_text=False)
+                root.addWidget(self.plan_ring)
+                self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 12)
+                self.plan_lbl.setFont(mk_mono(12, QFont.DemiBold))   # 600(tier 色由 _apply_snapshot 注入)
+                root.addWidget(self.plan_lbl)
+            self.plan_cd_lbl = (self._mk_lbl("", "dim", C_MONO, 12)
+                                if seg_on("cd") else None)
+            if self.plan_cd_lbl is not None:
+                root.addWidget(self.plan_cd_lbl)
             # 今日段:『今X』+金额段 f" ≈¥N"(金额取整;cost=0 省段/N3、
             # partial ≈ 前缀 —— 与卡片同守卫,由 _apply_snapshot 拼装)
-            self.today_lbl = self._mk_lbl("", "dim", C_MONO, 12)
-            root.addWidget(self.today_lbl)
-            self.sep_burn = self._mk_sep(False)
-            root.addWidget(self.sep_burn)
-            # 燃速段:瞬时优先口径不变(dim),文案由 _apply_snapshot 拼装
-            self.burn_lbl = self._mk_lbl("", "dim", C_MONO, 12)
-            root.addWidget(self.burn_lbl)
+            self.sep_today = self._mk_sep(False) if seg_on("today") else None
+            if self.sep_today is not None:
+                root.addWidget(self.sep_today)
+                self.today_lbl = self._mk_lbl("", "dim", C_MONO, 12)
+                root.addWidget(self.today_lbl)
+            self.sep_burn = self._mk_sep(False) if seg_on("burn") else None
+            if self.sep_burn is not None:
+                root.addWidget(self.sep_burn)
+                # 燃速段:瞬时优先口径不变(dim),文案由 _apply_snapshot 拼装
+                self.burn_lbl = self._mk_lbl("", "dim", C_MONO, 12)
+                root.addWidget(self.burn_lbl)
             # ---- 竖条专属件置 None(F4 横列) ----
             self.plan_sub_lbl = None
             self.in_lbl = None
             self.vbar_in_cap = self.vbar_burn_cap = None
             self.vsep_plan = self.vsep_burn = self.vsep_today = self.vsep_in = None
+            # ---- 横条关段件置 None(F4 横列;全开时与旧版逐位一致) ----
+            if not seg_on("spark"):
+                self.spark = None
+            if not seg_on("plan"):
+                self.plan_ring = self.plan_lbl = None
+            if not seg_on("cd"):
+                self.plan_cd_lbl = None
+            if not seg_on("today"):
+                self.today_lbl = None
+            if not seg_on("burn"):
+                self.burn_lbl = None
         else:
             def vnum(txt="", cls="", size=14):
                 # .cell .v 600 字重(预览 :126 font-weight:600)—— 旧默认
@@ -1474,42 +1509,59 @@ class MeterWindow(QWidget):
             self.tps_lbl.setAlignment(Qt.AlignHCenter)
             root.addWidget(self.tps_lbl, 0, Qt.AlignHCenter)
             root.addWidget(vcap("TOK/S", mono=True), 0, Qt.AlignHCenter)
-            self.spark = SparklineWidget(60, 14)
-            root.addWidget(self.spark, 0, Qt.AlignHCenter)
-            # 组2 今日(v=fmt_k vstrong)
-            self.vsep_today = self._mk_sep(True)
-            root.addWidget(self.vsep_today, 0, Qt.AlignHCenter)
-            self.today_lbl = vnum("--", "vstrong")
-            root.addWidget(self.today_lbl, 0, Qt.AlignHCenter)
-            root.addWidget(vcap("今日"), 0, Qt.AlignHCenter)
+            if seg_on("spark"):
+                self.spark = SparklineWidget(60, 14)
+                root.addWidget(self.spark, 0, Qt.AlignHCenter)
+            # 组2 今日(v=fmt_k vstrong;vsep_today 恒显语义随段开关退役:
+            # 段可关后 sep 跟段,不再恒建)
+            self.vsep_today = (self._mk_sep(True) if seg_on("today") else None)
+            if self.vsep_today is not None:
+                root.addWidget(self.vsep_today, 0, Qt.AlignHCenter)
+                self.today_lbl = vnum("--", "vstrong")
+                root.addWidget(self.today_lbl, 0, Qt.AlignHCenter)
+                root.addWidget(vcap("今日"), 0, Qt.AlignHCenter)
             # 组3 套餐:v=N% tier 色、k=[~lt, cd]『 · 』join(空列表→置空但
             # 组结构保留,v 行仍显 —— N3 缺段自然省略同现状口径明文化)
-            self.vsep_plan = self._mk_sep(True)
-            root.addWidget(self.vsep_plan, 0, Qt.AlignHCenter)
-            self.plan_lbl = vnum("", "warn")   # tier 色由 _apply_snapshot 注入
-            root.addWidget(self.plan_lbl, 0, Qt.AlignHCenter)
-            self.plan_sub_lbl = vcap("")
-            root.addWidget(self.plan_sub_lbl, 0, Qt.AlignHCenter)
+            self.vsep_plan = self._mk_sep(True) if seg_on("plan") else None
+            if self.vsep_plan is not None:
+                root.addWidget(self.vsep_plan, 0, Qt.AlignHCenter)
+                self.plan_lbl = vnum("", "warn")   # tier 色由 _apply_snapshot 注入
+                root.addWidget(self.plan_lbl, 0, Qt.AlignHCenter)
+                self.plan_sub_lbl = vcap("")
+                root.addWidget(self.plan_sub_lbl, 0, Qt.AlignHCenter)
             # 组4 燃速:v=『296M/h』式 vstrong、k=『燃速 · 均137』式含均燃
-            self.vsep_burn = self._mk_sep(True)
-            root.addWidget(self.vsep_burn, 0, Qt.AlignHCenter)
-            self.burn_lbl = vnum("", "vstrong")
-            root.addWidget(self.burn_lbl, 0, Qt.AlignHCenter)
-            self.vbar_burn_cap = vcap("燃速")
-            root.addWidget(self.vbar_burn_cap, 0, Qt.AlignHCenter)
+            self.vsep_burn = self._mk_sep(True) if seg_on("burn") else None
+            if self.vsep_burn is not None:
+                root.addWidget(self.vsep_burn, 0, Qt.AlignHCenter)
+                self.burn_lbl = vnum("", "vstrong")
+                root.addWidget(self.burn_lbl, 0, Qt.AlignHCenter)
+                self.vbar_burn_cap = vcap("燃速")
+                root.addWidget(self.vbar_burn_cap, 0, Qt.AlignHCenter)
             # 组5 入出:入 v 行 + 出并入 k 行(out_lbl 三形态 None)
-            self.vsep_in = self._mk_sep(True)
-            root.addWidget(self.vsep_in, 0, Qt.AlignHCenter)
-            self.in_lbl = vnum("--", "vstrong")
-            root.addWidget(self.in_lbl, 0, Qt.AlignHCenter)
-            self.vbar_in_cap = vcap("入 · 出--")
-            root.addWidget(self.vbar_in_cap, 0, Qt.AlignHCenter)
+            self.vsep_in = self._mk_sep(True) if seg_on("in") else None
+            if self.vsep_in is not None:
+                root.addWidget(self.vsep_in, 0, Qt.AlignHCenter)
+                self.in_lbl = vnum("--", "vstrong")
+                root.addWidget(self.in_lbl, 0, Qt.AlignHCenter)
+                self.vbar_in_cap = vcap("入 · 出--")
+                root.addWidget(self.vbar_in_cap, 0, Qt.AlignHCenter)
             root.addStretch(1)   # 保留:与顶部 stretch 对称,内容垂直居中
             # ---- 横条专属件置 None(F4 竖列) ----
             self.plan_ring = None
             self.plan_cd_lbl = None
             self.tps_unit_lbl = None    # 竖条单位走『TOK/S』caption
             self.sep_plan = self.sep_burn = self.sep_today = None
+            # ---- 竖条关段件置 None(F4 竖列;全开时与旧版逐位一致) ----
+            if not seg_on("spark"):
+                self.spark = None
+            if not seg_on("today"):
+                self.today_lbl = None
+            if not seg_on("plan"):
+                self.plan_lbl = self.plan_sub_lbl = None
+            if not seg_on("burn"):
+                self.burn_lbl = self.vbar_burn_cap = None
+            if not seg_on("in"):
+                self.in_lbl = self.vbar_in_cap = None
         # ---- 两形态共通(F4 修正版属性总表,唯一权威)----
         # 卡建件两种条形态都不建;三形态全 None 的已删件(title/est/elapsed/
         # cache/ttft/dur/out)与卡建横竖 None 件(avg/rate)在此显式置 None ——
@@ -1540,6 +1592,7 @@ class MeterWindow(QWidget):
                           ("贴到右侧", lambda: self._set_dock("right")),
                           ("恢复卡片", self._unset_dock)):
             m.addAction(label, fn)
+        self._add_segment_menu(m)
         self._add_session_menu(m)
         m.addAction("历史用量图表", self._open_history)
         m.addAction("设置", self._open_settings)
@@ -1550,6 +1603,48 @@ class MeterWindow(QWidget):
         m.addSeparator()
         m.addAction("退出", QApplication.quit)
         m.exec(pos)
+
+    def _add_segment_menu(self, m: QMenu):
+        """「显示内容」子菜单(v0.8.0 对版期,用户『靠边停放自定义显示内容』):
+        按当前形态列出可勾选段(横=顶/底共用、竖=左/右共用),勾选即时重建
+        条 + save_config 持久化。速度+圆点恒显不进清单(全关=纯速度胶囊,
+        合法形态)。"""
+        seg_menu = m.addMenu("显示内容")
+        seg_menu.setStyleSheet(m.styleSheet())
+        form = "v" if self._bar_form == "v" else "h"
+        labels = BAR_SEGMENT_LABELS_V if form == "v" else BAR_SEGMENT_LABELS_H
+        on = self.bar_segments.get(form) or []
+
+        def toggle(key: str, checked: bool):
+            segs = list(self.bar_segments.get(form) or [])
+            if checked and key not in segs:
+                segs.append(key)
+            elif not checked and key in segs:
+                segs.remove(key)
+            self.bar_segments[form] = segs
+            # 重征形态:贴边态重建条并按可见件重算几何;未贴边(菜单从
+            # 卡片打开)仅落盘,下次贴边生效
+            if self.dock:
+                self._build_bar(vertical=self.dock in ("left", "right"))
+                self.setStyleSheet(QSS_BAR)
+                self._apply_dock_geometry()
+                self._apply_snapshot(self.snap)
+            self._save_config_segments()
+
+        for key in (BAR_SEGMENTS_V if form == "v" else BAR_SEGMENTS_H):
+            act = seg_menu.addAction(labels[key])
+            act.setCheckable(True)
+            act.setChecked(key in on)
+            act.triggered.connect(lambda checked, k=key: toggle(k, checked))
+
+    def _save_config_segments(self):
+        """bar_segments 并入 zm_config.json(原子写路径复用 save_config):
+        读-改-写,其它键(quota key/budget/alert)原样保留 —— 与设置窗
+        同一条落盘纪律(key 明文不进日志)。_no_persist 守卫下静默跳过
+        (测试/自检环境)。"""
+        cfg = load_config()
+        cfg["bar_segments"] = dict(self.bar_segments)
+        save_config(cfg)
 
     def _add_session_menu(self, m: QMenu):
         """『会话』子菜单:列出最近会话供手动固定(📌),或恢复自动跟随。
@@ -1870,17 +1965,24 @@ class MeterWindow(QWidget):
         # 在『加入已可见父』后不自动 show(无事件循环的 stress 环境恒
         # isHidden),显式置位让显隐状态可断言、也不依赖布局激活时机;
         # setVisible 幂等,200ms 一跳无重绘 churn
+        # 恒显件每拍显式 setVisible(True):无父构造再 addWidget 的子控件
+        # 在『加入已可见父』后不自动 show(无事件循环的 stress 环境恒
+        # isHidden),显式置位让显隐状态可断言、也不依赖布局激活时机;
+        # setVisible 幂等,200ms 一跳无重绘 churn。段可关后(v0.8.0 对版期
+        # 『靠边停放自定义显示内容』)恒显语义退役 —— 未建段件为 None,
+        # 逐件短路,恒显置位只对『建了的段件』做
         if self._bar_form == "h":
             self.tps_lbl.setVisible(True)
-            self.today_lbl.setVisible(True)
-            self.sep_today.setVisible(True)      # 今日恒在 → sep_today 恒显
+            if self.today_lbl is not None:
+                self.today_lbl.setVisible(True)
+            if self.sep_today is not None:
+                self.sep_today.setVisible(True)
         else:
             self.tps_lbl.setVisible(True)
-            self.today_lbl.setVisible(True)
-            self.in_lbl.setVisible(True)
-            self.vbar_in_cap.setVisible(True)
-            self.vsep_today.setVisible(True)     # 今日/入出组恒在 → 恒显
-            self.vsep_in.setVisible(True)
+            for w_ in (self.today_lbl, self.in_lbl, self.vbar_in_cap,
+                       self.vsep_today, self.vsep_in):
+                if w_ is not None:
+                    w_.setVisible(True)
         speed_txt = f"{gtps:.1f}" if gtps >= 0.05 else "--"
         if self._bar_form == "h":
             self.tps_lbl.setText(speed_txt)   # 14px Bold 蓝;单位恒显 "t/s" dim
@@ -1888,20 +1990,22 @@ class MeterWindow(QWidget):
         else:
             self.tps_lbl.setText(speed_txt)            # 单位由『TOK/S』caption 表达
         # sparkline 三形态恒建:<2 点隐藏不闪空(与卡片同口径,T-4 风险);
-        # 隐藏控件被 _bar_size 跳过,条宽/高不虚胖
+        # 隐藏控件被 _bar_size 跳过,条宽/高不虚胖;段关 → 未建(None)跳过
         vals = s.recent_speeds or []
-        self.spark.set_values(vals)
-        self.spark.setHidden(len(vals) < 2)
+        if self.spark is not None:
+            self.spark.set_values(vals)
+            self.spark.setHidden(len(vals) < 2)
         # 今日段:横条『今X[ ≈¥N]』(金额取整;cost=0 整段省略、partial ≈
         # 前缀 —— 与卡片同守卫,N3);竖条组 v 只保 token(空间受限)
         cost = s.today_cost_cny or 0.0
         if self._bar_form == "h":
-            cost_txt = (f" {'≈' if s.today_cost_partial else ''}¥{cost:.0f}"
-                        if cost else "")
-            # 『今』与数字间留空格(用户对版 2026-09-28:CJK 字面贴 mono 数字
-            # 过挤;原型『今481M』写法从宽,以用户观感为准)
-            self.today_lbl.setText(f"今 {fmt_k(s.today_tokens)}{cost_txt}")
-        else:
+            if self.today_lbl is not None:
+                cost_txt = (f" {'≈' if s.today_cost_partial else ''}¥{cost:.0f}"
+                            if cost else "")
+                # 『今』与数字间留空格(用户对版 2026-09-28:CJK 字面贴 mono 数字
+                # 过挤;原型『今481M』写法从宽,以用户观感为准)
+                self.today_lbl.setText(f"今 {fmt_k(s.today_tokens)}{cost_txt}")
+        elif self.today_lbl is not None:
             self.today_lbl.setText(fmt_k(s.today_tokens))
         # ---- 套餐段(plan_on)/燃速段(burn_on):段/组数据缺席时其前
         # sep/vsep 一并隐藏(F4:sep_plan 跟套餐、sep_burn 跟燃速、
@@ -1912,13 +2016,17 @@ class MeterWindow(QWidget):
         cd = format_countdown_hm(self._plan_next_reset)
         cd_bar = cd.replace(" ", "") if cd else cd   # 条形态紧凑档(原型『1h23m』
         if self._bar_form == "h":                    # 无空格;卡片『2h 55m 后重置』保留)
-            self.sep_plan.setVisible(plan_on)
-            self.sep_burn.setVisible(burn_on)   # sep_today 恒显(今日恒在),无显隐逻辑
-            self.plan_ring.setVisible(plan_on)
-            self.plan_lbl.setVisible(plan_on)
+            if self.sep_plan is not None:
+                self.sep_plan.setVisible(plan_on)
+            if self.sep_burn is not None:
+                self.sep_burn.setVisible(burn_on)
+            if self.plan_ring is not None:
+                self.plan_ring.setVisible(plan_on)
+                self.plan_lbl.setVisible(plan_on)
             # cd 缺 → 置空并隐藏(条形态隐藏非空文本纪律,v0.5.1 同款)
-            self.plan_cd_lbl.setVisible(plan_on and bool(cd))
-            if plan_on:
+            if self.plan_cd_lbl is not None:
+                self.plan_cd_lbl.setVisible(plan_on and bool(cd))
+            if plan_on and self.plan_ring is not None:
                 pct = self._plan_pct
                 color = tier_color(pct)
                 self.plan_ring.set_pct(pct, color)
@@ -1926,9 +2034,9 @@ class MeterWindow(QWidget):
                 self.plan_lbl.setText(
                     f"{pct:.0f}%" + (f" ~{fmt_k(int(lt))}" if lt is not None else ""))
                 self.plan_lbl.setStyleSheet(f"color: {color};")
-                if cd:
+                if cd and self.plan_cd_lbl is not None:
                     self.plan_cd_lbl.setText(cd_bar)
-            if burn_on:
+            if burn_on and self.burn_lbl is not None:
                 # 瞬时燃速(最近请求吞吐)优先,无单请求数据退回 60min 窗口值;
                 # 后接会话平均燃速 —— 口径一字不动(v0.7 既有分支)
                 shown = s.burn_instant_per_hour or burn
@@ -1937,13 +2045,17 @@ class MeterWindow(QWidget):
                 if ab:
                     t += f" · 均燃 {fmt_k(int(ab))}/h"
                 self.burn_lbl.setText(t)
-            self.burn_lbl.setVisible(burn_on)
+            if self.burn_lbl is not None:
+                self.burn_lbl.setVisible(burn_on)
         else:
-            self.vsep_plan.setVisible(plan_on)
-            self.vsep_burn.setVisible(burn_on)  # vsep_today/vsep_in 恒显
-            self.plan_lbl.setVisible(plan_on)
-            self.plan_sub_lbl.setVisible(plan_on)
-            if plan_on:
+            if self.vsep_plan is not None:
+                self.vsep_plan.setVisible(plan_on)
+            if self.vsep_burn is not None:
+                self.vsep_burn.setVisible(burn_on)
+            if self.plan_lbl is not None:
+                self.plan_lbl.setVisible(plan_on)
+                self.plan_sub_lbl.setVisible(plan_on)
+            if plan_on and self.plan_lbl is not None:
                 pct = self._plan_pct
                 self.plan_lbl.setText(f"{pct:.0f}%")
                 self.plan_lbl.setStyleSheet(f"color: {tier_color(pct)};")
@@ -1953,17 +2065,18 @@ class MeterWindow(QWidget):
                 self.plan_sub_lbl.setText(" · ".join(
                     seg for seg in (f"~{fmt_k(int(lt))}" if lt is not None else None,
                                     cd_bar or None) if seg))
-            self.burn_lbl.setVisible(burn_on)
-            self.vbar_burn_cap.setVisible(burn_on)
-            if burn_on:
+            if self.burn_lbl is not None:
+                self.burn_lbl.setVisible(burn_on)
+                self.vbar_burn_cap.setVisible(burn_on)
+            if burn_on and self.burn_lbl is not None:
                 self.burn_lbl.setText(fmt_k(int(burn)) + "/h")
                 ab = s.burn_avg_tokens_per_hour
                 self.vbar_burn_cap.setText(
                     "燃速" + (f" · 均{fmt_k(int(ab))}" if ab else ""))
-            # 入出组恒显:入 v 行 + 出并入 k 行文本(out_lbl 三形态 None,
-            # session_out 不再单独占行)
-            self.in_lbl.setText(fmt_k(s.session_in))
-            self.vbar_in_cap.setText(f"入 · 出{fmt_k(s.session_out)}")
+            # 入出组(段可关):未建(None)跳过
+            if self.in_lbl is not None:
+                self.in_lbl.setText(fmt_k(s.session_in))
+                self.vbar_in_cap.setText(f"入 · 出{fmt_k(s.session_out)}")
         self._refit_dock()
 
     def _apply_card(self, s: Snapshot, generating: bool, gtps) -> None:

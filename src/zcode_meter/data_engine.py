@@ -99,6 +99,33 @@ MAX_SCAN_ROWS = 100_000
 # ---------------------------------------------------- 配置/价格/守卫(v0.4.0) ---
 
 CONFIG_PATH = os.path.join(app_dir(), "zm_config.json")
+
+# 贴边条可勾选段(v0.8.0 对版期,用户『靠边停放时自定义显示内容』):
+# 横条(顶/底共用)与竖条(左/右共用)各一套;速度数字+圆点恒显不进清单。
+BAR_SEGMENTS_H = ("spark", "plan", "cd", "today", "burn")
+BAR_SEGMENTS_V = ("spark", "today", "plan", "burn", "in")
+# 菜单展示名(勾选项 label;键与上面元组一一对应)
+BAR_SEGMENT_LABELS_H = {"spark": "速度曲线", "plan": "套餐余量", "cd": "重置倒计时",
+                        "today": "今日用量+金额", "burn": "燃速·均燃"}
+BAR_SEGMENT_LABELS_V = {"spark": "速度曲线", "today": "今日消耗", "plan": "套餐余量",
+                        "burn": "燃速·均燃", "in": "会话入出"}
+
+
+def _norm_bar_segments(obj) -> dict:
+    """bar_segments 规范化:{"h":[...], "v":[...]},白名单交集保序;键缺失/
+    形状不对 → 该形态回退全开(默认=现状,存量配置文件零迁移)。"""
+    out = {}
+    for form, allowed in (("h", BAR_SEGMENTS_H), ("v", BAR_SEGMENTS_V)):
+        out[form] = list(allowed)          # 缺省全开
+    if not isinstance(obj, dict):
+        return out
+    for form, allowed in (("h", BAR_SEGMENTS_H), ("v", BAR_SEGMENTS_V)):
+        lst = obj.get(form)
+        if isinstance(lst, list):
+            keep = [s for s in allowed if s in lst]
+            if keep or lst == []:
+                out[form] = keep           # 空列表合法(纯速度胶囊)
+    return out
 PRICES_PATH = os.path.join(app_dir(), "zm_prices.json")
 ALERTS_PATH = os.path.join(app_dir(), "zm_alerts.json")
 
@@ -164,6 +191,8 @@ def load_config() -> dict:
     rv = _norm_quota_refresh(obj.get("quota_refresh"))
     if rv is not None:
         cfg["quota_refresh"] = rv
+    # 可选键:贴边条可勾选段(v0.8.0 对版期;缺省全开=存量文件零迁移)
+    cfg["bar_segments"] = _norm_bar_segments(obj.get("bar_segments"))
     return cfg
 
 
@@ -202,6 +231,11 @@ def save_config(cfg: dict, path: str | None = None) -> bool:
     rv = _norm_quota_refresh(cfg.get("quota_refresh"))
     if rv is not None:
         out["quota_refresh"] = rv
+    # 可选键:贴边条可勾选段 —— 仅当调用方显式携带才写(同上第 4 键纪律:
+    # 三键 cfg 直存不升四键);写前规范化,形状恒合法
+    segs = cfg.get("bar_segments")
+    if segs is not None:
+        out["bar_segments"] = _norm_bar_segments(segs)
     tmp = p + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:

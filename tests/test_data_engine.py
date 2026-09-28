@@ -563,7 +563,9 @@ def test_save_config_roundtrip_and_normalize():
                               "alert_pct": "nope"}, path=p2) is True)
         de.CONFIG_PATH = p2
         back2 = de.load_config()
-        check("坏形规范化为默认",
+        back2 = {k: back2.get(k) for k in ("quota_api_key", "daily_budget_cny",
+                                           "alert_pct")}
+        check("坏形规范化为默认(前三键)",
               back2 == {"quota_api_key": "", "daily_budget_cny": None,
                         "alert_pct": [20.0, 10.0]}, str(back2))
     finally:
@@ -1560,8 +1562,9 @@ def test_quota_refresh_optional_key():
         raw = jsonmod.loads(_Path(p1).read_text(encoding="utf-8"))
         check("save:文件无第 4 键", set(raw) == set(three), str(sorted(raw)))
         de.CONFIG_PATH = p1
-        check("load:三键全等(back2 断言形状)",
-              de.load_config() == three, str(de.load_config()))
+        _lc = de.load_config()
+        check("load:三键全等(可选键 bar_segments 除外)",
+              all(_lc.get(k) == v for k, v in three.items()), str(_lc))
         # ② 合法值回环:auto 字面值与间隔秒数逐值相等
         for val in ("auto", 60, 86400, 180):
             p = str(tmp / f"c_{val}.json")
@@ -1586,7 +1589,8 @@ def test_quota_refresh_optional_key():
         de.CONFIG_PATH = pb
         back = de.load_config()
         check("load:文件含越界 30 → 无键", "quota_refresh" not in back, str(back))
-        check("load:其他三键不受污染", back == three, str(back))
+        check("load:其他三键不受污染(可选键除外)",
+              all(back.get(k) == v for k, v in three.items()), str(back))
     finally:
         de.CONFIG_PATH = orig_path
         shutil.rmtree(tmp, ignore_errors=True)
