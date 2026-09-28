@@ -646,7 +646,7 @@ class MeterWindow(QWidget):
         line = QFrame()
         line.setStyleSheet(f"background: {C_BORDER}; border: none;")
         if vertical:
-            line.setFixedSize(90, 1)      # 竖条内容区等宽(条宽100-边距16-边框2)
+            line.setFixedSize(92, 1)      # 竖条内容区等宽(条宽100-边距16-边框2)
         else:
             line.setFixedSize(1, 14)
         return line
@@ -811,7 +811,7 @@ class MeterWindow(QWidget):
     def _build_bar(self, vertical: bool = False):
         self._clear()
         root = QVBoxLayout(self) if vertical else QHBoxLayout(self)
-        root.setContentsMargins(SP["xs"], 1, SP["xs"], 1)   # 左右 4px(留白收窄);垂直 1px 豁免
+        root.setContentsMargins(2, 0, 2, 0)   # 四周最小留白(收窄);上下 0 使内容贴窗口边框
         root.setSpacing(SP["xs"])
         self._bar_form = "v" if vertical else "h"
         if vertical:
@@ -1361,9 +1361,9 @@ class MeterWindow(QWidget):
         elif self.dock == "bottom":
             self.setGeometry(sg.center().x() - w // 2, sg.bottom() - h + 1, w, h)
         elif self.dock == "left":
-            self.setGeometry(sg.left(), sg.top(), w, sg.height())
+            self.setGeometry(sg.left(), sg.center().y() - h // 2, w, h)
         else:
-            self.setGeometry(sg.right() - w + 1, sg.top(), w, sg.height())
+            self.setGeometry(sg.right() - w + 1, sg.center().y() - h // 2, w, h)
 
     def _tick_breath(self):
         self._breath = (self._breath + 0.08) % 1.0
