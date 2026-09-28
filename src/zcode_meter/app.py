@@ -1301,11 +1301,11 @@ class MeterWindow(QWidget):
                             t += f" · {cd}后重置"
                         self.plan_lbl.setText(t)
                     else:
-                        # 竖条分组结构:套餐% 主数字 + 倒计时独立行
-                        t = f"{self._plan_pct:.0f}%"
-                        if cd:
-                            t += f"\n{cd}"
-                        self.plan_lbl.setText(t)
+                        # 竖条分组结构:plan 主数字行 + plan_sub 倒计时行
+                        # (独立 label,行距走布局 spacing,与今日组同构)
+                        self.plan_lbl.setText(f"{self._plan_pct:.0f}%")
+                        if self.plan_sub_lbl is not None:
+                            self.plan_sub_lbl.setText(cd or "")
             if self.burn_lbl is not None:
                 self.burn_lbl.setVisible(burn_on)
                 if burn_on:
