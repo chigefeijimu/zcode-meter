@@ -1361,9 +1361,9 @@ class MeterWindow(QWidget):
         elif self.dock == "bottom":
             self.setGeometry(sg.center().x() - w // 2, sg.bottom() - h + 1, w, h)
         elif self.dock == "left":
-            self.setGeometry(sg.left(), sg.center().y() - h // 2, w, h)
+            self.setGeometry(sg.left(), sg.top(), w, sg.height())
         else:
-            self.setGeometry(sg.right() - w + 1, sg.center().y() - h // 2, w, h)
+            self.setGeometry(sg.right() - w + 1, sg.top(), w, sg.height())
 
     def _tick_breath(self):
         self._breath = (self._breath + 0.08) % 1.0
