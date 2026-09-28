@@ -646,7 +646,7 @@ class MeterWindow(QWidget):
         line = QFrame()
         line.setStyleSheet(f"background: {C_BORDER}; border: none;")
         if vertical:
-            line.setFixedSize(76, 1)      # 竖条内容区等宽(条宽100-边距16-边框2)
+            line.setFixedSize(90, 1)      # 竖条内容区等宽(条宽100-边距16-边框2)
         else:
             line.setFixedSize(1, 14)
         return line
@@ -811,8 +811,8 @@ class MeterWindow(QWidget):
     def _build_bar(self, vertical: bool = False):
         self._clear()
         root = QVBoxLayout(self) if vertical else QHBoxLayout(self)
-        root.setContentsMargins(SP["m"], 1, SP["m"], 1)   # 垂直 1px 豁免:横条高度≤30 红线
-        root.setSpacing(SP["s"])
+        root.setContentsMargins(SP["xs"], 1, SP["xs"], 1)   # 左右 4px(留白收窄);垂直 1px 豁免
+        root.setSpacing(SP["xs"])
         self._bar_form = "v" if vertical else "h"
         if vertical:
             root.addStretch(1)   # 首尾对称弹性:条高富余时内容整体垂直居中(用户要求)
