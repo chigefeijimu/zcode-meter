@@ -81,7 +81,7 @@ def main() -> int:
         win._build_bar(vertical=True); win._apply_snapshot(win.snap)
         sizes2.append(("v", win._bar_size(True)))
         check(f"预算段循环{i} 竖条:紧凑 plan 可见",
-              win.plan_lbl.isVisible() and win.plan_lbl.text() == "套 42%")
+              win.plan_lbl.isVisible() and win.plan_lbl.text() == "42%")
         win._unset_dock()
     hs2 = [s for k, s in sizes2 if k == "h"]
     vs2 = [s for k, s in sizes2 if k == "v"]
@@ -97,7 +97,7 @@ def main() -> int:
     check("横条仍单行(高度<=30)", "\n" not in ht)
     win._build_bar(vertical=True); win._apply_snapshot(win.snap)
     vt = win.plan_lbl.text()
-    check("竖条倒计时入条(两行)", vt.startswith("套 42%") and "\n" in vt and len(vt.split("\n")[1]) <= 7, vt)
+    check("竖条倒计时入条(两行)", vt.startswith("42%") and "\n" in vt and len(vt.split("\n")[1]) <= 7, vt)
     win._plan_next_reset = None
     check("预算段竖条宽度仍<=90", vs2[0][0] <= 90, str(vs2[0]))
     # 数据缺席:整段隐藏(含分隔线),不残留空占位

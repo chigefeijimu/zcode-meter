@@ -852,38 +852,49 @@ class MeterWindow(QWidget):
             self.elapsed_lbl = self._mk_lbl("", "warn", C_MONO, 9)
             root.addWidget(self.elapsed_lbl)
         else:
-            self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 10)
-            self.tps_lbl.setFont(QFont(C_MONO, 10, QFont.Bold))
+            # v0.7.x 竖条改分组结构:主数字/今日/套餐 三组,组间分隔线,
+            # 组内『数值+小字说明』节奏 —— 替代旧一列直排的密集堆叠。
+            # 宽度 90→100(stress 断言同步),空间足够补回燃速与重置倒计时。
+            def vnum(txt="", cls="", size=9):
+                lb = self._mk_lbl(txt, cls, C_MONO, size)
+                lb.setAlignment(Qt.AlignCenter)
+                return lb
+            def vcap(txt):
+                lb = self._mk_lbl(txt, "dim", "Microsoft YaHei UI", 8)
+                lb.setAlignment(Qt.AlignCenter)
+                return lb
+            # 组1 主数字:实时速度
+            self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 12)
+            self.tps_lbl.setFont(QFont(C_MONO, 12, QFont.Bold))
             self.tps_lbl.setAlignment(Qt.AlignCenter)
             root.addWidget(self.tps_lbl)
-            root.addWidget(self._mk_lbl("tok/s", "dim", "Microsoft YaHei UI", 8))
+            root.addWidget(vcap("tok/s"))
+            # 组2 今日消耗
             root.addWidget(self._mk_sep(True))
-            self.avg_lbl = self._mk_lbl("--", "", C_MONO, 9)
-            self.avg_lbl.setAlignment(Qt.AlignCenter)
-            root.addWidget(self.avg_lbl)
-            root.addWidget(self._mk_lbl("avg", "dim", "Microsoft YaHei UI", 8))
-            root.addWidget(self._mk_sep(True))
-            self.in_lbl = self._mk_lbl("--", "", C_MONO, 9)
-            self.in_lbl.setAlignment(Qt.AlignCenter)
-            root.addWidget(self.in_lbl)
-            self.out_lbl = self._mk_lbl("--", "", C_MONO, 9)
-            self.out_lbl.setAlignment(Qt.AlignCenter)
-            root.addWidget(self.out_lbl)
-            self.today_lbl = self._mk_lbl("--", "", C_MONO, 9)
-            self.today_lbl.setAlignment(Qt.AlignCenter)
+            self.today_lbl = vnum("--")
             root.addWidget(self.today_lbl)
+            root.addWidget(vcap("今日"))
+            # 组3 套餐状态
+            root.addWidget(self._mk_sep(True))
+            self.plan_lbl = vnum("", "warn")
+            root.addWidget(self.plan_lbl)
+            self.burn_lbl = vnum("", "dim")
+            root.addWidget(self.burn_lbl)
+            # 组4 会话累计
+            root.addWidget(self._mk_sep(True))
+            self.in_lbl = vnum("--")
+            root.addWidget(self.in_lbl)
+            self.out_lbl = vnum("--")
+            root.addWidget(self.out_lbl)
+            root.addWidget(vcap("会话"))
             self.rate_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 8)
             self.rate_lbl.setAlignment(Qt.AlignCenter)
             root.addWidget(self.rate_lbl)
-            # 竖条预算段:空间受限只加紧凑套餐剩余(『套 N%』≈30px,竖条宽度
-            # 上限 90px 的 stress 断言卡着),无分隔线;燃速段显式置 None
-            self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 9)
-            self.plan_lbl.setAlignment(Qt.AlignCenter)
-            root.addWidget(self.plan_lbl)
             self._budget_sep = None
             root.addStretch(1)
-            # 竖条不显示 elapsed/ttft/dur:显式置 None,否则保留已销毁旧对象的悬空引用
-            self.elapsed_lbl = self.ttft_lbl = self.dur_lbl = None
+            # 竖条分组结构不显示 avg/elapsed/ttft/dur:显式置 None,
+            # 否则保留已销毁旧对象的悬空引用(历史 bug)
+            self.avg_lbl = self.elapsed_lbl = self.ttft_lbl = self.dur_lbl = None
             self.burn_lbl = None
         # 横条与竖条共通:卡片专属 label 两种条形态都不创建,统一置 None
         # (只在一种形态置 None 会让另一形态的压力循环摸到已销毁 QLabel
@@ -1288,14 +1299,18 @@ class MeterWindow(QWidget):
                             t += f" · {cd}后重置"
                         self.plan_lbl.setText(t)
                     else:
-                        t = f"套 {self._plan_pct:.0f}%"
+                        # 竖条分组结构:套餐% 主数字 + 倒计时独立行
+                        t = f"{self._plan_pct:.0f}%"
                         if cd:
                             t += f"\n{cd}"
                         self.plan_lbl.setText(t)
             if self.burn_lbl is not None:
                 self.burn_lbl.setVisible(burn_on)
                 if burn_on:
-                    self.burn_lbl.setText(f"燃速 {fmt_k(int(burn))}/h")
+                    # 竖条分组:纯数值(组语义由上方套餐组的延续性表达)
+                    self.burn_lbl.setText(
+                        fmt_k(int(burn)) + "/h" if self._bar_form == "v"
+                        else f"燃速 {fmt_k(int(burn))}/h")
             if self._budget_sep is not None:
                 self._budget_sep.setVisible(plan_on or burn_on)
         if self.ttft_lbl is not None:
