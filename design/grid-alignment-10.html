@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>zcode-meter · 六格对齐 10 方案</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0b0c10; color: #e8eaf0; padding: 32px;
+  font-family: "Microsoft YaHei UI", sans-serif;
+}
+h1 { font-size: 18px; color: #fff; }
+.sub { font-size: 12px; color: #6b7080; margin: 6px 0 28px; line-height: 1.7; }
+.note { font-size: 11px; color: #565a66; margin-top: 8px; line-height: 1.7; font-family: "Microsoft YaHei UI", sans-serif; }
+.grid10 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 28px 36px; max-width: 980px; }
+.card-wrap h2 { font-size: 13px; color: #8b8f9c; margin-bottom: 10px; display: flex; gap: 8px; align-items: baseline; }
+.card-wrap h2 .no { color: #5ad6a0; font-family: "Cascadia Code", Consolas, monospace; }
+.desktop {
+  padding: 26px; border-radius: 12px;
+  background:
+    radial-gradient(ellipse 300px 200px at 20% 30%, #2d5a3d 0%, transparent 60%),
+    radial-gradient(ellipse 280px 220px at 80% 70%, #1a3a5c 0%, transparent 55%),
+    linear-gradient(135deg, #1a2530, #252a35);
+}
+.num { font-family: "Cascadia Code", Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+/* ============ 共享卡片底 ============ */
+.base {
+  width: 313px; border-radius: 12px; position: relative; overflow: hidden;
+  background: linear-gradient(180deg, #1c1e28, #15161d);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 8px 32px rgba(0,0,0,0.35);
+  padding: 14px 16px;
+}
+.hero { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.hero .n { font-size: 26px; font-weight: 700; color: #7ad7ff; }
+.hero .u { font-size: 11px; color: rgba(255,255,255,0.35); }
+.hero .today { margin-left: auto; font-size: 13px; color: rgba(255,255,255,0.9); font-weight: 600; }
+.hero .today small { font-size: 10px; color: rgba(255,255,255,0.35); font-weight: 400; margin-left: 4px; }
+.pulse { width: 10px; height: 10px; border-radius: 50%; border: 2px solid #60cdff; display: inline-block; margin-right: 6px; vertical-align: -1px; }
+.st-row { font-size: 11px; color: rgba(255,255,255,0.5); margin-bottom: 6px; }
+.st-row .mdl { float: right; color: rgba(255,255,255,0.35); font-size: 10px; }
+hr.sep { border: none; border-top: 1px solid rgba(255,255,255,0.07); margin: 8px 0; }
+
+/* ============ ① 经典三列(现状改良:列头即列,左对齐一刀切) ============ */
+.a-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px 12px; }
+.a-grid .k { font-size: 9px; color: rgba(255,255,255,0.35); letter-spacing: 0.5px; }
+.a-grid .v { font-size: 13px; color: rgba(255,255,255,0.8); font-weight: 600; margin-top: 1px; }
+.a-grid .v, .a-grid .k { text-align: left; }
+
+/* ============ ② 标签右置·值左对齐(雷达读法) ============ */
+.b-row { display: flex; align-items: baseline; justify-content: space-between; padding: 3px 0; border-bottom: 1px dashed rgba(255,255,255,0.05); }
+.b-row:last-child { border-bottom: none; }
+.b-row .k { font-size: 9px; color: rgba(255,255,255,0.35); }
+.b-row .v { font-size: 13px; color: rgba(255,255,255,0.85); font-weight: 600; }
+.b-col2 { display: grid; grid-template-columns: 1fr 1fr; column-gap: 18px; }
+
+/* ============ ③ 点线引导符(账目风) ============ */
+.c-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; row-gap: 2px; }
+.c-row { display: flex; align-items: baseline; }
+.c-row .k { font-size: 9px; color: rgba(255,255,255,0.35); white-space: nowrap; }
+.c-row .dots { flex: 1; border-bottom: 1px dotted rgba(255,255,255,0.14); margin: 0 6px 3px; }
+.c-row .v { font-size: 13px; color: rgba(255,255,255,0.85); font-weight: 600; }
+
+/* ============ ④ 无标题·单位内嵌(极简) ============ */
+.d-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px 6px; }
+.d-cell .v { font-size: 14px; color: rgba(255,255,255,0.88); font-weight: 600; }
+.d-cell .v em { font-style: normal; font-size: 9px; color: rgba(255,255,255,0.4); margin-left: 2px; }
+.d-cell .k2 { font-size: 8px; color: rgba(255,255,255,0.3); margin-top: 1px; }
+.d-cell { border-left: 2px solid rgba(122,215,255,0.25); padding-left: 7px; }
+.d-cell:nth-child(2n) { border-left-color: rgba(255,209,102,0.25); }
+
+/* ============ ⑤ 迷你条形(数据墨水) ============ */
+.e-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px 10px; }
+.e-cell .k { font-size: 9px; color: rgba(255,255,255,0.35); margin-bottom: 3px; }
+.e-cell .v { font-size: 13px; color: rgba(255,255,255,0.85); font-weight: 600; }
+.e-bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.08); margin-top: 4px; position: relative; overflow: hidden; }
+.e-bar i { position: absolute; inset: 0 40% 0 0; border-radius: 2px; background: linear-gradient(90deg, #60cdff, #7ad7ff); }
+.e-cell:nth-child(2) .e-bar i { inset: 0 20% 0 0; background: linear-gradient(90deg, #6ee7a8, #9ef0c4); }
+.e-cell:nth-child(3) .e-bar i { inset: 0 75% 0 0; background: linear-gradient(90deg, #ffd166, #ffe29a); }
+.e-cell:nth-child(5) .e-bar i { inset: 0 55% 0 0; background: linear-gradient(90deg, #ffd166, #ffe29a); }
+.e-cell:nth-child(6) .e-bar i { inset: 0 30% 0 0; background: linear-gradient(90deg, #60cdff, #7ad7ff); }
+
+/* ============ ⑥ 单列账本(两行三列改六行) ============ */
+.f-rows { display: grid; grid-template-columns: 1fr 1fr 1fr; column-gap: 14px; row-gap: 1px; }
+.f-line { display: flex; justify-content: space-between; align-items: baseline; padding: 2.5px 0; }
+.f-line .k { font-size: 9px; color: rgba(255,255,255,0.35); }
+.f-line .v { font-size: 12px; color: rgba(255,255,255,0.85); font-weight: 600; }
+.fline-sep { border-top: 1px solid rgba(255,255,255,0.05); }
+
+/* ============ ⑦ HUD 战术风 ============ */
+.hud .base { background: linear-gradient(180deg, #101820, #0b1218); border-color: rgba(96,205,255,0.18); }
+.hud-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px 8px; position: relative; }
+.hud-cell { border: 1px solid rgba(96,205,255,0.14); padding: 4px 6px 3px; position: relative; }
+.hud-cell::before { content: ""; position: absolute; top: -1px; left: -1px; width: 5px; height: 5px; border-top: 1px solid #60cdff; border-left: 1px solid #60cdff; }
+.hud-cell::after { content: ""; position: absolute; bottom: -1px; right: -1px; width: 5px; height: 5px; border-bottom: 1px solid #60cdff; border-right: 1px solid #60cdff; }
+.hud-cell .k { font-size: 8px; color: rgba(96,205,255,0.55); letter-spacing: 1px; }
+.hud-cell .v { font-size: 13px; color: #bfe9ff; font-weight: 600; text-shadow: 0 0 6px rgba(96,205,255,0.35); }
+.hud-cell .v small { font-size: 8px; color: rgba(96,205,255,0.5); font-weight: 400; }
+
+/* ============ ⑧ 票据小票风 ============ */
+.tkt .base { background: linear-gradient(180deg, #1d1c22, #161519); }
+.tkt-grid { font-family: "Cascadia Code", Consolas, monospace; }
+.tkt-row { display: flex; justify-content: space-between; font-size: 11px; padding: 2px 0; color: rgba(255,255,255,0.55); }
+.tkt-row b { color: rgba(255,255,255,0.9); font-weight: 600; }
+.tkt-row .leader { flex: 1; border-bottom: 1px dashed rgba(255,255,255,0.10); margin: 0 6px 3px; }
+.tkt-total { border-top: 1px solid rgba(255,255,255,0.12); margin-top: 4px; padding-top: 4px; }
+.tkt-row .sym { color: rgba(255,255,255,0.3); margin-right: 4px; }
+
+/* ============ ⑨ 环形仪表风 ============ */
+.ring-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 2px; }
+.ring-cell { text-align: center; position: relative; padding: 2px 0 3px; }
+.ring-cell .rp { width: 38px; height: 38px; margin: 0 auto; border-radius: 50%;
+  background: conic-gradient(#7ad7ff var(--p, 62%), rgba(255,255,255,0.07) 0);
+  display: flex; align-items: center; justify-content: center; }
+.ring-cell .rp i { width: 28px; height: 28px; border-radius: 50%; background: #181a22; display: flex; align-items: center; justify-content: center; }
+.ring-cell .rp b { font-size: 8.5px; color: rgba(255,255,255,0.75); font-weight: 600; font-style: normal; }
+.ring-cell .rk { font-size: 8px; color: rgba(255,255,255,0.35); margin-top: 2px; letter-spacing: 0.5px; }
+.ring-cell:nth-child(2) .rp { background: conic-gradient(#6ee7a8 var(--p, 95%), rgba(255,255,255,0.07) 0); }
+.ring-cell:nth-child(3) .rp { background: conic-gradient(#ffd166 var(--p, 25%), rgba(255,255,255,0.07) 0); }
+.ring-cell:nth-child(5) .rp { background: conic-gradient(#ffd166 var(--p, 48%), rgba(255,255,255,0.07) 0); }
+.ring-cell:nth-child(6) .rp { background: conic-gradient(#7ad7ff var(--p, 70%), rgba(255,255,255,0.07) 0); }
+
+/* ============ ⑩ 编辑部表格风(细分隔线·大写小签) ============ */
+.ed .base { background: linear-gradient(180deg, #1a1b21, #141519); }
+.ed-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; column-gap: 0; }
+.ed-cell { padding: 3px 8px 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.ed-cell:nth-child(3n) { padding-right: 0; }
+.ed-cell .k { font-size: 8px; color: rgba(255,255,255,0.32); letter-spacing: 1.5px; font-weight: 600; }
+.ed-cell .v { font-size: 13px; color: rgba(255,255,255,0.82); font-weight: 600; margin-top: 2px; }
+.ed-cell .v em { font-style: normal; font-size: 9px; color: rgba(255,255,255,0.38); font-weight: 400; margin-left: 2px; }
+</style>
+</head>
+<body>
+<h1>zcode-meter · 六格对齐 10 方案</h1>
+<p class="sub">同一个问题:「入/出、缓存命中、⏱首/总、燃速、均燃、均速」六格怎么排才整齐。10 种风格各给一版,数值/文案完全相同,只变排版语言。每张卡上半部保持现状(速度 hero)作参照。</p>
+
+<div class="grid10">
+
+<!-- ① -->
+<div class="card-wrap">
+  <h2><span class="no">①</span> 三列矩阵·改良版(现状的"排整齐"解)</h2>
+  <div class="desktop"><div class="base">
+    <div class="st-row"><span class="pulse"></span>空闲<span class="mdl num">GLM-5.3</span></div>
+    <div class="hero"><span class="n num">~24.3</span><span class="u num">tok/s</span><span class="today num">1.2B<small>今日</small></span></div>
+    <hr class="sep">
+    <div class="a-grid num">
+      <div class="k">入 / 出</div><div class="k">缓存命中</div><div class="k">首字 / 总耗时</div>
+      <div class="v">435.9M / 575K</div><div class="v">95.01%</div><div class="v">3.0 / 7.2s</div>
+      <div class="k">燃速</div><div class="k">均燃</div><div class="k">均速</div>
+      <div class="v">28.5M/h</div><div class="v">132.6M/h</div><div class="v">56.8 t/s</div>
+    </div>
+  </div></div>
+  <p class="note">改良点:去掉 ⏱ 图标(它把列头推向右边)、键值同列同左对齐、字号 9/13。三列各自为政,列内键值零错位 —— "怎么排都乱"的根治版。</p>
+</div>
+
+<!-- ② -->
+<div class="card-wrap">
+  <h2><span class="no">②</span> 标签右置·值左对齐(两列雷达读法)</h2>
+  <div class="desktop"><div class="base">
+    <div class="st-row"><span class="pulse"></span>空闲<span class="mdl num">GLM-5.3</span></div>
+    <div class="hero"><span class="n num">~24.3</span><span class="u num">tok/s</span><span class="today num">1.2B<small>今日</small></span></div>
+    <hr class="sep">
+    <div class="b-col2 num">
+      <div>
+        <div class="b-row"><span class="k">入 / 出</span><span class="v">435.9M / 575K</span></div>
+        <div class="b-row"><span class="k">燃速</span><span class="v">28.5M/h</span></div>
+        <div class="b-row"><span class="k">均速</span><span class="v">56.8 t/s</span></div>
+      </div>
+      <div>
+        <div class="b-row"><span class="k">缓存命中</span><span class="v">95.01%</span></div>
+        <div class="b-row"><span class="k">均燃</span><span class="v">132.6M/h</span></div>
+        <div class="b-row"><span class="k">首字 / 总</span><span class="v">3.0 / 7.2s</span></div>
+      </div>
+    </div>
+  </div></div>
+  <p class="note">标签右对齐贴着数值("标签:值"的冒号关系),三列错位问题在结构上不存在;左列右缘即右列左缘,读起来像两栏清单。虚线分隔强化行节奏。</p>
+</div>
+
+<!-- ③ -->
+<div class="card-wrap">
+  <h2><span class="no">③</span> 点线引导符(账目/目录风)</h2>
+  <div class="desktop"><div class="base">
+    <div class="st-row"><span class="pulse"></span>空闲<span class="mdl num">GLM-5.3</span></div>
+    <div class="hero"><span class="n num">~24.3</span><span class="u num">tok/s</span><span class="today num">1.2B<small>今日</small></span></div>
+    <hr class="sep">
+    <div class="c-grid num">
+      <div class="c-row"><span class="k">入 / 出</span><span class="dots"></span><span class="v">435.9M/575K</span></div>
+      <div class="c-row"><span class="k">缓存命中</span><span class="dots"></span><span class="v">95.01%</span></div>
+      <div class="c-row"><span class="k">首字/总</span><span class="dots"></span><span class="v">3.0/7.2s</span></div>
+      <div class="c-row"><span class="k">燃速</span><span class="dots"></span><span class="v">28.5M/h</span></div>
+      <div class="c-row"><span class="k">均燃</span><span class="dots"></span><span class="v">132.6M/h</span></div>
+      <div class="c-row"><span class="k">均速</span><span class="dots"></span><span class="v">56.8 t/s</span></div>
+    </div>
+  </div></div>
+  <p class="note">点线把"标签"和"值"在视觉上缝在一起 —— 无论标签多短值多长,关系永远明确。账单/目录页的经典语法,整齐感来自"缝",不来自格线。</p>
+</div>
+
+<!-- ④ -->
+<div class="card-wrap">
+  <h2><span class="no">④</span> 无标题·单位内嵌(极简色条)</h2>
+  <div class="desktop"><div class="base">
+    <div class="st-row"><span class="pulse"></span>空闲<span class="mdl num">GLM-5.3</span></div>
+    <div class="hero"><span class="n num">~24.3</span><span class="u num">tok/s</span><span class="today num">1.2B<small>今日</small></span></div>
+    <hr class="sep">
+    <div class="d-grid num">
+      <div class="d-cell"><div class="v">435.9M<em>/ 575K</em></div><div class="k2">入 / 出</div></div>
+      <div class="d-cell"><div class="v">95.01<em>%</em></div><div class="k2">缓存命中</div></div>
+      <div class="d-cell"><div class="v">3.0<em>/ 7.2s</em></div><div class="k2">首字 / 总</div></div>
+      <div class="d-cell"><div class="v">28.5M<em>/h</em></div><div class="k2">燃速</div></div>
+      <div class="d-cell"><div class="v">132.6M<em>/h</em></div><div class="k2">均燃</div></div>
+      <div class="d-cell"><div class="v">56.8<em>t/s</em></div><div class="k2">均速</div></div>
+    </div>
+  </div></div>
+  <p class="note">数值升为主角、标题降为小签;左侧 2px 色条做分组视觉锚(蓝=速度系,琥珀=燃烧系),单位弱化内嵌。整齐感来自"每格同构",不看标题先看数。</p>
+</div>
+
+<!-- ⑤ -->
+<div class="card-wrap">
+  <h2><span class="no">⑤</span> 迷你条形(数据墨水可视化)</h2>
+  <div class="desktop"><div class="base">
+    <div class="st-row"><span class="pulse"></span>空闲<span class="mdl num">GLM-5.3</span></div>
+    <div class="hero"><span class="n num">~24.3</span><span class="u num">tok/s</span><span class="today num">1.2B<small>今日</small></span></div>
+    <hr class="sep">
+    <div class="e-grid num">
+      <div class="e-cell"><div class="k">入 / 出</div><div class="v">435.9M / 575K</div><div class="e-bar"><i></i></div></div>
+      <div class="e-cell"><div class="k">缓存命中</div><div class="v">95.01%</div><div class="e-bar"><i></i></div></div>
+      <div class="e-cell"><div class="k">首字 / 总</div><div class="v">3.0 / 7.2s</div><div class="e-bar"><i></i></div></div>
+      <div class="e-cell"><div class="k">燃速</div><div class="v">28.5M/h</div><div class="e-bar"><i></i></div></div>
+      <div class="e-cell"><div class="k">均燃</div><div class="v">132.6M/h</div><div class="e-bar"><i></i></div></div>
+      <div class="e-cell"><div class="k">均速</div><div class="v">56.8 t/s</div><div class="e-bar"><i></i></div></div>
+    </div>
+  </div></div>
+  <p class="note">每格 k+v+一条 3px 迷你条(占比/相对强度),整齐感来自"条的对齐"而非文字 —— 人眼对条形端点的对齐远比对文字敏感。信息密度不减,还多一层可读性。</p>
+</div>
+
+<!-- ⑥ -->
+<div class="card-wrap">
+  <h2><span class="no">⑥</span> 单列账本(两端对齐·四列布局)</h2>
+  <div class="desktop"><div class="base">
+    <div class="st-row"><span class="pulse"></span>空闲<span class="mdl num">GLM-5.3</span></div>
+    <div class="hero"><span class="n num">~24.3</span><span class="u num">tok/s</span><span class="today num">1.2B<small>今日</small></span></div>
+    <hr class="sep">
+    <div class="f-rows num">
+      <div class="f-line"><span class="k">入 / 出</span><span class="v">435.9M/575K</span></div>
+      <div class="f-line"><span class="k">缓存命中</span><span class="v">95.01%</span></div>
+      <div class="f-line"><span class="k">首字/总</span><span class="v">3.0/7.2s</span></div>
+      <div class="f-line fline-sep"><span class="k">燃速</span><span class="v">28.5M/h</span></div>
+      <div class="f-line fline-sep"><span class="k">均燃</span><span class="v">132.6M/h</span></div>
+      <div class="f-line fline-sep"><span class="k">均速</span><span class="v">56.8 t/s</span></div>
+    </div>
+  </div></div>
+  <p class="note">同一行内"标签最左、数值最右、justify-between"—— 每行的数值右缘天然共线,键永远贴左,不存在任何对齐歧义。上三行/下三行用细线分组。</p>
+</div>
+
+<!-- ⑦ -->
+<div class="card-wrap">
+  <h2><span class="no">⑦</span> HUD 战术风(角标格)</h2>
+  <div class="desktop"><div class="hud"><div class="base">
+    <div class="st-row"><span class="pulse"></span>空闲<span class="mdl num">GLM-5.3</span></div>
+    <div class="hero"><span class="n num">~24.3</span><span class="u num">tok/s</span><span class="today num">1.2B<small>今日</small></span></div>
+    <div class="hud-grid num">
+      <div class="hud-cell"><div class="k">IN/OUT</div><div class="v">435.9M<small>/575K</small></div></div>
+      <div class="hud-cell"><div class="k">CACHE</div><div class="v">95.01<small>%</small></div></div>
+      <div class="hud-cell"><div class="k">TTF/TOT</div><div class="v">3.0<small>/7.2s</small></div></div>
+      <div class="hud-cell"><div class="k">BURN</div><div class="v">28.5M<small>/h</small></div></div>
+      <div class="hud-cell"><div class="k">AVG.BURN</div><div class="v">132.6M<small>/h</small></div></div>
+      <div class="hud-cell"><div class="k">AVG.TPS</div><div class="v">56.8<small>t/s</small></div></div>
+    </div>
+  </div></div></div>
+  <p class="note">FUI 战术屏语法:每格独立细框+对角角标+青蓝辉光,键改英文大写窄字距。格子本身就是对齐装置 —— 六格完全同构,整齐感最强的一版,风格也最跳。</p>
+</div>
+
+<!-- ⑧ -->
+<div class="card-wrap">
+  <h2><span class="no">⑧</span> 小票/账单风(等宽两端+虚线)</h2>
+  <div class="desktop"><div class="tkt"><div class="base">
+    <div class="st-row"><span class="pulse"></span>空闲<span class="mdl num">GLM-5.3</span></div>
+    <div class="hero"><span class="n num">~24.3</span><span class="u num">tok/s</span><span class="today num">1.2B<small>今日</small></span></div>
+    <div class="tkt-grid num">
+      <div class="tkt-row"><span><span class="sym">›</span>入 / 出</span><span class="leader"></span><b>435.9M / 575K</b></div>
+      <div class="tkt-row"><span><span class="sym">›</span>缓存命中</span><span class="leader"></span><b>95.01%</b></div>
+      <div class="tkt-row"><span><span class="sym">›</span>首字 / 总耗时</span><span class="leader"></span><b>3.0 / 7.2s</b></div>
+      <div class="tkt-row tkt-total"><span><span class="sym">›</span>燃速</span><span class="leader"></span><b>28.5M/h</b></div>
+      <div class="tkt-row"><span><span class="sym">›</span>均燃</span><span class="leader"></span><b>132.6M/h</b></div>
+      <div class="tkt-row"><span><span class="sym">›</span>均速</span><span class="leader"></span><b>56.8 t/s</b></div>
+    </div>
+  </div></div></div>
+  <p class="note">收银小票语法:全等宽字体 + › 前缀 + 虚线引导 + 数值全部右对齐。等宽字体让每个字符都是同一格宽,"整齐"是字体自带的;燃速行上加分隔线做账目合计感。</p>
+</div>
+
+<!-- ⑨ -->
+<div class="card-wrap">
+  <h2><span class="no">⑨</span> 环形仪表阵列(图形化极端)</h2>
+  <div class="desktop"><div class="base">
+    <div class="st-row"><span class="pulse"></span>空闲<span class="mdl num">GLM-5.3</span></div>
+    <div class="hero"><span class="n num">~24.3</span><span class="u num">tok/s</span><span class="today num">1.2B<small>今日</small></span></div>
+    <div class="ring-grid num">
+      <div class="ring-cell"><div class="rp" style="--p:62%"><i><b>3.0/7.2</b></i></div><div class="rk">首字/总 s</div></div>
+      <div class="ring-cell"><div class="rp" style="--p:95%"><i><b>95.0</b></i></div><div class="rk">缓存命中%</div></div>
+      <div class="ring-cell"><div class="rp" style="--p:25%"><i><b>575K</b></i></div><div class="rk">出 / 435.9M</div></div>
+      <div class="ring-cell"><div class="rp" style="--p:34%"><i><b>28.5M</b></i></div><div class="rk">燃速/h</div></div>
+      <div class="ring-cell"><div class="rp" style="--p:48%"><i><b>132M</b></i></div><div class="rk">均燃/h</div></div>
+      <div class="ring-cell"><div class="rp" style="--p:70%"><i><b>56.8</b></i></div><div class="rk">均速 t/s</div></div>
+    </div>
+  </div></div>
+  <p class="note">和套餐环同语言:六格全部升格为小环(conic-gradient 实现,零绘制成本)。数值进环心、标签沉底。整齐感由圆的对称性保证 —— 最图形化也最"仪表",但文字可读性让位。</p>
+</div>
+
+<!-- ⑩ -->
+<div class="card-wrap">
+  <h2><span class="no">⑩</span> 编辑部表格风(大写小签+细分隔线)</h2>
+  <div class="desktop"><div class="ed"><div class="base">
+    <div class="st-row"><span class="pulse"></span>空闲<span class="mdl num">GLM-5.3</span></div>
+    <div class="hero"><span class="n num">~24.3</span><span class="u num">tok/s</span><span class="today num">1.2B<small>今日</small></span></div>
+    <div class="ed-grid num">
+      <div class="ed-cell"><div class="k">IN / OUT</div><div class="v">435.9M<em>/ 575K</em></div></div>
+      <div class="ed-cell"><div class="k">CACHE HIT</div><div class="v">95.01<em>%</em></div></div>
+      <div class="ed-cell"><div class="k">TTF / TOTAL</div><div class="v">3.0<em>/ 7.2s</em></div></div>
+      <div class="ed-cell"><div class="k">BURN</div><div class="v">28.5M<em>/h</em></div></div>
+      <div class="ed-cell"><div class="k">AVG BURN</div><div class="v">132.6M<em>/h</em></div></div>
+      <div class="ed-cell"><div class="k">AVG TPS</div><div class="v">56.8<em>t/s</em></div></div>
+    </div>
+  </div></div></div>
+  <p class="note">杂志数据页语法:键改 8px 大写宽字距小签(像图表脚注),单位斜体弱化,行间 1px 细线。整齐感来自"字体排印的层级",安静、编辑感强,和玻璃底最搭。</p>
+</div>
+
+</div>
+<p class="note" style="margin-top:24px">全部方案共享:①速度 hero 不动;②数值全部 tabular-nums;③深浅/发光强度已按现有玻璃底调校。①-③是"对齐语法"系(解决错位),④-⑥是"结构重构"系(绕开错位),⑦-⑩是"风格语言"系(整卡换气质)。Qt 全部可实现:点线/角标/环形 QPainter 直接画,无图片依赖。</p>
+</body>
+</html>

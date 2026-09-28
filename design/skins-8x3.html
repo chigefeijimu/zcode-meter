@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>zcode-meter · 8 皮肤 × 3 形态 原型集</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0b0e; color: #e8eaf0; padding: 28px; font-family: "Microsoft YaHei UI", sans-serif; }
+h1 { font-size: 18px; color: #fff; }
+.sub { font-size: 12px; color: #6b7080; margin: 6px 0 24px; }
+.skin { margin-bottom: 42px; }
+.skin > h2 { font-size: 14px; color: #8b8f9c; margin-bottom: 12px; }
+.skin > h2 .no { color: #5ad6a0; font-family: "Cascadia Code", Consolas, monospace; margin-right: 6px; }
+.stage { display: flex; gap: 26px; align-items: center; flex-wrap: wrap; border-radius: 12px; padding: 24px; min-height: 300px; }
+.stage.wallpaper { background:
+  radial-gradient(ellipse 300px 200px at 20% 30%, #2d5a3d 0%, transparent 60%),
+  radial-gradient(ellipse 280px 220px at 80% 70%, #1a3a5c 0%, transparent 55%),
+  linear-gradient(135deg, #1a2530, #252a35); }
+.stage.dark { background: #07080a; }
+.stage.light { background: linear-gradient(160deg, #b9b4a8, #a49f93); }
+.stage.dusk { background: linear-gradient(160deg, #3a3550, #241f38); }
+.stage.cream { background: linear-gradient(160deg, #ded8ca, #c9c2b2); }
+.taglbl { font-size: 9px; color: rgba(255,255,255,0.35); letter-spacing: 2px; margin-right: 10px; writing-mode: vertical-lr; }
+.num { font-family: "Cascadia Code", Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+/* ══════════════ ① 瑞士国际主义 ══════════════ */
+.sw-card { width: 300px; background: #f4f2ec; color: #141414; padding: 18px 20px 14px; border-radius: 4px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+.sw-top { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #141414; padding-bottom: 6px; }
+.sw-big { font-size: 46px; font-weight: 800; letter-spacing: -2px; line-height: 1; }
+.sw-big sup { font-size: 13px; font-weight: 600; letter-spacing: 0; }
+.sw-live { font-size: 9px; letter-spacing: 2px; font-weight: 700; }
+.sw-live i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #e2503c; margin-right: 4px; }
+.sw-r { display: grid; grid-template-columns: 1fr auto; padding: 4px 0; border-bottom: 1px solid rgba(20,20,20,0.12); align-items: baseline; }
+.sw-r .k { font-size: 8.5px; letter-spacing: 1.5px; text-transform: uppercase; color: #777; font-weight: 600; }
+.sw-r .v { font-size: 14px; font-weight: 700; }
+.sw-r .v em { font-style: normal; font-size: 9.5px; color: #999; font-weight: 500; }
+.sw-h { height: 30px; background: #f4f2ec; border-radius: 3px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  display: flex; align-items: center; gap: 14px; padding: 0 16px; color: #141414; }
+.sw-h .sp { font-size: 17px; font-weight: 800; }
+.sw-h .sp small { font-size: 9px; font-weight: 600; color: #888; }
+.sw-h .sep2 { width: 1px; height: 14px; background: rgba(20,20,20,0.2); }
+.sw-h .it { font-size: 10.5px; font-weight: 600; }
+.sw-h .it small { font-size: 8px; color: #999; font-weight: 500; margin-right: 3px; }
+.sw-v { width: 92px; background: #f4f2ec; border-radius: 3px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  padding: 10px 12px; color: #141414; text-align: center; }
+.sw-v .big { font-size: 26px; font-weight: 800; letter-spacing: -1px; line-height: 1; }
+.sw-v .u { font-size: 8px; letter-spacing: 2px; color: #999; margin-bottom: 6px; }
+.sw-v .r2 { border-top: 1px solid rgba(20,20,20,0.12); padding: 4px 0; }
+.sw-v .r2 .k { font-size: 7px; letter-spacing: 1px; color: #999; text-transform: uppercase; font-weight: 600; }
+.sw-v .r2 .v { font-size: 11.5px; font-weight: 700; }
+
+/* ══════════════ ② 琥珀 CRT ══════════════ */
+.crt2 { width: 300px; background: #100800; border-radius: 10px; padding: 16px 18px; color: #ffb000;
+  border: 2px solid #3a2a08; box-shadow: inset 0 0 40px rgba(255,176,0,0.06), 0 10px 40px rgba(0,0,0,0.6); position: relative; overflow: hidden; }
+.crt2::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(0deg, rgba(255,176,0,0.03) 0 1px, transparent 1px 3px); pointer-events: none; }
+.crt2 .hdr { font-size: 9px; letter-spacing: 2px; opacity: 0.7; margin-bottom: 6px; display: flex; justify-content: space-between; }
+.crt2 .huge { font-size: 38px; text-shadow: 0 0 12px rgba(255,176,0,0.5); line-height: 1; }
+.crt2 .huge small { font-size: 12px; }
+.crt2 table { width: 100%; margin-top: 8px; border-collapse: collapse; }
+.crt2 td { font-size: 11px; padding: 2px 0; border-bottom: 1px solid rgba(255,176,0,0.15); }
+.crt2 td:last-child { text-align: right; text-shadow: 0 0 8px rgba(255,176,0,0.4); }
+.crt2 td:first-child { opacity: 0.65; }
+.crt-h { height: 30px; background: #100800; border: 2px solid #3a2a08; border-radius: 6px; display: flex; align-items: center;
+  gap: 12px; padding: 0 14px; color: #ffb000; box-shadow: inset 0 0 20px rgba(255,176,0,0.05); position: relative; overflow: hidden; }
+.crt-h::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(0deg, rgba(255,176,0,0.03) 0 1px, transparent 1px 3px); pointer-events: none; }
+.crt-h .sp { font-size: 16px; text-shadow: 0 0 8px rgba(255,176,0,0.5); }
+.crt-h .sep2 { width: 1px; height: 14px; background: rgba(255,176,0,0.3); }
+.crt-h .it { font-size: 10px; opacity: 0.85; }
+.crt-h .it b { font-weight: 700; text-shadow: 0 0 6px rgba(255,176,0,0.4); }
+.crt-v { width: 96px; background: #100800; border: 2px solid #3a2a08; border-radius: 8px; padding: 12px 10px;
+  color: #ffb000; text-align: center; position: relative; overflow: hidden; }
+.crt-v::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(0deg, rgba(255,176,0,0.03) 0 1px, transparent 1px 3px); pointer-events: none; }
+.crt-v .big { font-size: 24px; text-shadow: 0 0 10px rgba(255,176,0,0.5); }
+.crt-v .u { font-size: 7px; letter-spacing: 2px; opacity: 0.6; }
+.crt-v .r2 { border-top: 1px solid rgba(255,176,0,0.2); margin-top: 5px; padding: 3px 0; font-size: 9.5px; }
+.crt-v .r2 .k { opacity: 0.6; font-size: 7.5px; }
+.crt-v .r2 .v { text-shadow: 0 0 6px rgba(255,176,0,0.4); }
+
+/* ══════════════ ③ 黑板粉笔 ══════════════ */
+.ck-card { width: 300px; background: linear-gradient(160deg, #2e3b34, #26332c 60%, #223028); border: 9px solid #7a5a38; border-radius: 6px;
+  padding: 14px 18px; color: #e8e6df; position: relative; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+.ck-card::before { content: ""; position: absolute; inset: 0; background:
+  radial-gradient(circle at 30% 20%, rgba(255,255,255,0.04), transparent 40%),
+  radial-gradient(circle at 70% 80%, rgba(255,255,255,0.03), transparent 40%); pointer-events: none; }
+.ck-ttl { font-size: 12px; letter-spacing: 3px; text-align: center; opacity: 0.85; border-bottom: 1px dashed rgba(232,230,223,0.3); padding-bottom: 5px; }
+.ck-sp { text-align: center; margin: 5px 0; }
+.ck-sp .n { font-size: 36px; font-family: "Segoe Print", "Comic Sans MS", cursive; color: #fff; text-shadow: 0 0 2px rgba(255,255,255,0.4); }
+.ck-sp .u { font-size: 10px; opacity: 0.6; }
+.ck-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; font-size: 11.5px; }
+.ck-it { display: flex; justify-content: space-between; gap: 6px; padding: 2.5px 0; border-bottom: 1px dashed rgba(232,230,223,0.18); white-space: nowrap; }
+.ck-it b { font-weight: 600; color: #ffe9a8; font-size: 10.5px; }
+.ck-h { height: 30px; background: linear-gradient(160deg, #2e3b34, #26332c); border: 6px solid #7a5a38; border-radius: 5px;
+  display: flex; align-items: center; gap: 12px; padding: 0 13px; color: #e8e6df; }
+.ck-h .sp { font-size: 15px; font-family: "Segoe Print", cursive; color: #fff; }
+.ck-h .it { font-size: 10px; }
+.ck-h .it b { color: #ffe9a8; font-weight: 600; }
+.ck-v { width: 96px; background: linear-gradient(160deg, #2e3b34, #26332c); border: 7px solid #7a5a38; border-radius: 5px;
+  padding: 12px 8px; color: #e8e6df; text-align: center; }
+.ck-v .big { font-size: 26px; font-family: "Segoe Print", cursive; color: #fff; }
+.ck-v .u { font-size: 7px; letter-spacing: 2px; opacity: 0.6; margin-bottom: 5px; }
+.ck-v .r2 { border-top: 1px dashed rgba(232,230,223,0.25); padding: 3px 0; font-size: 9.5px; }
+.ck-v .r2 b { color: #ffe9a8; font-weight: 600; }
+
+/* ══════════════ ④ 液态玻璃 ══════════════ */
+.lq-card { width: 300px; padding: 13px; border-radius: 26px; position: relative;
+  background: linear-gradient(150deg, rgba(255,255,255,0.16), rgba(255,255,255,0.05));
+  border: 1px solid rgba(255,255,255,0.25); box-shadow: 0 16px 48px rgba(0,0,0,0.4); overflow: hidden; }
+.lq-card .blob { position: absolute; border-radius: 50%; filter: blur(26px); opacity: 0.55; }
+.lq-card .b1 { width: 120px; height: 120px; background: #38bdf8; top: -28px; left: -18px; }
+.lq-card .b2 { width: 100px; height: 100px; background: #a78bfa; bottom: -18px; right: -10px; }
+.lq-card .in { position: relative; padding: 4px 6px; }
+.lq-sp { font-size: 36px; font-weight: 700; color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,0.3); }
+.lq-sp small { font-size: 11px; font-weight: 500; opacity: 0.75; }
+.lq-today { float: right; text-align: right; margin-top: 8px; }
+.lq-today .tv { font-size: 15px; color: #fff; font-weight: 700; }
+.lq-today .tk { font-size: 8px; color: rgba(255,255,255,0.6); }
+.lq-pills { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; clear: both; }
+.lq-pill { background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.2); border-radius: 14px; padding: 4px 9px; text-align: center; }
+.lq-pill .pk { font-size: 7.5px; color: rgba(255,255,255,0.6); }
+.lq-pill .pv { font-size: 12px; color: #fff; font-weight: 600; }
+.lq-h { height: 34px; border-radius: 18px; padding: 0 6px 0 14px; display: flex; align-items: center; gap: 5px;
+  background: linear-gradient(150deg, rgba(255,255,255,0.16), rgba(255,255,255,0.05));
+  border: 1px solid rgba(255,255,255,0.25); box-shadow: 0 8px 24px rgba(0,0,0,0.35); position: relative; overflow: hidden; }
+.lq-h .b { position: absolute; width: 60px; height: 60px; border-radius: 50%; filter: blur(18px); opacity: 0.5; }
+.lq-h .b1 { background: #38bdf8; left: 30px; top: -20px; } .lq-h .b2 { background: #a78bfa; right: 60px; bottom: -25px; }
+.lq-h .sp { font-size: 15px; font-weight: 700; color: #fff; position: relative; }
+.lq-h .pill { background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.2); border-radius: 12px;
+  padding: 1px 8px; font-size: 10px; color: #fff; position: relative; }
+.lq-h .pill small { opacity: 0.65; font-size: 8px; margin-right: 2px; }
+.lq-v { width: 104px; border-radius: 22px; padding: 14px 8px; text-align: center;
+  background: linear-gradient(150deg, rgba(255,255,255,0.16), rgba(255,255,255,0.05));
+  border: 1px solid rgba(255,255,255,0.25); box-shadow: 0 10px 30px rgba(0,0,0,0.4); position: relative; overflow: hidden; }
+.lq-v .b { position: absolute; width: 70px; height: 70px; border-radius: 50%; filter: blur(20px); opacity: 0.5; background: #38bdf8; top: -20px; left: 10px; }
+.lq-v .big { font-size: 24px; font-weight: 700; color: #fff; position: relative; }
+.lq-v .u { font-size: 7px; letter-spacing: 2px; color: rgba(255,255,255,0.6); margin-bottom: 6px; position: relative; }
+.lq-v .p2 { background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.2); border-radius: 12px; padding: 2px 0; margin: 3px 4px; position: relative; }
+.lq-v .p2 .pk { font-size: 6.5px; color: rgba(255,255,255,0.6); }
+.lq-v .p2 .pv { font-size: 10.5px; color: #fff; font-weight: 600; }
+
+/* ══════════════ ⑤ 工业机柜 ══════════════ */
+.ind-card { width: 300px; background: linear-gradient(160deg, #3a3f45, #23272c); border-radius: 14px; padding: 14px;
+  border: 1px solid #15181b; box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 12px 36px rgba(0,0,0,0.55); position: relative; }
+.screw { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #9aa2ab, #4a5058); }
+.ind-top { display: flex; justify-content: space-between; margin-bottom: 7px; }
+.ind-lamp { width: 9px; height: 9px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+.ind-lbl { font-size: 8px; letter-spacing: 2px; color: #9aa2ab; }
+.ind-readout { background: #101614; color: #7cf7b0; border-radius: 4px; padding: 5px 10px; font-size: 20px; letter-spacing: 1px;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.7); border: 1px solid #0a0f0d; }
+.ind-readout small { font-size: 10px; opacity: 0.8; }
+.ind-plate { background: linear-gradient(180deg, #c8b891, #b3a276); border-radius: 6px; padding: 7px 12px; color: #2b2620; margin-top: 9px;
+  box-shadow: inset 0 2px 6px rgba(0,0,0,0.25); }
+.ind-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; border-bottom: 1px solid rgba(43,38,32,0.15); }
+.ind-row:last-child { border-bottom: none; }
+.ind-g { display: flex; align-items: center; gap: 7px; }
+.ind-dial { width: 20px; height: 20px; border-radius: 50%; border: 3px solid #8a7d5c; position: relative;
+  background: conic-gradient(from 220deg, #7ad7ff var(--p,50%), #e8e0cc 0); }
+.ind-dial.g { background: conic-gradient(from 220deg, #4ade80 var(--p,50%), #e8e0cc 0); }
+.ind-dial.a { background: conic-gradient(from 220deg, #f0a832 var(--p,50%), #e8e0cc 0); }
+.ind-dial::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: #efe8d5; }
+.ind-k { font-size: 8px; letter-spacing: 1px; font-weight: 700; text-transform: uppercase; opacity: 0.75; }
+.ind-v { font-size: 12.5px; font-weight: 800; }
+.ind-h { height: 32px; background: linear-gradient(160deg, #3a3f45, #23272c); border-radius: 8px; display: flex; align-items: center;
+  gap: 10px; padding: 0 12px; border: 1px solid #15181b; box-shadow: inset 0 1px 0 rgba(255,255,255,0.1); }
+.ind-h .mini { background: #101614; color: #7cf7b0; border-radius: 3px; padding: 2px 8px; font-size: 13px; box-shadow: inset 0 1px 5px rgba(0,0,0,0.7); }
+.ind-h .lamp2 { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+.ind-h .it { font-size: 9.5px; color: #b9c2cb; }
+.ind-h .it b { color: #e8eef4; font-weight: 700; }
+.ind-v2 { width: 104px; background: linear-gradient(160deg, #3a3f45, #23272c); border-radius: 10px; padding: 12px 9px;
+  border: 1px solid #15181b; text-align: center; box-shadow: inset 0 1px 0 rgba(255,255,255,0.1); }
+.ind-v2 .ro { background: #101614; color: #7cf7b0; border-radius: 3px; padding: 4px 0; font-size: 17px; box-shadow: inset 0 2px 6px rgba(0,0,0,0.7); }
+.ind-v2 .r2 { border-top: 1px solid rgba(255,255,255,0.08); margin-top: 6px; padding: 3px 0; font-size: 9px; color: #b9c2cb; }
+.ind-v2 .r2 b { color: #e8eef4; }
+
+/* ══════════════ ⑥ 报纸头版 ══════════════ */
+.nw-card { width: 300px; background: #f7f3ea; color: #1a1a1a; padding: 13px 16px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+.nw-mast { border-bottom: 3px double #1a1a1a; padding-bottom: 4px; margin-bottom: 6px; text-align: center; }
+.nw-paper { font-family: Georgia, "Times New Roman", serif; font-size: 9.5px; letter-spacing: 3px; text-transform: uppercase; }
+.nw-date { font-size: 7.5px; color: #888; margin-top: 1px; }
+.nw-head { font-family: Georgia, serif; font-size: 27px; font-weight: 700; line-height: 1; margin: 4px 0; }
+.nw-head small { font-size: 11px; font-weight: 400; color: #555; }
+.nw-cols { column-count: 2; column-gap: 14px; column-rule: 1px solid rgba(0,0,0,0.15); }
+.nw-it { break-inside: avoid; padding: 2.5px 0; border-bottom: 1px dotted rgba(0,0,0,0.25); }
+.nw-it .k { font-size: 7.5px; letter-spacing: 1px; text-transform: uppercase; color: #a33; font-weight: 700; }
+.nw-it .v { font-size: 13px; font-weight: 700; font-family: Georgia, serif; }
+.nw-h { height: 34px; background: #f7f3ea; box-shadow: 0 8px 24px rgba(0,0,0,0.4); display: flex; align-items: center;
+  gap: 12px; padding: 0 14px; color: #1a1a1a; border-top: 3px solid #1a1a1a; border-bottom: 1px solid #1a1a1a; }
+.nw-h .sp { font-family: Georgia, serif; font-size: 16px; font-weight: 700; }
+.nw-h .it { font-size: 9.5px; }
+.nw-h .it small { font-size: 7px; letter-spacing: 1px; text-transform: uppercase; color: #a33; font-weight: 700; display: block; }
+.nw-h .it b { font-family: Georgia, serif; font-size: 11px; }
+.nw-h .vsp { width: 1px; height: 18px; background: rgba(0,0,0,0.2); }
+.nw-v { width: 104px; background: #f7f3ea; box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 10px 10px 8px; color: #1a1a1a; text-align: center;
+  border-top: 3px solid #1a1a1a; }
+.nw-v .paper { font-family: Georgia, serif; font-size: 7px; letter-spacing: 2px; border-bottom: 1px solid #1a1a1a; padding-bottom: 3px; }
+.nw-v .big { font-family: Georgia, serif; font-size: 24px; font-weight: 700; margin: 4px 0; }
+.nw-v .it { border-top: 1px dotted rgba(0,0,0,0.25); padding: 2.5px 0; }
+.nw-v .it .k { font-size: 6.5px; letter-spacing: 1px; text-transform: uppercase; color: #a33; font-weight: 700; }
+.nw-v .it .v { font-size: 11px; font-weight: 700; font-family: Georgia, serif; }
+
+/* ══════════════ ⑦ 蒸汽波 ══════════════ */
+.vp-card { width: 300px; border-radius: 12px; overflow: hidden; position: relative; box-shadow: 0 14px 44px rgba(0,0,0,0.55);
+  background: linear-gradient(180deg, #2b1055 0%, #7b2d8b 40%, #ff6b9d 62%, #ff9a5a 70%, #1a0b2e 70.5%); padding: 14px; color: #fff; }
+.vp-sun { width: 90px; height: 90px; border-radius: 50%; margin: 0 auto;
+  background: linear-gradient(180deg, #ffe25a, #ff6b9d 55%, #ff5a5a);
+  mask: repeating-linear-gradient(180deg, #000 0 8px, transparent 8px 11px), linear-gradient(#000,#000);
+  mask-composite: intersect; -webkit-mask-composite: source-in; }
+.vp-sp { text-align: center; font-size: 34px; font-weight: 800; letter-spacing: 2px; margin-top: -36px; position: relative;
+  color: #fff; text-shadow: 3px 3px 0 #ff2e97, -2px -2px 0 #00e5ff; font-style: italic; }
+.vp-sp small { display: block; font-size: 9px; letter-spacing: 5px; opacity: 0.8; font-style: normal; }
+.vp-grid { position: absolute; left: 0; right: 0; bottom: 0; height: 30%;
+  background: repeating-linear-gradient(90deg, rgba(0,229,255,0.5) 0 1px, transparent 1px 26px),
+              repeating-linear-gradient(0deg, rgba(0,229,255,0.5) 0 1px, transparent 1px 15px),
+              linear-gradient(180deg, transparent, #0d0518);
+  transform: perspective(120px) rotateX(48deg) scale(1.4); transform-origin: bottom; }
+.vp-stats { position: relative; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; margin-top: 10px; }
+.vp-st { background: rgba(13,5,24,0.72); border: 1px solid rgba(0,229,255,0.4); padding: 3px 6px; }
+.vp-st .k { font-size: 7px; color: #00e5ff; letter-spacing: 1px; }
+.vp-st .v { font-size: 11.5px; font-weight: 700; text-shadow: 0 0 6px rgba(0,229,255,0.6); }
+.vp-h { height: 36px; border-radius: 8px; position: relative; overflow: hidden; display: flex; align-items: center; gap: 7px; padding: 0 12px;
+  background: linear-gradient(90deg, #2b1055, #7b2d8b 55%, #ff6b9d); border: 1px solid rgba(0,229,255,0.5);
+  box-shadow: 0 0 18px rgba(255,46,151,0.35); color: #fff; }
+.vp-h::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 8px;
+  background: repeating-linear-gradient(90deg, rgba(0,229,255,0.5) 0 1px, transparent 1px 18px);
+  transform: perspective(40px) rotateX(40deg) scale(1.3); transform-origin: bottom; }
+.vp-h .sp { font-size: 17px; font-weight: 800; font-style: italic; text-shadow: 2px 2px 0 #ff2e97; position: relative; }
+.vp-h .st { background: rgba(13,5,24,0.72); border: 1px solid rgba(0,229,255,0.4); padding: 1px 6px; position: relative; }
+.vp-h .st .k { font-size: 6px; color: #00e5ff; letter-spacing: 1px; display: block; }
+.vp-h .st .v { font-size: 9.5px; font-weight: 700; }
+.vp-v { width: 108px; border-radius: 10px; position: relative; overflow: hidden; text-align: center; padding: 12px 6px 14px; color: #fff;
+  background: linear-gradient(180deg, #2b1055 0%, #7b2d8b 55%, #1a0b2e 100%); border: 1px solid rgba(0,229,255,0.5);
+  box-shadow: 0 0 18px rgba(255,46,151,0.35); }
+.vp-v .sun2 { width: 46px; height: 46px; border-radius: 50%; margin: 0 auto;
+  background: linear-gradient(180deg, #ffe25a, #ff6b9d 60%, #ff5a5a);
+  mask: repeating-linear-gradient(180deg, #000 0 5px, transparent 5px 7px), linear-gradient(#000,#000);
+  mask-composite: intersect; -webkit-mask-composite: source-in; }
+.vp-v .sp { font-size: 21px; font-weight: 800; font-style: italic; text-shadow: 2px 2px 0 #ff2e97; margin-top: -16px; position: relative; }
+.vp-v .st { background: rgba(13,5,24,0.72); border: 1px solid rgba(0,229,255,0.4); padding: 2px 0; margin: 4px 4px 0; position: relative; }
+.vp-v .st .k { font-size: 6px; color: #00e5ff; letter-spacing: 1px; }
+.vp-v .st .v { font-size: 10px; font-weight: 700; }
+
+/* ══════════════ ⑧ 工程蓝图 ══════════════ */
+.bp-card { width: 300px; background:
+  repeating-linear-gradient(0deg, transparent, transparent 19px, rgba(255,255,255,0.09) 19px, rgba(255,255,255,0.09) 20px),
+  repeating-linear-gradient(90deg, transparent, transparent 19px, rgba(255,255,255,0.09) 19px, rgba(255,255,255,0.09) 20px),
+  linear-gradient(160deg, #0d3b66, #082c4e); border: 1px solid rgba(255,255,255,0.25); border-radius: 4px;
+  padding: 14px 16px; color: #dcecff; box-shadow: 0 12px 40px rgba(0,0,0,0.5); position: relative; }
+.bp-stamp { position: absolute; top: 9px; right: 11px; border: 1.5px solid rgba(220,236,255,0.5); padding: 1px 6px;
+  font-size: 7.5px; letter-spacing: 2px; color: rgba(220,236,255,0.7); transform: rotate(4deg); }
+.bp-title { font-size: 10px; letter-spacing: 2px; border-bottom: 1.5px solid rgba(220,236,255,0.4); padding-bottom: 5px; }
+.bp-draw { display: flex; align-items: baseline; gap: 8px; margin: 8px 0 4px; }
+.bp-dim { font-size: 32px; font-weight: 700; }
+.bp-dim small { font-size: 10px; opacity: 0.7; }
+.bp-arrow { flex: 1; height: 8px; position: relative; border-top: 1px solid rgba(220,236,255,0.6); border-bottom: 1px solid rgba(220,236,255,0.6); }
+.bp-arrow::before, .bp-arrow::after { content: ""; position: absolute; top: -4px; width: 1px; height: 16px; background: rgba(220,236,255,0.6); }
+.bp-arrow::before { left: 0; } .bp-arrow::after { right: 0; }
+.bp-specs { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin-top: 6px; font-size: 10.5px; }
+.bp-specs .sk { border-left: 2px solid rgba(220,236,255,0.4); padding-left: 6px; opacity: 0.7; }
+.bp-specs .sv { }
+.bp-h { height: 34px; background:
+  repeating-linear-gradient(90deg, transparent, transparent 19px, rgba(255,255,255,0.08) 19px, rgba(255,255,255,0.08) 20px),
+  linear-gradient(90deg, #0d3b66, #082c4e); border: 1px solid rgba(255,255,255,0.25); border-radius: 3px;
+  display: flex; align-items: center; gap: 10px; padding: 0 12px; color: #dcecff; }
+.bp-h .sp { font-size: 15px; font-weight: 700; }
+.bp-h .sp small { font-size: 8px; opacity: 0.7; }
+.bp-h .it { font-size: 9px; border-left: 2px solid rgba(220,236,255,0.4); padding-left: 6px; }
+.bp-h .it .k { opacity: 0.6; font-size: 6.5px; letter-spacing: 1px; display: block; }
+.bp-h .it .v { font-weight: 700; font-size: 10.5px; }
+.bp-v { width: 106px; background:
+  repeating-linear-gradient(0deg, transparent, transparent 15px, rgba(255,255,255,0.08) 15px, rgba(255,255,255,0.08) 16px),
+  linear-gradient(160deg, #0d3b66, #082c4e); border: 1px solid rgba(255,255,255,0.25); border-radius: 4px;
+  padding: 12px 8px; color: #dcecff; text-align: center; }
+.bp-v .big { font-size: 24px; font-weight: 700; }
+.bp-v .u { font-size: 7px; letter-spacing: 2px; opacity: 0.65; border-bottom: 1px solid rgba(220,236,255,0.4); padding-bottom: 4px; }
+.bp-v .r2 { border-left: 2px solid rgba(220,236,255,0.4); padding: 2px 4px; margin-top: 4px; text-align: left; font-size: 9.5px; }
+.bp-v .r2 .k { opacity: 0.6; font-size: 7px; display: block; }
+.bp-v .r2 .v { font-weight: 700; }
+</style>
+</head>
+<body>
+<h1>zcode-meter · 8 皮肤 × 3 形态</h1>
+<p class="sub">8 款皮肤的 卡片 / 横条(贴顶底) / 竖条(贴左右) 三形态配套原型。做成皮肤切换后,横竖条随皮肤同语言衍生,段开关/贴边几何机制不变。</p>
+
+<!-- ① 瑞士 -->
+<div class="skin">
+  <h2><span class="no">皮肤①</span> 瑞士国际主义(浅色)</h2>
+  <div class="stage cream">
+    <div class="sw-card">
+      <div class="sw-top"><span class="sw-big">24.3<sup> tok/s</sup></span><span class="sw-live"><i></i>LIVE</span></div>
+      <div class="num">
+        <div class="sw-r"><span class="k">Today · 今日</span><span class="v">1.2B <em>¥2489</em></span></div>
+        <div class="sw-r"><span class="k">In / Out</span><span class="v">435.9M <em>/ 575K</em></span></div>
+        <div class="sw-r"><span class="k">Cache</span><span class="v">95.01<em>%</em></span></div>
+        <div class="sw-r"><span class="k">TTF / Total</span><span class="v">3.0 <em>/ 7.2s</em></span></div>
+        <div class="sw-r"><span class="k">Burn</span><span class="v">28.5M <em>/h</em></span></div>
+        <div class="sw-r"><span class="k">Avg</span><span class="v">56.8 <em>t/s</em></span></div>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">H-BAR</span><div class="sw-h num">
+        <span class="sp">24.3<small> t/s</small></span><span class="sep2"></span>
+        <span class="it"><small>今日</small>1.2B ¥2489</span><span class="sep2"></span>
+        <span class="it"><small>燃</small>28.5M/h</span><span class="sep2"></span>
+        <span class="it"><small>剩</small>87%</span>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">V-BAR</span><div class="sw-v num">
+        <div class="big">24.3</div><div class="u">TOK/S · LIVE</div>
+        <div class="r2"><div class="k">TODAY</div><div class="v">1.2B</div></div>
+        <div class="r2"><div class="k">CACHE</div><div class="v">95.0%</div></div>
+        <div class="r2"><div class="k">BURN</div><div class="v">28.5M/h</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ② CRT -->
+<div class="skin">
+  <h2><span class="no">皮肤②</span> 琥珀 CRT 终端</h2>
+  <div class="stage dark">
+    <div class="crt2 num">
+      <div class="hdr"><span>ZCODE-METER v0.8</span><span>TTY-01</span></div>
+      <div class="huge">24.3<small> tok/s</small></div>
+      <table>
+        <tr><td>今日 TODAY</td><td>1.2B / ¥2489</td></tr>
+        <tr><td>入/出 IN-OUT</td><td>435.9M / 575K</td></tr>
+        <tr><td>命中 CACHE</td><td>95.01%</td></tr>
+        <tr><td>首字/总 TTF</td><td>3.0s / 7.2s</td></tr>
+        <tr><td>燃速 BURN</td><td>28.5M/h</td></tr>
+        <tr><td>均速 AVG</td><td>56.8 t/s</td></tr>
+      </table>
+    </div>
+    <div>
+      <span class="taglbl">H-BAR</span><div class="crt-h num">
+        <span class="sp">24.3</span><span class="sep2"></span>
+        <span class="it">今 <b>1.2B ¥2489</b></span><span class="sep2"></span>
+        <span class="it">燃 <b>28.5M/h</b></span><span class="sep2"></span>
+        <span class="it">剩 <b>87% 2h18m</b></span>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">V-BAR</span><div class="crt-v num">
+        <div class="big">24.3</div><div class="u">TOK/S</div>
+        <div class="r2"><div class="k">TODAY</div><div class="v">1.2B</div></div>
+        <div class="r2"><div class="k">CACHE</div><div class="v">95.0%</div></div>
+        <div class="r2"><div class="k">BURN</div><div class="v">28.5M/h</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ③ 黑板 -->
+<div class="skin">
+  <h2><span class="no">皮肤③</span> 黑板粉笔</h2>
+  <div class="stage wallpaper">
+    <div class="ck-card">
+      <div class="ck-ttl">今 日 账 目</div>
+      <div class="ck-sp"><span class="n">24.3</span> <span class="u">tok/s</span></div>
+      <div class="ck-grid num">
+        <div class="ck-it"><span>入 / 出</span><b>435.9M/575K</b></div>
+        <div class="ck-it"><span>缓存命中</span><b>95.01%</b></div>
+        <div class="ck-it"><span>首字/总</span><b>3.0/7.2s</b></div>
+        <div class="ck-it"><span>燃速</span><b>28.5M/h</b></div>
+        <div class="ck-it"><span>均燃</span><b>132.6M/h</b></div>
+        <div class="ck-it"><span>均速</span><b>56.8 t/s</b></div>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">H-BAR</span><div class="ck-h num">
+        <span class="sp">24.3</span>
+        <span class="it">今 <b>1.2B</b></span>
+        <span class="it">燃 <b>28.5M/h</b></span>
+        <span class="it">剩 <b>87%</b></span>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">V-BAR</span><div class="ck-v num">
+        <div class="big">24.3</div><div class="u">TOK/S</div>
+        <div class="r2">今 <b>1.2B</b></div>
+        <div class="r2">燃 <b>28.5M/h</b></div>
+        <div class="r2">剩 <b>87%</b></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ④ 液态玻璃 -->
+<div class="skin">
+  <h2><span class="no">皮肤④</span> 液态玻璃药丸</h2>
+  <div class="stage dark">
+    <div class="lq-card">
+      <div class="blob b1"></div><div class="blob b2"></div>
+      <div class="in">
+        <div class="lq-sp num">24.3<small> tok/s</small></div>
+        <div class="lq-today num"><div class="tv">1.2B · ¥2489</div><div class="tk">今日</div></div>
+        <div class="lq-pills num">
+          <div class="lq-pill"><div class="pk">入 / 出</div><div class="pv">435.9M/575K</div></div>
+          <div class="lq-pill"><div class="pk">缓存命中</div><div class="pv">95.01%</div></div>
+          <div class="lq-pill"><div class="pk">首字 / 总</div><div class="pv">3.0/7.2s</div></div>
+          <div class="lq-pill"><div class="pk">燃速</div><div class="pv">28.5M/h</div></div>
+          <div class="lq-pill"><div class="pk">均燃</div><div class="pv">132.6M/h</div></div>
+          <div class="lq-pill"><div class="pk">均速</div><div class="pv">56.8 t/s</div></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">H-BAR</span><div class="lq-h num">
+        <div class="b b1"></div><div class="b b2"></div>
+        <span class="sp">24.3</span>
+        <span class="pill"><small>今日</small>1.2B</span>
+        <span class="pill"><small>燃</small>28.5M/h</span>
+        <span class="pill"><small>剩</small>87%</span>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">V-BAR</span><div class="lq-v num">
+        <div class="b"></div>
+        <div class="big">24.3</div><div class="u">TOK/S</div>
+        <div class="p2"><div class="pk">今日</div><div class="pv">1.2B</div></div>
+        <div class="p2"><div class="pk">燃速</div><div class="pv">28.5M/h</div></div>
+        <div class="p2"><div class="pk">剩余</div><div class="pv">87%</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ⑤ 工业 -->
+<div class="skin">
+  <h2><span class="no">皮肤⑤</span> 工业机柜</h2>
+  <div class="stage dark">
+    <div class="ind-card">
+      <div class="screw" style="top:7px;left:7px"></div><div class="screw" style="top:7px;right:7px"></div>
+      <div class="screw" style="bottom:7px;left:7px"></div><div class="screw" style="bottom:7px;right:7px"></div>
+      <div class="ind-top"><span class="ind-lamp"></span><span class="ind-lbl">SYSTEM NOMINAL</span></div>
+      <div class="ind-readout num">24.3 <small>tok/s</small></div>
+      <div class="ind-plate num">
+        <div class="ind-row"><span class="ind-g"><span class="ind-dial g" style="--p:90%"></span><span class="ind-k">Cache 命中</span></span><span class="ind-v">95.01%</span></div>
+        <div class="ind-row"><span class="ind-g"><span class="ind-dial" style="--p:55%"></span><span class="ind-k">In / Out</span></span><span class="ind-v">435.9M/575K</span></div>
+        <div class="ind-row"><span class="ind-g"><span class="ind-dial a" style="--p:30%"></span><span class="ind-k">TTF / Total</span></span><span class="ind-v">3.0/7.2s</span></div>
+        <div class="ind-row"><span class="ind-g"><span class="ind-dial a" style="--p:40%"></span><span class="ind-k">Burn 燃速</span></span><span class="ind-v">28.5M/h</span></div>
+        <div class="ind-row"><span class="ind-g"><span class="ind-dial a" style="--p:60%"></span><span class="ind-k">Avg 均速</span></span><span class="ind-v">56.8 t/s</span></div>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">H-BAR</span><div class="ind-h num">
+        <span class="lamp2"></span>
+        <span class="mini">24.3</span>
+        <span class="it">今日 <b>1.2B</b></span>
+        <span class="it">燃 <b>28.5M/h</b></span>
+        <span class="it">剩 <b>87%</b></span>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">V-BAR</span><div class="ind-v2 num">
+        <div class="ro">24.3</div>
+        <div class="r2">今日 <b>1.2B</b></div>
+        <div class="r2">燃 <b>28.5M/h</b></div>
+        <div class="r2">剩 <b>87%</b></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ⑥ 报纸 -->
+<div class="skin">
+  <h2><span class="no">皮肤⑥</span> 报纸头版(浅色)</h2>
+  <div class="stage light">
+    <div class="nw-card">
+      <div class="nw-mast"><div class="nw-paper">The Meter Times</div><div class="nw-date">今日号 · 第 1024 期</div></div>
+      <div class="nw-head num">24.3 <small>tok/s — 持续输出中</small></div>
+      <div class="nw-cols num">
+        <div class="nw-it"><div class="k">入 / 出</div><div class="v">435.9M / 575K</div></div>
+        <div class="nw-it"><div class="k">缓存命中</div><div class="v">95.01%</div></div>
+        <div class="nw-it"><div class="k">首字 / 总</div><div class="v">3.0 / 7.2s</div></div>
+        <div class="nw-it"><div class="k">燃速</div><div class="v">28.5M/h</div></div>
+        <div class="nw-it"><div class="k">均燃</div><div class="v">132.6M/h</div></div>
+        <div class="nw-it"><div class="k">均速</div><div class="v">56.8 t/s</div></div>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">H-BAR</span><div class="nw-h num">
+        <span class="sp">24.3 t/s</span><span class="vsp"></span>
+        <span class="it"><small>今日</small><b>1.2B</b>&nbsp;&nbsp;<b style="color:#777">¥2489</b></span><span class="vsp"></span>
+        <span class="it"><small>燃速</small><b>28.5M/h</b></span><span class="vsp"></span>
+        <span class="it"><small>剩余</small><b>87%</b></span>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">V-BAR</span><div class="nw-v num">
+        <div class="paper">METER TIMES</div>
+        <div class="big">24.3</div>
+        <div class="it"><div class="k">今日</div><div class="v">1.2B</div></div>
+        <div class="it"><div class="k">燃速</div><div class="v">28.5M/h</div></div>
+        <div class="it"><div class="k">剩余</div><div class="v">87%</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ⑦ 蒸汽波 -->
+<div class="skin">
+  <h2><span class="no">皮肤⑦</span> 蒸汽波落日</h2>
+  <div class="stage dark">
+    <div class="vp-card">
+      <div class="vp-sun"></div>
+      <div class="vp-sp num">24.3<small>TOK / S</small></div>
+      <div class="vp-stats num">
+        <div class="vp-st"><div class="k">IN/OUT</div><div class="v">435.9M</div></div>
+        <div class="vp-st"><div class="k">CACHE</div><div class="v">95.01%</div></div>
+        <div class="vp-st"><div class="k">TTF/TOT</div><div class="v">3.0/7.2</div></div>
+        <div class="vp-st"><div class="k">BURN</div><div class="v">28.5M/h</div></div>
+        <div class="vp-st"><div class="k">AVG.BURN</div><div class="v">132.6M</div></div>
+        <div class="vp-st"><div class="k">AVG.TPS</div><div class="v">56.8</div></div>
+      </div>
+      <div class="vp-grid"></div>
+    </div>
+    <div>
+      <span class="taglbl">H-BAR</span><div class="vp-h num">
+        <span class="sp">24.3</span>
+        <span class="st"><span class="k">今日</span><span class="v">1.2B</span></span>
+        <span class="st"><span class="k">燃</span><span class="v">28.5M/h</span></span>
+        <span class="st"><span class="k">剩</span><span class="v">87% 2h18m</span></span>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">V-BAR</span><div class="vp-v num">
+        <div class="sun2"></div>
+        <div class="sp">24.3</div>
+        <div class="st"><div class="k">TODAY</div><div class="v">1.2B</div></div>
+        <div class="st"><div class="k">BURN</div><div class="v">28.5M/h</div></div>
+        <div class="st"><div class="k">LEFT</div><div class="v">87%</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ⑧ 蓝图 -->
+<div class="skin">
+  <h2><span class="no">皮肤⑧</span> 工程蓝图</h2>
+  <div class="stage dark">
+    <div class="bp-card num">
+      <div class="bp-stamp">FIG. 08-B</div>
+      <div class="bp-title">THROUGHPUT — 瞬时吞吐视图</div>
+      <div class="bp-draw"><span class="bp-dim">24.3<small> tok/s</small></span><span class="bp-arrow"></span></div>
+      <div class="bp-specs">
+        <span class="sk">入 / 出</span><span class="sv">435.9M / 575K</span>
+        <span class="sk">缓存命中</span><span class="sv">95.01%</span>
+        <span class="sk">首字 / 总</span><span class="sv">3.0s / 7.2s</span>
+        <span class="sk">燃速</span><span class="sv">28.5M/h</span>
+        <span class="sk">均燃</span><span class="sv">132.6M/h</span>
+        <span class="sk">均速</span><span class="sv">56.8 t/s</span>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">H-BAR</span><div class="bp-h num">
+        <span class="sp">24.3<small> t/s</small></span>
+        <span class="it"><span class="k">TODAY</span><span class="v">1.2B ¥2489</span></span>
+        <span class="it"><span class="k">BURN</span><span class="v">28.5M/h</span></span>
+        <span class="it"><span class="k">LEFT</span><span class="v">87% 2h18m</span></span>
+      </div>
+    </div>
+    <div>
+      <span class="taglbl">V-BAR</span><div class="bp-v num">
+        <div class="big">24.3</div><div class="u">TOK/S · FIG.08</div>
+        <div class="r2"><span class="k">TODAY</span><span class="v">1.2B</span></div>
+        <div class="r2"><span class="k">BURN</span><span class="v">28.5M/h</span></div>
+        <div class="r2"><span class="k">LEFT</span><span class="v">87%</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

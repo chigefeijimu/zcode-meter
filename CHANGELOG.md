@@ -2,6 +2,56 @@
 
 ## v0.8.0 (未发布)
 
+- **皮肤系统:九款换肤即时切换+持久化(2026-09-28,spec=`design/skins-8x3.html`
+  定稿)**:右键菜单「显示内容」之后新增「皮肤」子菜单,九项单选打勾互斥
+  (玻璃仪表(默认) + 瑞士国际主义/琥珀 CRT 终端/黑板粉笔/液态玻璃药丸/
+  工业机柜/报纸头版/蒸汽波落日/工程蓝图),点击**即时生效**(按当前形态重建
+  ——未贴边复刻 _unset_dock 的『先 layout().activate() 再 setGeometry』防钳宽
+  纪律,贴边走 _build_bar+_apply_dock_geometry 路径)并经 `save_config`
+  持久化(zm_config.json 新可选键 `skin`,白名单外一律回 glass、选玻璃整键
+  省略——与 `quota_refresh="auto"` 同纪律,存量文件零迁移;ZM_NO_STATE/
+  --verify 守卫下静默跳过)。**纯展示层零口径回归**:三形态信息集恒等于玻璃
+  全量字段(HTML 各皮肤省略的字段不裁剪),全局吞吐/今日用量/金额/燃速等
+  全部统计口径一字不动。新模块 `skins.py`(纯数据+绘制,仅 import QtGui,
+  严禁 import app/data_engine 防循环导入):SkinDef 注册表(palette/radius
+  {卡,横,竖}/spark/pulse/ring/sep/contrast_bg{卡,横,竖}/today_cost_sep/
+  字族/deco),QSS 由统一模板渲染全部 objectName selector(逐 selector 覆盖,
+  防浅色皮肤上默认黑/白字不可读),glass 的 qss/qss_bar 与现 QSS/QSS_BAR
+  **逐位相等**(既有玻璃零漂移,qss_bar 沿用同一 replace 派生链);8 款 deco
+  全部纯 QPainter 无图片依赖(CRT 扫描线、黑板木框+粉笔灰、液态玻璃
+  QRadialGradient 模拟 blur 双 blob、蓝图 19-20px 双向网格、工业渐变+四角
+  螺丝+绿灯、蒸汽波 QPainterPath 条纹模拟 mask-composite 落日太阳+青色透视
+  网格、瑞士红点 LIVE、报纸奶白方角双栏)。三处定稿微调:黑板卡入/出同一行、
+  液态玻璃 6 只等大药丸 3 列 2 行、报纸横条今日量与金额间**双空格档**
+  (经 `today_cost_sep` 落地,玻璃恒单空格故既有 today 文案断言零改动)。
+  浅色可读性机器闸(test_stress):九皮肤 palette 全键 QColor 可解析守卫 +
+  WCAG 对比度断言(字段文本≥4.5:1/主数字帽标大字≥3:1,contrast_bg 钉死=
+  承载字段文本面的真实底色——蒸汽波=统计暗格合成底、工业=readout 暗屏、
+  液态玻璃=药丸合成底,亮装饰带不得充当 contrast_bg)。渲染矩阵工具
+  `findings/render_skins_matrix.py`(9 皮肤×3 形态 QImage 直出 PNG,避
+  GDI BGRA 通道互换伪色坑)+瑞士/报纸双壁纸合成对比图;README 交互表/
+  配置节/架构树/人工目视清单同步。**横条行高对一切皮肤同上限**(回归翻车
+  修复):高瘦字族(Segoe Print 14px 行高 24 vs 玻璃 Cascadia 16,黑板粉笔;
+  多出 8px 是内部 leading)把横条抬到 40px 破『横高≤34』—— 横条 QLabel
+  构造后行盒统一钉**玻璃缺省字族**行高(14px→16/12px→14,经 mk_mono 缺省
+  运行期量取随缺省自演进;墨迹实测 Segoe Print 14px≤13/12px≤12,行盒余量
+  吃得下不裁字形),_bar_size 聚合侧同步按 maximumHeight 钳(QLabel.
+  sizeHint() 不随 setFixedHeight 变,实测仍报 24;未钉件 max=
+  QWIDGETSIZE_MAX 原值直过,玻璃输出逐位不变)。**6 处 palette 对比度微调
+  由验收票(T5)落地**(T4 定稿值未过 WCAG 闸:字段文本档≥4.5/faint 微标签
+  档≥3.0,闸口径见 test_stress T5 组注释):瑞士 faint `#999999→#8a8a8a`
+  (2.54→3.08)、CRT faint `#7b5400→#8a5e00`(2.94→3.48)、CRT/工业/报纸/
+  蓝图 四款 half α `153→170`(4.41/4.37/4.41/4.48 → 5.28/5.14/5.35/5.16,
+  skins.py 逐处注释新旧值与实测比值;warn 不进闸=唯一消费者 plan_lbl 恒被
+  tier 内联覆盖,tier 三色不进闸=nonGoal 全局钉死)
+- **设置保存丢键修复(2026-09-28,潜伏 bug 修复)**:`_apply_config` 落盘前
+  对入参 cfg 补挂 `bar_segments`(恒)与 `skin`(非 glass 时)——此前设置窗
+  `_parse_input` 只造四键 cfg 直接 save_config,save_config 白名单重建只写
+  输入携带的键,先在菜单里自定义过显示内容(或皮肤)再用设置窗保存,已存
+  `bar_segments`/`skin` 会被**静默抹掉**、重启即回默认(评审脚本复现实证:
+  文件键从 4 掉回 3);皮肤加键后丢失面翻倍,故随皮肤系统一并修复。
+  test_stress 新增 monkeypatch save_config 捕参断言:cfg 恒含 bar_segments
+  且非 glass 时含 skin,不受设置窗四键输入影响
 - **竖条收窄(2026-09-28,用户反馈『边界再收窄一点』)**:BAR_V_W 116→104(内容宽 88,实测最宽 k 行『燃速 · 均129.7M』=67、套餐行含倒计时~80 均容);vsep 宽改随定宽派生 BAR_V_W−32(84→72,不再钉死);stress 定宽断言 116→104 同步
 - **grid 末列标题右对齐(2026-09-28,用户反馈『首/总、均速标题右移与数值开头对齐』)**:值改右对齐后其开头随内容浮动,列头仍贴左则视觉错位 —— 『⏱ 首/总』『均速』两个 k 标签同步右对齐(与对应值同右缘,开头即对齐)
 - **贴边条自定义显示内容(2026-09-28,用户提议+方案拍板)**:右键菜单新增「显示内容」子菜单,按当前形态列出可勾选段(横=顶/底共用:速度曲线/套餐余量/重置倒计时/今日用量+金额/燃速·均燃;竖=左/右共用:速度曲线/今日消耗/套餐余量/燃速·均燃/会话入出),勾选即时重建条+几何重算+save_config 持久化(zm_config.json 新可选键 bar_segments,白名单交集保序规范化,缺省全开=存量文件零迁移)。速度数字+圆点恒显不进清单(全关=纯速度胶囊,合法形态);未选段不构建(F4 None 纪律逐件置 None),_apply_snapshot 消费分支逐件短路,分隔线随段未建不悬空;恒显语义退役(建了的段件才置位)。test_stress 新增 6 断言:关段件 None/速度恒显/满载数据宽度收敛(空快照下 spark/套餐/燃速本就隐藏,宽度断言须满载)/重建尺寸稳定/竖条关入出组

@@ -27,8 +27,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QLineF, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
-    QCursor, QColor, QDoubleValidator, QFont, QFontMetrics, QGuiApplication,
-    QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF, QRadialGradient,
+    QActionGroup, QCursor, QColor, QDoubleValidator, QFont, QFontMetrics,
+    QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF,
+    QRadialGradient,
 )
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout,
@@ -50,6 +51,9 @@ from zcode_meter.data_engine import (
     app_dir, dbg, format_age_zh, format_countdown_hm, load_config,
     quota_reset_event, save_config, trend_forecast,
 )
+# 皮肤注册表(v0.9 T2):skins 单向被本模块 import(它只拉 QtGui,严禁反向
+# import app/data_engine,循环导入红线见 skins.py 模块头)
+from zcode_meter import skins
 
 user32 = ctypes.windll.user32   # 模块级(snap 校正用;_win_polish 内的局部变量不动)
 
@@ -152,7 +156,7 @@ QPushButton#primary:hover {{ background: #6fe2b3; }}
 """
 
 
-def mk_mono(size: int, weight=None) -> QFont:
+def mk_mono(size: int, weight=None, families=None) -> QFont:
     """等宽字体构造(v0.8.0 T1/M1):Cascadia Code 主族 + Consolas 回退。
 
     - setFamilies 而非单 family 构造:未装 Cascadia 的机器(精简系统/
@@ -164,9 +168,13 @@ def mk_mono(size: int, weight=None) -> QFont:
     其余 label 经 _mk_lbl 自动继承。
     - size 是像素(setPixelSize):与预览 HTML 的 px 字号一一对应。
       v0.8.0 首版误用 setPointSize(pt=px×1.33),整卡放大 1.33 倍 →
-      高度溢出、grid 列宽爆掉,视觉对版时纠正(2026-09-28)。"""
+      高度溢出、grid 列宽爆掉,视觉对版时纠正(2026-09-28);
+    - families(v0.9 T2):皮肤字族替换(None=玻璃缺省 Cascadia+Consolas,
+      逐位零漂移)。_build_card/_build_bar 构造期传 self._skin() 值;
+      BarChart/历史窗不传皮肤 —— 继续消费玻璃常量(nonGoal 红线)。"""
     f = QFont()
-    f.setFamilies([C_MONO, "Consolas"])
+    f.setFamilies([C_MONO, "Consolas"] if families is None
+                  else list(families))
     f.setPixelSize(size)
     if weight is not None:
         f.setWeight(weight)
@@ -504,12 +512,15 @@ class SettingsDialog(QDialog):
 # 之后定义,直接引用常量而非字面 —— T1 若微调色值此处自动跟随。
 
 
-def paint_sparkline(painter: QPainter, rect: QRectF, values) -> None:
+def paint_sparkline(painter: QPainter, rect: QRectF, values,
+                    line: str | None = None, dot: str | None = None) -> None:
     """速度趋势折线(预览 :153-157):#60cdff 1.5px 圆帽折线 + 末端点
     #7ad7ff r=2。x_i = i/(n-1)*w;y 按 min-max 线性映射、上下各 1px inset;
     min==max 画水平中线(单值无趋势,不放大噪声);n<2 直接 return ——
     控件侧另有 <2 点隐藏兜底(UI 不闪空,风险表钉死),这里再防一层。
-    时间正序由数据层 fetch_recent_speeds 保证,函数不排序不反转。"""
+    时间正序由数据层 fetch_recent_speeds 保证,函数不排序不反转。
+    line/dot(v0.9 T2):皮肤折线/端点色,None=玻璃缺省 C_* 常量(零漂移)——
+    皮肤基建只加参不改缺省,玻璃渲染路径与旧版逐位一致。"""
     vals = [float(v) for v in (values or [])]
     n = len(vals)
     if n < 2:
@@ -523,28 +534,30 @@ def paint_sparkline(painter: QPainter, rect: QRectF, values) -> None:
         y = (rect.top() + h / 2 if hi == lo else
              rect.top() + 1 + (1 - (v - lo) / (hi - lo)) * (h - 2))
         pts.append(QPointF(x, y))
-    pen = QPen(QColor(C_ACCENT_DIM))
+    pen = QPen(QColor(line if line is not None else C_ACCENT_DIM))
     pen.setWidthF(1.5)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     painter.setPen(pen)
     painter.drawPolyline(QPolygonF(pts))
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(C_ACCENT))
+    painter.setBrush(QColor(dot if dot is not None else C_ACCENT))
     painter.drawEllipse(pts[-1], 2.0, 2.0)
 
 
-def paint_ring(painter: QPainter, rect: QRectF, pct: float, color) -> None:
+def paint_ring(painter: QPainter, rect: QRectF, pct: float, color,
+               base: QColor | None = None) -> None:
     """环形进度(预览 :81/:166-170):底环白.10 3.5px、前景 color 3.5px 圆帽,
     12 点起顺时针 pct%·360°,pct 钳 [0,100]。中心文字由调用方叠加
     (卡片 46px 中心 N% 11pt tier 色 / 横条 12px 无字)—— 函数只画环,
     文字与环的字号层级解耦。Qt 角度系 0°=3 点钟、正值逆时针:12 点=90°,
-    顺时针扫描即负 span。"""
+    顺时针扫描即负 span。base(v0.9 T2):皮肤底环色,None=玻璃缺省白.10。"""
     p = max(0.0, min(100.0, float(pct)))
     painter.setRenderHint(QPainter.Antialiasing)
     # 内缩 stroke/2(≈2px):圆帽在 0%/100% 端点不越出控件矩形
     r = QRectF(rect).adjusted(2.0, 2.0, -2.0, -2.0)
-    painter.setPen(QPen(QColor(255, 255, 255, 26), 3.5))      # 白.10 ≈ 26/255
+    painter.setPen(QPen(QColor(255, 255, 255, 26) if base is None else base,
+                        3.5))                                 # 白.10 ≈ 26/255
     painter.drawArc(r, 0, 360 * 16)
     if p > 0:
         pen = QPen(QColor(str(color)), 3.5)
@@ -564,14 +577,22 @@ class PulseIndicator(QWidget):
     - 仅 generating 时 update()(set_phase 内部判定):idle 后零重绘,
       与旧 QLabel 呼吸点『空闲不刷样式』的节制同款;
     - 尺寸三档:卡 14 / 横条 10 / 竖条 12(构造参数),环宽/内核/外扩圈
-      全按直径比例缩放。"""
+      全按直径比例缩放;
+    - 色参(v0.9 T2):idle/active/core 三色可选注入,None=玻璃缺省
+      (白.89 静态环/C_ACCENT_DIM 环+外扩圈/内核 α230,与旧版逐位一致);
+      active 兼作外扩圈基色 —— 外扩圈只变 α 不变色相,由 active 的 RGB
+      派生(QColor 拷贝后 setAlpha),玻璃路径数值恒等。"""
 
-    def __init__(self, diameter: int, parent=None):
+    def __init__(self, diameter: int, parent=None, idle_color: QColor | None = None,
+                 active_color: QColor | None = None, core_color: QColor | None = None):
         super().__init__(parent)
         self._d = int(diameter)
         self.setFixedSize(self._d, self._d)
         self._active = False
         self._phase = 0.0
+        self._c_idle = idle_color
+        self._c_active = active_color
+        self._c_core = core_color
         # 指示件不参与交互:让鼠标按下穿透到主窗(拖动窗口的既定路径)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
@@ -595,9 +616,16 @@ class PulseIndicator(QWidget):
         cx = cy = d / 2
         ring_w = max(1.2, d * 0.15)            # 14→2.1  CSS 2px;10→1.5
         ring_r = d / 2 - ring_w / 2 - 0.5
+        # 皮肤色参(T2):None=玻璃缺省常量,数值与旧版逐位一致
+        idle_c = (self._c_idle if self._c_idle is not None
+                  else QColor(255, 255, 255, 89))
+        act_c = (self._c_active if self._c_active is not None
+                 else QColor(C_ACCENT_DIM))
+        core_c = (self._c_core if self._c_core is not None
+                  else QColor(96, 205, 255, 230))
         if not self._active:
             # idle:白.35 静态空心环(89/255,与 faint 档同值)
-            pen = QPen(QColor(255, 255, 255, 89), ring_w)
+            pen = QPen(idle_c, ring_w)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(cx, cy), ring_r, ring_r)
@@ -608,15 +636,17 @@ class PulseIndicator(QWidget):
         halo_r = ring_r + 1.0 + d * 0.36 * wave
         halo_a = int(89 * (1.0 - wave))        # 起 0.35 → 峰值 0
         if halo_a > 0:
-            p.setPen(QPen(QColor(96, 205, 255, halo_a), 1.2))
+            halo_c = QColor(act_c)             # 外扩圈=active 色相,只变 α
+            halo_c.setAlpha(halo_a)
+            p.setPen(QPen(halo_c, 1.2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(cx, cy), halo_r, halo_r)
-        pen = QPen(QColor(C_ACCENT_DIM), ring_w)
+        pen = QPen(act_c, ring_w)
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(QPointF(cx, cy), ring_r, ring_r)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(96, 205, 255, 230))  # 内核 opacity .9
+        p.setBrush(core_c)                     # 内核 opacity .9
         p.drawEllipse(QPointF(cx, cy), d * 0.28, d * 0.28)
 
 
@@ -626,7 +656,8 @@ class SparklineWidget(QWidget):
     <2 点的显隐由宿主(_apply_snapshot)驱动 setVisible —— 本控件不隐藏
     自己,保持纯展示件语义;隐藏控件被 _bar_size 跳过(v0.5.0 机制)。"""
 
-    def __init__(self, w: int, h: int, parent=None, stretch: bool = False):
+    def __init__(self, w: int, h: int, parent=None, stretch: bool = False,
+                 line_color: str | None = None, dot_color: str | None = None):
         super().__init__(parent)
         # stretch=True(卡形态 2026-09-28):吃满主数字行剩余宽度 —— 用户
         # 反馈卡片上半右侧空白,速度趋势是填充该带的最自然数据;min w=72
@@ -640,6 +671,10 @@ class SparklineWidget(QWidget):
         else:
             self.setFixedSize(int(w), int(h))
         self._values: list = []
+        # 皮肤折线/端点色(T2):None=玻璃缺省 C_*(paint_sparkline 缺省),
+        # _build_card/_build_bar 构造期传 self._skin() 值
+        self._line_color = line_color
+        self._dot_color = dot_color
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     def sizeHint(self) -> QSize:
@@ -653,21 +688,25 @@ class SparklineWidget(QWidget):
         self.update()
 
     def paintEvent(self, ev):
-        paint_sparkline(QPainter(self), QRectF(self.rect()), self._values)
+        paint_sparkline(QPainter(self), QRectF(self.rect()), self._values,
+                        self._line_color, self._dot_color)
 
 
 class RingWidget(QWidget):
     """环形进度控件:paintEvent 全权交给 paint_ring;diameter 46(卡片,
     中心 11pt Bold tier 色 N%)或 12(横条,无字)。pct/color 经 set_pct
-    注入 —— tier 色由宿主按 tier_color(pct) 算好传入,本控件不掺业务。"""
+    注入 —— tier 色由宿主按 tier_color(pct) 算好传入,本控件不掺业务。
+    base_color(v0.9 T2):皮肤底环色,None=玻璃缺省白.10。"""
 
-    def __init__(self, diameter: int, center_text: bool = True, parent=None):
+    def __init__(self, diameter: int, center_text: bool = True, parent=None,
+                 base_color: QColor | None = None):
         super().__init__(parent)
         self._d = int(diameter)
         self.setFixedSize(self._d, self._d)
         self._center_text = bool(center_text)
         self._pct: float = 0.0
         self._color: str = C_WARN              # 首帧前兜底色(段隐藏,不可见)
+        self._base = base_color
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     def sizeHint(self) -> QSize:
@@ -681,7 +720,7 @@ class RingWidget(QWidget):
 
     def paintEvent(self, ev):
         p = QPainter(self)
-        paint_ring(p, QRectF(self.rect()), self._pct, self._color)
+        paint_ring(p, QRectF(self.rect()), self._pct, self._color, self._base)
         if self._center_text:
             p.setFont(mk_mono(11, QFont.Bold))
             p.setPen(QColor(self._color))
@@ -754,6 +793,10 @@ class MeterWindow(QWidget):
         self.bar_segments = cfg.get("bar_segments",
                                     {"h": list(BAR_SEGMENTS_H),
                                      "v": list(BAR_SEGMENTS_V)})
+        # 皮肤 id(v0.9 T2):cfg 来自 load_config(已归一化,T1 落地后恒含
+        # 白名单内 skin 键;T1 未落地时无此键 → glass,同样安全)。registry
+        # 缺项回退 glass 由 _skin() 承担(手改文件指向未实现 id 防 KeyError)
+        self.skin_id = cfg.get("skin", "glass")
         # key 内存基准(v0.5.0 设置窗):设置保存后的 monitor 对账必须与它
         # 比较 —— 严禁落盘后回读文件(恒等 → monitor 永不重启 → 残留旧账号
         # 套餐数据)。用完即弃,只在保存成功后更新。
@@ -792,7 +835,7 @@ class MeterWindow(QWidget):
 
         self.setWindowTitle("zcode-meter")
         self.setObjectName("root")
-        self.setStyleSheet(QSS)
+        self.setStyleSheet(self._skin_qss())   # 皮肤化(v0.9 T2);玻璃=qss 逐位同旧
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
 
         self._build_card()
@@ -829,9 +872,37 @@ class MeterWindow(QWidget):
         self._breath_timer.start()
         self.eng.start()
 
+    # ---- v0.9 T2 皮肤基建:注册表访问与 QSS 形态分派 ----
+    def _skin(self) -> "skins.SkinDef":
+        """当前皮肤定义:registry 缺项回退 glass 注册表项 —— T1 白名单先行
+        落地/用户手改 zm_config.json 指向尚未实现的 id 时防 KeyError,任何
+        合法白名单 id 都能安全渲染(T2 期安全,回归断言钉死)。"""
+        return skins.REGISTRY.get(self.skin_id) or skins.REGISTRY["glass"]
+
+    def _skin_qss(self) -> str:
+        """按当前形态取皮肤样式表:卡(未贴边,_bar_form=None)→ qss,
+        横/竖条 → qss_bar。玻璃两值与模块级 QSS/QSS_BAR 逐位相等(stress
+        断言钉死),qss_bar 派生链与 app.py:118 同一条 replace(防静默断链)。"""
+        sk = self._skin()
+        return sk.qss_bar if self._bar_form in ("h", "v") else sk.qss
+
     # ---- v0.8.0 T5:窗口背景自绘(替代 QSS #root background/border) ----
     def paintEvent(self, ev):
-        """深渐变玻璃底(不透明近似版,预览 .g-card/.g-bar/.g-vbar):
+        """皮肤分派(v0.9 T2):deco 非 None 的皮肤交其自绘背景(painter/
+        win/form),玻璃与 deco 未实现的皮肤走下方既有 渐变+光晕+描边 代码
+        路径 —— 玻璃路径逐位不动(deco 恒 None),T2 骨架期九款全部落到
+        玻璃兜底(『registry 仅 glass 亦安全渲染』同性质)。"""
+        deco = self._skin().deco
+        if deco is not None:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            deco(p, self, self._bar_form)
+            return
+        self._paint_glass(ev)
+
+    def _paint_glass(self, ev):
+        """玻璃皮肤背景(原 paintEvent 正文,v0.9 T2 原样下沉,逐位不动)。
+        深渐变玻璃底(不透明近似版,预览 .g-card/.g-bar/.g-vbar):
         ① 垂直渐变 #1c1e28→#15161d —— 预览底 rgba(24,26,34,.58) 叠
         blur 壁纸后的等效观感(视觉对版 2026-09-28:首版 #17181d 过暗,
         光晕叠上去仅 3 个 RGB 单位差、肉眼不可辨,玻璃感整体丢失);
@@ -983,7 +1054,7 @@ class MeterWindow(QWidget):
         y = max(min(pos.y() - 12, sg.bottom() - h - 2), sg.top() + 2)
         self.dock = None
         self._build_card()
-        self.setStyleSheet(QSS)
+        self.setStyleSheet(self._skin_qss())   # 皮肤化(T2):卡形态 → qss
         self.layout().activate()   # 同 _unset_dock:刷新窗口最小宽,防钳宽
         self.setGeometry(x, y, w, h)
         self._apply_snapshot(self.snap)
@@ -1066,15 +1137,17 @@ class MeterWindow(QWidget):
         g = self.geometry()
         vertical = side in ("left", "right")
         self._build_bar(vertical=vertical)
-        self.setStyleSheet(QSS_BAR)
+        self.setStyleSheet(self._skin_qss())   # 皮肤化(T2):条形态 → qss_bar
         self._apply_snapshot(self.snap)          # 先填文字
         w, h = self._bar_size(vertical)   # 仅供 _apply_dock_geometry 内部重算,此处不再自设几何
         self._apply_dock_geometry()      # 唯一几何权威(物理坐标,尺寸+位置一次到位)
         self._save_state()               # 形态变化即时落盘,兜强杀/崩溃路径
 
-    def _mk_sep(self, vertical: bool) -> QFrame:
+    def _mk_sep(self, vertical: bool, color: str | None = None) -> QFrame:
+        """条内分隔线。color(v0.9 T2):皮肤分隔线色,None=玻璃缺省 C_BORDER
+        (零漂移);_build_bar 构造期传 self._skin().sep。"""
         line = QFrame()
-        line.setStyleSheet(f"background: {C_BORDER}; border: none;")
+        line.setStyleSheet(f"background: {color or C_BORDER}; border: none;")
         if vertical:
             # 宽随定宽派生:BAR_V_W − 左右边距 8×2 − 边框 2 − 两侧呼吸 8×2
             # (116 时代=84;104 时代=72,收窄后随动不再钉死 —— 用户对版
@@ -1120,7 +1193,12 @@ class MeterWindow(QWidget):
             if w is None or w.isHidden():
                 continue
             hs = w.sizeHint()
-            max_h = max(max_h, hs.height() + pad)
+            # v0.9 T3:横条 QLabel 钉了玻璃行高(_build_bar 横分支,QLabel.
+            # sizeHint() 不随 setFixedHeight 变 —— 实测 Segoe Print 14px 仍报
+            # 24),聚合侧须按 maximumHeight 钳才反映真实布局行高;未钉件
+            # max==QWIDGETSIZE_MAX(16777215),min 即原 hint,玻璃逐位不变。
+            # 『横高≤34 对一切皮肤同上限』由此钳制 + 钉行配对成立
+            max_h = max(max_h, min(hs.height(), w.maximumHeight()) + pad)
             total_w += hs.width() + pad + sp
         # 高度:最高子件 + 上下边距 5×2 + 边框 2 + 余量 2(2026-09-28 横条
         # 对版随布局参数同步,旧锚 margins(2,0,2,0))
@@ -1131,7 +1209,7 @@ class MeterWindow(QWidget):
         g = self.geometry()
         self.dock = None
         self._build_card()
-        self.setStyleSheet(QSS)
+        self.setStyleSheet(self._skin_qss())   # 皮肤化(T2):卡形态 → qss
         # 先激活新布局:顶层布局激活时会把布局最小宽写入窗口
         # minimumWidth —— 横条时代的最小宽(~470)若未刷新,setGeometry
         # (313) 被钳成 490 宽,之后没人再缩回(用户『取消贴边卡片变宽』
@@ -1149,15 +1227,18 @@ class MeterWindow(QWidget):
         if lay is not None:
             QWidget().setLayout(lay)      # 断开并删除旧布局
 
-    def _mk_lbl(self, text="", cls="dim", font=None, size=None):
+    def _mk_lbl(self, text="", cls="dim", font=None, size=None, families=None):
         lb = QLabel(text)
         lb.setObjectName(cls if cls != "normal" else "")
         if font:
             # v0.8.0 T1:等宽族经 mk_mono 单点构造(Cascadia 主+Consolas
             # 回退);其余族(中文 UI/Segoe)维持单族 QFont 构造。
-            # size 一律像素(与 mk_mono 同基准,对齐预览 px 字号)
+            # size 一律像素(与 mk_mono 同基准,对齐预览 px 字号)。
+            # families(v0.9 T2):皮肤等宽字族(None=玻璃缺省),仅作用于
+            # font==C_MONO 分支 —— C_MONO 在此是『等宽标记』,字族本体由
+            # 皮肤 font_mono_families 提供
             if font == C_MONO:
-                lb.setFont(mk_mono(size or 9))
+                lb.setFont(mk_mono(size or 9, families=families))
             else:
                 f = QFont(font)
                 f.setPixelSize(size or 9)
@@ -1170,6 +1251,10 @@ class MeterWindow(QWidget):
         # _apply_card(v0.8.0 新结构),条形态走 T3 重绘后的条分支;
         # 每次重建后与实际标签集合一一对应(F4 属性表卡列,stress 断言锚)
         self._bar_form = None
+        # 皮肤参数(v0.9 T2):色参/分隔线/等宽字族构造期注入;玻璃值与
+        # 旧缺省逐位相等(qss 逐位断言 + 绘制色镜像断言双兜底)
+        sk = self._skin()
+        mono = sk.font_mono_families
         root = QVBoxLayout(self)
         # 边距 14/16/12 = 预览 padding 原值(:42)。首版用 8 是给 13pt 字号
         # 的列宽预算让路;字号 px 化后文本窄回预览宽度,边距回归原值
@@ -1183,7 +1268,9 @@ class MeterWindow(QWidget):
         # 裁决):完整标题+📌 前缀进窗口 setToolTip,_apply_card 维护。
         head = QHBoxLayout()
         head.setSpacing(SP["s"])
-        self.dot = PulseIndicator(14)         # 替换旧 QLabel『●』(M5 分派)
+        self.dot = PulseIndicator(14, idle_color=sk.pulse_idle,
+                                  active_color=sk.pulse_active,
+                                  core_color=sk.pulse_core)   # 皮肤色(T2)
         head.addWidget(self.dot)
         self.state_lbl = self._mk_lbl("空闲", "dim", "Microsoft YaHei UI", 11)
         head.addWidget(self.state_lbl)
@@ -1203,12 +1290,15 @@ class MeterWindow(QWidget):
         # F4 属性表但遵守同款 None 纪律。
         big = QHBoxLayout()
         big.setSpacing(SP["s"])
-        self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 30)
-        self.tps_lbl.setFont(mk_mono(30, QFont.Bold))
+        self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 30, families=mono)
+        self.tps_lbl.setFont(mk_mono(30, QFont.Bold, families=mono))
         big.addWidget(self.tps_lbl)
-        self.tps_unit_lbl = self._mk_lbl("tok/s", "faint", C_MONO, 11)
+        self.tps_unit_lbl = self._mk_lbl("tok/s", "faint", C_MONO, 11,
+                                         families=mono)
         big.addWidget(self.tps_unit_lbl, 0, Qt.AlignBottom)
-        self.spark = SparklineWidget(72, 24, stretch=True)
+        self.spark = SparklineWidget(72, 24, stretch=True,
+                                     line_color=sk.spark_line,
+                                     dot_color=sk.spark_dot)
         big.addWidget(self.spark, 0, Qt.AlignBottom)
         root.addLayout(big)
 
@@ -1221,11 +1311,11 @@ class MeterWindow(QWidget):
         # 用户反馈卡片上半右侧空白(2026-09-28),此行上移消化一行高度。
         today = QHBoxLayout()
         today.setSpacing(SP["s"])
-        self.today_lbl = self._mk_lbl("--", "normal", C_MONO, 19)
-        self.today_lbl.setFont(mk_mono(19, QFont.Bold))
+        self.today_lbl = self._mk_lbl("--", "normal", C_MONO, 19, families=mono)
+        self.today_lbl.setFont(mk_mono(19, QFont.Bold, families=mono))
         today.addWidget(self.today_lbl)
-        self.today_cost_lbl = self._mk_lbl("", "dim", C_MONO, 13)
-        self.today_cost_lbl.setFont(mk_mono(13, QFont.DemiBold))
+        self.today_cost_lbl = self._mk_lbl("", "dim", C_MONO, 13, families=mono)
+        self.today_cost_lbl.setFont(mk_mono(13, QFont.DemiBold, families=mono))
         today.addWidget(self.today_cost_lbl)
         today.addWidget(self._mk_lbl("今日", "faint", "Microsoft YaHei UI", 10))
         self.today_src_lbl = self._mk_lbl("", "dim", "Microsoft YaHei UI", 9)
@@ -1242,19 +1332,20 @@ class MeterWindow(QWidget):
         pv = QVBoxLayout(self.plan_section)
         pv.setContentsMargins(0, 8, 0, 0)
         pv.setSpacing(4)
-        plan_line = self._mk_card_sep("rgba(255,255,255,0.07)")
+        plan_line = self._mk_card_sep(sk.sep_card)   # 皮肤分节线(T2)
         pv.addWidget(plan_line)
         prow = QHBoxLayout()
         prow.setSpacing(SP["m"])
-        self.plan_ring = RingWidget(46)     # 中心 N% 11pt tier 色
+        self.plan_ring = RingWidget(46, base_color=sk.ring_base)   # 中心 N% 11pt tier 色
         prow.addWidget(self.plan_ring)
         info = QVBoxLayout()
         info.setSpacing(0)
         self.plan_cap_lbl = self._mk_lbl("套餐剩余", "faint",
                                          "Microsoft YaHei UI", 9)
         info.addWidget(self.plan_cap_lbl)
-        self.plan_tok_lbl = self._mk_lbl("—", "normal", C_MONO, 14)
-        self.plan_tok_lbl.setFont(mk_mono(14, QFont.DemiBold))
+        self.plan_tok_lbl = self._mk_lbl("—", "normal", C_MONO, 14,
+                                         families=mono)
+        self.plan_tok_lbl.setFont(mk_mono(14, QFont.DemiBold, families=mono))
         info.addWidget(self.plan_tok_lbl)
         self.plan_sub_lbl = self._mk_lbl("", "faint", "Microsoft YaHei UI", 10)
         info.addWidget(self.plan_sub_lbl)
@@ -1269,8 +1360,8 @@ class MeterWindow(QWidget):
                                         "Microsoft YaHei UI", 9)
         self.plan_left_k.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         plan_right.addWidget(self.plan_left_k)
-        self.plan_left_v = self._mk_lbl("", "soft", C_MONO, 13)
-        self.plan_left_v.setFont(mk_mono(13, QFont.DemiBold))
+        self.plan_left_v = self._mk_lbl("", "soft", C_MONO, 13, families=mono)
+        self.plan_left_v.setFont(mk_mono(13, QFont.DemiBold, families=mono))
         self.plan_left_v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         plan_right.addWidget(self.plan_left_v)
         prow.addLayout(plan_right)
@@ -1280,7 +1371,7 @@ class MeterWindow(QWidget):
         # label 不进布局、保持隐藏,但文本/颜色同步刷新 —— 横竖条(T3)以
         # 它为 % 文本载体,置 None 会让形态循环摸已销毁对象;不设 parent、
         # 不 addWidget,重建时随 Python 引用释放,不泄漏进 findChildren。
-        self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 13)
+        self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 13, families=mono)
         self.plan_lbl.hide()
 
         # ⑤ grid 六格 3 列(预览 :179-185):入/出、缓存命中、⏱首/总、燃速、
@@ -1288,7 +1379,7 @@ class MeterWindow(QWidget):
         # 恒建恒显,缺参 -- (与旧卡 timing 缺参同语义,不做整行隐藏)。
         # 列宽固定(CARD_GRID_COL_W 宽度策略):v label 水平 Ignored,文本
         # 由 _apply_card 按列宽 elide —— 不固定会被长文本反推出 372px。
-        root.addWidget(self._mk_card_sep("rgba(255,255,255,0.07)"))
+        root.addWidget(self._mk_card_sep(sk.sep_card))   # 皮肤分节线(T2)
         grid = QGridLayout()
         grid.setHorizontalSpacing(8)  # 视觉对版:预览列 gap 12 在 313 宽内放不下,8 为折中
         grid.setVerticalSpacing(4)    # 预览 k→v margin 1px+行内自然距的等效折中(原 2 过挤)
@@ -1296,8 +1387,8 @@ class MeterWindow(QWidget):
             grid.setColumnMinimumWidth(c, cw)
 
         def cell(txt, cls=""):
-            lb = self._mk_lbl("--", cls, C_MONO, 13)
-            lb.setFont(mk_mono(13, QFont.DemiBold))
+            lb = self._mk_lbl("--", cls, C_MONO, 13, families=mono)
+            lb.setFont(mk_mono(13, QFont.DemiBold, families=mono))
             lb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             return lb
 
@@ -1346,7 +1437,9 @@ class MeterWindow(QWidget):
         mv = QVBoxLayout(self.model_rows)
         mv.setContentsMargins(0, 4, 0, 0)
         mv.setSpacing(0)
-        mv.addWidget(self._mk_card_sep("rgba(255,255,255,0.05)"))
+        # 模型行弱分节线:玻璃 rgba(255,255,255,0.05) 逐位不变;皮肤走
+        # sep_card_weak 弱档(sep_card 主档 0.07 的姊妹键,T2 骨架期补充)
+        mv.addWidget(self._mk_card_sep(sk.sep_card_weak))
         mv.addSpacing(8)
         self._model_rows_items = []          # [(name_lbl, tps_lbl)]×4,随容器重建
         for _i in range(4):
@@ -1356,8 +1449,8 @@ class MeterWindow(QWidget):
             row.setSpacing(SP["s"])
             nm = self._mk_lbl("", "faint", "Microsoft YaHei UI", 10)
             row.addWidget(nm, 1)
-            sp = self._mk_lbl("", "half", C_MONO, 10)
-            sp.setFont(mk_mono(10, QFont.DemiBold))
+            sp = self._mk_lbl("", "half", C_MONO, 10, families=mono)
+            sp.setFont(mk_mono(10, QFont.DemiBold, families=mono))
             row.addWidget(sp)
             mv.addLayout(row)
             self._model_rows_items.append((nm, sp))
@@ -1376,13 +1469,16 @@ class MeterWindow(QWidget):
         self.sep_plan = self.sep_burn = self.sep_today = None      # 横建
         self.vsep_plan = self.vsep_burn = self.vsep_today = self.vsep_in = None  # 竖建
 
-    def _mk_card_sep(self, rgba: str) -> QFrame:
+    def _mk_card_sep(self, rgba: str | None = None) -> QFrame:
         """卡片主分节线(v0.8.0 T5+T2):rgba 白内联字面(预览 .07/.05 两档)。
         内联样式自诞生即渲染(D4 裁决先例),零 QSS/objectName 依赖 —— 与
         _mk_sep 的内联机制同款;不进 F4 属性表(卡侧恒建,无跨形态引用,
-        ④的分节线随 plan_section 容器整组隐藏)。"""
+        ④的分节线随 plan_section 容器整组隐藏)。
+        rgba(v0.9 T2):皮肤分节线色,None=玻璃缺省 .07 字面(零漂移)。"""
         line = QFrame()
-        line.setStyleSheet(f"background: {rgba}; border: none; max-height: 1px;")
+        line.setStyleSheet(
+            f"background: {rgba or 'rgba(255,255,255,0.07)'}; "
+            "border: none; max-height: 1px;")
         return line
 
     def _build_bar(self, vertical: bool = False):
@@ -1399,8 +1495,12 @@ class MeterWindow(QWidget):
         段/组数据缺席时其前 sep/vsep 一并隐藏,不悬空 —— spec 段序行内的
         vsep 名字有一处错位,以属性表为准修正(今日组前=vsep_today 恒显、
         套餐组前=vsep_plan 跟套餐、燃速组前=vsep_burn 跟燃速、入出组前=
-        vsep_in 恒显)。"""
+        vsep_in 恒显)。
+        v0.9 T2:皮肤参数构造期注入 —— 分隔线色 skin.sep、脉冲环/折线/环
+        底色、等宽字族 skin.font_mono_families;玻璃值与旧缺省逐位相等。"""
         self._clear()
+        sk = self._skin()
+        mono = sk.font_mono_families
         root = QVBoxLayout(self) if vertical else QHBoxLayout(self)
         if vertical:
             # 预览 .g-vbar padding 16px 8px(:115):左右 8(N1 同旧)、上下
@@ -1426,46 +1526,59 @@ class MeterWindow(QWidget):
         if vertical:
             root.addStretch(1)   # 首尾对称弹性:条高富余时内容整体垂直居中(用户要求)
         if not vertical:
-            self.dot = PulseIndicator(10)
+            self.dot = PulseIndicator(10, idle_color=sk.pulse_idle,
+                                      active_color=sk.pulse_active,
+                                      core_color=sk.pulse_core)
             root.addWidget(self.dot)
-            self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 14)
-            self.tps_lbl.setFont(mk_mono(14, QFont.Bold))
+            self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 14,
+                                        families=mono)
+            self.tps_lbl.setFont(mk_mono(14, QFont.Bold, families=mono))
             root.addWidget(self.tps_lbl)
             # 单位与速度分色分号(预览 :232 spd 蓝 14 与 dim t/s 12 分离;
             # 旧单 label 全蓝 14。文本恒 "t/s",_apply_snapshot 只更新数字)
-            self.tps_unit_lbl = self._mk_lbl("t/s", "dim", C_MONO, 12)
+            self.tps_unit_lbl = self._mk_lbl("t/s", "dim", C_MONO, 12,
+                                             families=mono)
             root.addWidget(self.tps_unit_lbl)
             if seg_on("spark"):
-                self.spark = SparklineWidget(44, 16)
+                self.spark = SparklineWidget(44, 16, line_color=sk.spark_line,
+                                             dot_color=sk.spark_dot)
                 root.addWidget(self.spark)
-            self.sep_plan = self._mk_sep(False) if seg_on("plan") else None
+            self.sep_plan = (self._mk_sep(False, sk.sep)
+                             if seg_on("plan") else None)
             if self.sep_plan is not None:
                 root.addWidget(self.sep_plan)
             # 套餐段:实画小环(RingWidget12,不用 ⊙ 字形 —— Cascadia 无该
             # 字形保证,风险表引 ⏱ 字体合并先例 CHANGELOG v0.7:12)。
             # 段文字 9→12px(预览 .g-bar 基准 12,用户对版 2026-09-28)
             if seg_on("plan"):
-                self.plan_ring = RingWidget(12, center_text=False)
+                self.plan_ring = RingWidget(12, center_text=False,
+                                            base_color=sk.ring_base)
                 root.addWidget(self.plan_ring)
-                self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 12)
-                self.plan_lbl.setFont(mk_mono(12, QFont.DemiBold))   # 600(tier 色由 _apply_snapshot 注入)
+                self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 12,
+                                             families=mono)
+                self.plan_lbl.setFont(mk_mono(12, QFont.DemiBold, families=mono))   # 600(tier 色由 _apply_snapshot 注入)
                 root.addWidget(self.plan_lbl)
-            self.plan_cd_lbl = (self._mk_lbl("", "dim", C_MONO, 12)
+            self.plan_cd_lbl = (self._mk_lbl("", "dim", C_MONO, 12,
+                                             families=mono)
                                 if seg_on("cd") else None)
             if self.plan_cd_lbl is not None:
                 root.addWidget(self.plan_cd_lbl)
             # 今日段:『今X』+金额段 f" ≈¥N"(金额取整;cost=0 省段/N3、
             # partial ≈ 前缀 —— 与卡片同守卫,由 _apply_snapshot 拼装)
-            self.sep_today = self._mk_sep(False) if seg_on("today") else None
+            self.sep_today = (self._mk_sep(False, sk.sep)
+                              if seg_on("today") else None)
             if self.sep_today is not None:
                 root.addWidget(self.sep_today)
-                self.today_lbl = self._mk_lbl("", "dim", C_MONO, 12)
+                self.today_lbl = self._mk_lbl("", "dim", C_MONO, 12,
+                                              families=mono)
                 root.addWidget(self.today_lbl)
-            self.sep_burn = self._mk_sep(False) if seg_on("burn") else None
+            self.sep_burn = (self._mk_sep(False, sk.sep)
+                             if seg_on("burn") else None)
             if self.sep_burn is not None:
                 root.addWidget(self.sep_burn)
                 # 燃速段:瞬时优先口径不变(dim),文案由 _apply_snapshot 拼装
-                self.burn_lbl = self._mk_lbl("", "dim", C_MONO, 12)
+                self.burn_lbl = self._mk_lbl("", "dim", C_MONO, 12,
+                                             families=mono)
                 root.addWidget(self.burn_lbl)
             # ---- 竖条专属件置 None(F4 横列) ----
             self.plan_sub_lbl = None
@@ -1483,22 +1596,39 @@ class MeterWindow(QWidget):
                 self.today_lbl = None
             if not seg_on("burn"):
                 self.burn_lbl = None
+            # ---- v0.9 T3:横条行高钉玻璃基准(对一切皮肤同上限) ----
+            # 高瘦字族(Segoe Print 14px 行高 24 vs 玻璃 Cascadia 16,黑板
+            # 粉笔;多出的 8px 是内部 leading)会把 _bar_size 的 max_h 抬到
+            # 40,破『横高≤34』。行盒统一钳在玻璃缺省字族行高(14px→16/
+            # 12px→14,families=None 即玻璃基准,随 mk_mono 缺省自演进):
+            # 墨迹实测 Segoe Print 14px ≤13/12px ≤12,行盒余量(5/4px)吃
+            # 得下,不裁字形。QLabel.sizeHint() 不随 setFixedHeight 变
+            # (实测),_bar_size 的 maximumHeight 钳与本案配对生效;QFrame
+            # 分隔线/dot/spark/ring 非 QLabel,天然不被波及
+            for i in range(root.count()):
+                wd = root.itemAt(i).widget()
+                if isinstance(wd, QLabel):
+                    _f = wd.font()
+                    wd.setFixedHeight(
+                        QFontMetrics(mk_mono(_f.pixelSize(), _f.weight())).height())
         else:
             def vnum(txt="", cls="", size=14):
                 # .cell .v 600 字重(预览 :126 font-weight:600)—— 旧默认
                 # 常规字重,用户对版 2026-09-28
-                lb = self._mk_lbl(txt, cls, C_MONO, size)
-                lb.setFont(mk_mono(size, QFont.DemiBold))
+                lb = self._mk_lbl(txt, cls, C_MONO, size, families=mono)
+                lb.setFont(mk_mono(size, QFont.DemiBold, families=mono))
                 lb.setAlignment(Qt.AlignHCenter)
                 return lb
 
-            def vcap(txt, mono=False):
+            def vcap(txt, mono_flag=False):
                 # k 行/caption:faint 89 档 9px;TOK/S 帽标 letter-spacing
                 # 1px(预览 :123),cell .k 无字距;中文走 YaHei、纯 ASCII
                 # 走 mono,中文不列进 mk_mono 的 families 才不抬成首选
+                # (形参改名 mono_flag,T2:避免与外层皮肤字族变量 mono 撞名)
                 lb = self._mk_lbl(txt, "faint",
-                                  C_MONO if mono else "Microsoft YaHei UI", 9)
-                if mono:
+                                  C_MONO if mono_flag else "Microsoft YaHei UI",
+                                  9, families=mono)
+                if mono_flag:
                     f = lb.font()   # PySide6 font() 返回副本,须 set 回
                     f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
                     lb.setFont(f)
@@ -1506,19 +1636,24 @@ class MeterWindow(QWidget):
                 return lb
 
             # 组1 主数字:脉冲环+速度+单位+sparkline
-            self.dot = PulseIndicator(12)
+            self.dot = PulseIndicator(12, idle_color=sk.pulse_idle,
+                                      active_color=sk.pulse_active,
+                                      core_color=sk.pulse_core)
             root.addWidget(self.dot, 0, Qt.AlignHCenter)
-            self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 24)
-            self.tps_lbl.setFont(mk_mono(24, QFont.Bold))
+            self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 24,
+                                        families=mono)
+            self.tps_lbl.setFont(mk_mono(24, QFont.Bold, families=mono))
             self.tps_lbl.setAlignment(Qt.AlignHCenter)
             root.addWidget(self.tps_lbl, 0, Qt.AlignHCenter)
-            root.addWidget(vcap("TOK/S", mono=True), 0, Qt.AlignHCenter)
+            root.addWidget(vcap("TOK/S", mono_flag=True), 0, Qt.AlignHCenter)
             if seg_on("spark"):
-                self.spark = SparklineWidget(60, 14)
+                self.spark = SparklineWidget(60, 14, line_color=sk.spark_line,
+                                             dot_color=sk.spark_dot)
                 root.addWidget(self.spark, 0, Qt.AlignHCenter)
             # 组2 今日(v=fmt_k vstrong;vsep_today 恒显语义随段开关退役:
             # 段可关后 sep 跟段,不再恒建)
-            self.vsep_today = (self._mk_sep(True) if seg_on("today") else None)
+            self.vsep_today = (self._mk_sep(True, sk.sep)
+                               if seg_on("today") else None)
             if self.vsep_today is not None:
                 root.addWidget(self.vsep_today, 0, Qt.AlignHCenter)
                 self.today_lbl = vnum("--", "vstrong")
@@ -1526,7 +1661,8 @@ class MeterWindow(QWidget):
                 root.addWidget(vcap("今日"), 0, Qt.AlignHCenter)
             # 组3 套餐:v=N% tier 色、k=[~lt, cd]『 · 』join(空列表→置空但
             # 组结构保留,v 行仍显 —— N3 缺段自然省略同现状口径明文化)
-            self.vsep_plan = self._mk_sep(True) if seg_on("plan") else None
+            self.vsep_plan = (self._mk_sep(True, sk.sep)
+                              if seg_on("plan") else None)
             if self.vsep_plan is not None:
                 root.addWidget(self.vsep_plan, 0, Qt.AlignHCenter)
                 self.plan_lbl = vnum("", "warn")   # tier 色由 _apply_snapshot 注入
@@ -1534,7 +1670,8 @@ class MeterWindow(QWidget):
                 self.plan_sub_lbl = vcap("")
                 root.addWidget(self.plan_sub_lbl, 0, Qt.AlignHCenter)
             # 组4 燃速:v=『296M/h』式 vstrong、k=『燃速 · 均137』式含均燃
-            self.vsep_burn = self._mk_sep(True) if seg_on("burn") else None
+            self.vsep_burn = (self._mk_sep(True, sk.sep)
+                              if seg_on("burn") else None)
             if self.vsep_burn is not None:
                 root.addWidget(self.vsep_burn, 0, Qt.AlignHCenter)
                 self.burn_lbl = vnum("", "vstrong")
@@ -1542,7 +1679,8 @@ class MeterWindow(QWidget):
                 self.vbar_burn_cap = vcap("燃速")
                 root.addWidget(self.vbar_burn_cap, 0, Qt.AlignHCenter)
             # 组5 入出:入 v 行 + 出并入 k 行(out_lbl 三形态 None)
-            self.vsep_in = self._mk_sep(True) if seg_on("in") else None
+            self.vsep_in = (self._mk_sep(True, sk.sep)
+                            if seg_on("in") else None)
             if self.vsep_in is not None:
                 root.addWidget(self.vsep_in, 0, Qt.AlignHCenter)
                 self.in_lbl = vnum("--", "vstrong")
@@ -1597,6 +1735,7 @@ class MeterWindow(QWidget):
                           ("恢复卡片", self._unset_dock)):
             m.addAction(label, fn)
         self._add_segment_menu(m)
+        self._add_skin_menu(m)
         self._add_session_menu(m)
         m.addAction("历史用量图表", self._open_history)
         m.addAction("设置", self._open_settings)
@@ -1630,7 +1769,7 @@ class MeterWindow(QWidget):
             # 卡片打开)仅落盘,下次贴边生效
             if self.dock:
                 self._build_bar(vertical=self.dock in ("left", "right"))
-                self.setStyleSheet(QSS_BAR)
+                self.setStyleSheet(self._skin_qss())   # 皮肤化(T2):qss_bar
                 self._apply_dock_geometry()
                 self._apply_snapshot(self.snap)
             self._save_config_segments()
@@ -1641,6 +1780,27 @@ class MeterWindow(QWidget):
             act.setChecked(key in on)
             act.triggered.connect(lambda checked, k=key: toggle(k, checked))
 
+    def _add_skin_menu(self, m: QMenu):
+        """「皮肤」子菜单(v0.9 T3,插在「显示内容」之后):九款单选 ——
+        QActionGroup exclusive 保证勾态恒唯一,当前项打勾,点选经 _apply_skin
+        即时重建当前形态并 save_config 持久化。九项文案取 skins 注册表的
+        menu_label(glass 项文案即『玻璃仪表(默认)』—— 玻璃是可逆性的必需
+        入口,非第 9 款皮肤);键序按 skins.SKIN_IDS(glass 在第 0 位,与
+        注册表键序同源,skins.py:303 注释钉死 T3 按此序出项)。"""
+        skin_menu = m.addMenu("皮肤")
+        skin_menu.setStyleSheet(m.styleSheet())
+        # 组挂子菜单为父(不挂 self):子菜单每次右键重建,组随菜单销毁,
+        # 不在窗口上逐次累积 QActionGroup 对象
+        group = QActionGroup(skin_menu)      # exclusive:九项互斥,勾态唯一
+        group.setExclusive(True)
+        for sid in skins.SKIN_IDS:
+            act = skin_menu.addAction(skins.REGISTRY[sid].menu_label)
+            act.setCheckable(True)
+            act.setChecked(sid == self.skin_id)
+            group.addAction(act)
+            act.triggered.connect(
+                lambda checked=False, s=sid: self._apply_skin(s))
+
     def _save_config_segments(self):
         """bar_segments 并入 zm_config.json(原子写路径复用 save_config):
         读-改-写,其它键(quota key/budget/alert)原样保留 —— 与设置窗
@@ -1649,6 +1809,52 @@ class MeterWindow(QWidget):
         cfg = load_config()
         cfg["bar_segments"] = dict(self.bar_segments)
         save_config(cfg)
+
+    def _save_config_skin(self):
+        """skin 并入 zm_config.json(v0.9 T3,原子写路径复用 save_config,
+        镜像 _save_config_segments 的读-改-写):其它键原样保留;选玻璃时由
+        数据层可选键纪律整键省略(glass=缺省语义,data_engine save_config
+        承担)。ZM_NO_STATE/--verify 守卫由 save_config 默认路径内建承担 ——
+        不得绕过守卫直写文件(v0.5.0『用户以为改了实际没改』红线)。"""
+        cfg = load_config()
+        cfg["skin"] = self.skin_id
+        save_config(cfg)
+
+    # ---- v0.9 T3:皮肤切换(九款即时重建;persist=False 供测试/渲染矩阵) ----
+    def _apply_skin(self, skin_id: str, persist: bool = True):
+        """切换皮肤并按当前形态即时重建(卡片/横竖条通用入口,右键「皮肤」
+        子菜单与回归测试/渲染矩阵共用同一条产品路径):
+        - 白名单外静默忽略(不当错误):配置层 _norm_skin 已保证存档值合法,
+          这里是第二道闸,防编程误用把 UI 打炸;
+        - 未贴边(卡):复刻 _unset_dock 的『先 activate 再 setGeometry』
+          纪律 —— 条形态时代的布局最小宽若不刷新,setGeometry(313) 会被
+          钳成条宽,之后没人再缩回(用户『取消贴边卡片变宽』同款病根);
+        - 贴边(条):复刻段开关的重征形态路径(_build_bar → QSS →
+          _apply_dock_geometry → _apply_snapshot),几何权威不旁路;
+        - persist=True 时 _save_config_skin 落盘(ZM_NO_STATE/--verify 守卫
+          由 save_config 默认路径内建);persist=False 零落盘副作用。
+        形态本身不变:切皮肤不改变贴边状态,只重建当前形态的件与样式。"""
+        if skin_id not in skins.SKIN_IDS:
+            return
+        self.skin_id = skin_id
+        if self.dock:
+            self._build_bar(vertical=self.dock in ("left", "right"))
+            self.setStyleSheet(self._skin_qss())
+            self._apply_dock_geometry()
+            self._apply_snapshot(self.snap)
+        else:
+            sg = self.screen().availableGeometry()
+            g = self.geometry()
+            self._build_card()
+            self.setStyleSheet(self._skin_qss())
+            # 先激活新布局再 setGeometry:防最小宽钳制(_unset_dock 同款)
+            self.layout().activate()
+            x = max(min(g.left(), sg.right() - self.CARD_W - 8), sg.left() + 8)
+            y = max(min(g.top(), sg.bottom() - self.CARD_H - 8), sg.top() + 8)
+            self.setGeometry(x, y, self.CARD_W, self.CARD_H)
+            self._apply_snapshot(self.snap)
+        if persist:
+            self._save_config_skin()
 
     def _add_session_menu(self, m: QMenu):
         """『会话』子菜单:列出最近会话供手动固定(📌),或恢复自动跟随。
@@ -1779,7 +1985,15 @@ class MeterWindow(QWidget):
         四分支对账:不动/启动(含挂活动回调)/停+清套餐缓存(三缓存 +
         v0.5.1 的 fetched_at/next_reset,并摘除活动回调)/换号停+清+立即
         按新 key 重启(回调重挂新实例)。v0.7 刷新档位:key 未变就地裸写
-        monitor.refresh 热更(不重启线程),②④新实例以新档位构造。"""
+        monitor.refresh 热更(不重启线程),②④新实例以新档位构造。
+        v0.9 T3 落盘保活:设置窗 _parse_input 只造四键 cfg,而 save_config
+        白名单重建只写输入携带的键 —— 直传会把用户已存的 bar_segments/skin
+        静默抹掉、重启即回默认(评审脚本复现实证:先带 bar_segments 保存再
+        以 4 键 cfg 保存,文件键从含段开关掉回三键)。这里从内存态补挂后再
+        落盘;skin 沿数据层可选键纪律,glass 不写键。"""
+        cfg["bar_segments"] = dict(self.bar_segments)
+        if self.skin_id != "glass":
+            cfg["skin"] = self.skin_id
         if not save_config(cfg):
             return
         self.daily_budget_cny = cfg["daily_budget_cny"]
@@ -1812,6 +2026,14 @@ class MeterWindow(QWidget):
             self._plan_pct = None
             self._plan_fetched_at = None
             self._plan_next_reset = None
+            self._plan_left_tok = None
+            # 校准状态一并清(P1 修复:_pct_ratio 原先无任何重置路径,首个
+            # 样本后冷启动估算永久不可达;换号后旧账号的 ratio/基线混进新
+            # 账号首个样本,会污染剩余量推算 —— 账号边界是它唯一必须归零
+            # 的位置,与上方三缓存同属『旧账号数据零残留』不变式)
+            self._pct_ratio = None
+            self._last_pct_seen = None
+            self._last_win_tok_seen = None
             self._prev_quota = None   # 清 prev:残留旧号快照会让新号首查误报『额度已重置』(T8 重写须保留)
             self.snap.plan_remaining_pct = None
             self.eng.quota_hint = None
@@ -1864,13 +2086,33 @@ class MeterWindow(QWidget):
         不可乱,否则 prev 恒等于 cur、事件永不触发);经 BudgetAlerts.
         fire_once 当日去重后直连托盘气泡 —— 刻意不走 _notify(标题钉死
         『预算提醒』,重置不是预算事件,混用会稀释告警标题的信号量)。
-        quota 未配置/未出数据时本方法早退,事件自然不触发。"""
+        quota 未配置/未出数据时本方法早退,事件自然不触发。
+        v0.9.x 新数据闸(P1 修复):整段搬运只在 quota 新数据到达时执行一次。
+        本方法由 _poll_queue 每 200ms 驱动,而 QuotaMonitor 只在真实抓取成功
+        时写 _latest(两次抓取 ≥60s),latest() 在两次抓取之间返回内容恒等
+        的 dict —— 旧代码每 tick 无条件重放整段,造成两个 P1:
+        ① 校准节拍错位:_last_win_tok_seen 每 200ms 被覆写,d_tok 只覆盖
+           一个 tick 的块增量,d_pct 却是整个刷新间隔(180s)的跳变,
+           ratio(1%=X token)系统性低估 刷新间隔/0.2s 倍(180s 档 900
+           倍),坏 ratio 又把冷启动估算永久遮蔽(_pct_ratio 无重置路径);
+        ② fetch_billing_blocks(1)(开 SQLite 连接+聚合 SQL)在 UI 线程
+           5 次/秒常驻。
+        fetched_at 由 _fetch_and_record 每次成功抓取附加、时刻单调,是与
+        _plan_fetched_at(上次已处理的那次抓取)比对『这份数据是否新』的
+        唯一凭证;清号/换号分支已置 _plan_fetched_at=None,新号首查天然
+        过闸。fetched_at 缺失/非法时不设闸(与尾部记账分支同一判据,
+        _fetch_and_record 的 writer 契约保证该形态不存在,防御未来变更,
+        宁可退回旧行为也不把 quota 轨卡死)。"""
         m = self.quota_monitor
         if m is None:
             return
         data = m.latest()
         if not data:
             return
+        fa = data.get("fetched_at")
+        if (isinstance(fa, (int, float)) and not isinstance(fa, bool)
+                and fa > 0 and float(fa) == self._plan_fetched_at):
+            return                      # 同一份数据已处理过,等下次真实抓取
         ev = quota_reset_event(self._prev_quota, data)
         self._prev_quota = dict(data)
         if ev is not None and self.alerts.fire_once(
@@ -1887,6 +2129,9 @@ class MeterWindow(QWidget):
             # ① 动态校准:相邻两次 quota 刷新的 pct 跳变 × 本地窗口 token
             #    增量 → ratio(1%=X token,EMA 平滑) → 剩余 = pct×ratio。
             #    即时且自校准,不依赖块初期的大分母,不带整块历史误差。
+            #    分子分母必须同覆盖一个刷新间隔:_last_pct_seen/_last_win_tok_seen
+            #    只随新数据闸内的本分支更新(不再被 UI tick 每 200ms 覆写),
+            #    d_pct 与 d_tok 才是同一时段的两种读数。
             # ② 冷启动退守:当前 5h 块本地用量 ÷ 已用% 反推(块累计口径)。
             # 接口不回 token 绝对量(TIME_LIMIT 的 usage/remaining 是工具
             # 次数额度,非 token —— 2026-09-28 实测原始 payload 确认)。
@@ -2004,7 +2249,11 @@ class MeterWindow(QWidget):
         cost = s.today_cost_cny or 0.0
         if self._bar_form == "h":
             if self.today_lbl is not None:
-                cost_txt = (f" {'≈' if s.today_cost_partial else ''}¥{cost:.0f}"
+                # 量↔金额分隔符皮肤化(v0.9 T2):玻璃 today_cost_sep 恒单
+                # 空格 → 文案与旧版逐位一致;报纸双空格档(T4)只动这个静态
+                # 分隔字符,不碰任何数值格式化(口径红线,risk#1)
+                cost_txt = (f"{self._skin().today_cost_sep}"
+                            f"{'≈' if s.today_cost_partial else ''}¥{cost:.0f}"
                             if cost else "")
                 # 『今』与数字间留空格(用户对版 2026-09-28:CJK 字面贴 mono 数字
                 # 过挤;原型『今481M』写法从宽,以用户观感为准)

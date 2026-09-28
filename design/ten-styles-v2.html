@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>zcode-meter · 10 种完全不同的卡</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0b0e; color: #e8eaf0; padding: 30px; font-family: "Microsoft YaHei UI", sans-serif; }
+h1 { font-size: 18px; color: #fff; }
+.sub { font-size: 12px; color: #6b7080; margin: 6px 0 26px; }
+.grid10 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 30px 34px; max-width: 1020px; }
+.wrap h2 { font-size: 13px; color: #8b8f9c; margin-bottom: 10px; }
+.wrap h2 .no { color: #5ad6a0; font-family: "Cascadia Code", Consolas, monospace; margin-right: 6px; }
+.note { font-size: 11px; color: #565a66; margin-top: 8px; line-height: 1.7; }
+.num { font-family: "Cascadia Code", Consolas, monospace; font-variant-numeric: tabular-nums; }
+.stage { min-height: 380px; display: flex; align-items: center; justify-content: center; border-radius: 12px; overflow: hidden; }
+.stage.wallpaper { background:
+  radial-gradient(ellipse 300px 200px at 20% 30%, #2d5a3d 0%, transparent 60%),
+  radial-gradient(ellipse 280px 220px at 80% 70%, #1a3a5c 0%, transparent 55%),
+  linear-gradient(135deg, #1a2530, #252a35); }
+.stage.dark { background: #07080a; }
+.stage.light { background: linear-gradient(160deg, #e8e4dc, #d6d2c8); }
+.stage.grid-bg { background:
+  repeating-linear-gradient(0deg, transparent, transparent 23px, rgba(120,130,150,0.07) 23px, rgba(120,130,150,0.07) 24px),
+  repeating-linear-gradient(90deg, transparent, transparent 23px, rgba(120,130,150,0.07) 23px, rgba(120,130,150,0.07) 24px),
+  #101216; }
+
+/* ═══ ① 极简主义瑞士风(白底·巨大数字·栅格线) ═══ */
+.swiss { width: 300px; background: #f4f2ec; color: #141414; padding: 20px 22px 18px; border-radius: 4px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5); font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+.swiss .top { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #141414; padding-bottom: 8px; }
+.swiss .big { font-size: 54px; font-weight: 800; letter-spacing: -2px; line-height: 1; font-family: "Segoe UI", sans-serif; }
+.swiss .big sup { font-size: 14px; font-weight: 600; letter-spacing: 0; }
+.swiss .live { font-size: 9px; letter-spacing: 2px; font-weight: 700; }
+.swiss .live i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #e2503c; margin-right: 4px; }
+.swiss .tbl { margin-top: 12px; }
+.swiss .r { display: grid; grid-template-columns: 1fr auto; padding: 5px 0; border-bottom: 1px solid rgba(20,20,20,0.12); align-items: baseline; }
+.swiss .r .k { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: #777; font-weight: 600; }
+.swiss .r .v { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.swiss .r .v em { font-style: normal; font-size: 10px; color: #999; font-weight: 500; }
+
+/* ═══ ② 复古终端·磷屏(琥珀 CRT) ═══ */
+.crt { width: 300px; background: #100800; border-radius: 10px; padding: 18px 20px; color: #ffb000;
+  border: 2px solid #3a2a08; box-shadow: inset 0 0 40px rgba(255,176,0,0.06), 0 10px 40px rgba(0,0,0,0.6); position: relative; overflow: hidden; }
+.crt::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(0deg, rgba(255,176,0,0.03) 0 1px, transparent 1px 3px); pointer-events: none; }
+.crt .hdr { font-size: 10px; letter-spacing: 2px; opacity: 0.7; margin-bottom: 8px; display: flex; justify-content: space-between; }
+.crt .huge { font-size: 44px; text-shadow: 0 0 12px rgba(255,176,0,0.5); line-height: 1; }
+.crt .huge small { font-size: 13px; }
+.crt table { width: 100%; margin-top: 10px; border-collapse: collapse; }
+.crt td { font-size: 12px; padding: 2.5px 0; border-bottom: 1px solid rgba(255,176,0,0.15); }
+.crt td:last-child { text-align: right; text-shadow: 0 0 8px rgba(255,176,0,0.4); }
+.crt td:first-child { opacity: 0.65; }
+.crt .cursor { display: inline-block; width: 7px; height: 13px; background: #ffb000; animation: bl 1s steps(1) infinite; vertical-align: -2px; }
+@keyframes bl { 50% { opacity: 0; } }
+
+/* ═══ ③ 手写黑板上墙(粉笔字) ═══ */
+.chalk { width: 300px; background: linear-gradient(160deg, #2e3b34, #26332c 60%, #223028); border: 10px solid #7a5a38; border-radius: 6px;
+  padding: 16px 20px; color: #e8e6df; box-shadow: 0 10px 30px rgba(0,0,0,0.5); position: relative; }
+.chalk::before { content: ""; position: absolute; inset: 0; background:
+  radial-gradient(circle at 30% 20%, rgba(255,255,255,0.04), transparent 40%),
+  radial-gradient(circle at 70% 80%, rgba(255,255,255,0.03), transparent 40%); pointer-events: none; }
+.chalk .ttl { font-size: 13px; letter-spacing: 3px; text-align: center; opacity: 0.85; border-bottom: 1px dashed rgba(232,230,223,0.3); padding-bottom: 6px; }
+.chalk .sp { text-align: center; margin: 8px 0; }
+.chalk .sp .n { font-size: 40px; font-family: "Segoe Print", "Comic Sans MS", cursive; color: #fff; text-shadow: 0 0 2px rgba(255,255,255,0.4); }
+.chalk .sp .u { font-size: 11px; opacity: 0.6; }
+.chalk .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 18px; font-size: 12px; }
+.chalk .it { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px dashed rgba(232,230,223,0.18); }
+.chalk .it b { font-weight: 600; color: #ffe9a8; }
+.chalk .corner { position: absolute; bottom: 8px; right: 14px; font-size: 9px; opacity: 0.4; font-family: "Segoe Print", cursive; }
+
+/* ═══ ④ 玻璃拟态·液态彩泡(iOS 17 风格) ═══ */
+.liquid { width: 300px; padding: 14px; border-radius: 28px; position: relative;
+  background: linear-gradient(150deg, rgba(255,255,255,0.16), rgba(255,255,255,0.05));
+  backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.25); box-shadow: 0 16px 48px rgba(0,0,0,0.4); }
+.liquid .blob { position: absolute; border-radius: 50%; filter: blur(28px); opacity: 0.55; }
+.liquid .b1 { width: 130px; height: 130px; background: #38bdf8; top: -30px; left: -20px; }
+.liquid .b2 { width: 110px; height: 110px; background: #a78bfa; bottom: -20px; right: -10px; }
+.liquid .b3 { width: 70px; height: 70px; background: #34d399; bottom: 30px; left: -30px; }
+.liquid .in { position: relative; padding: 6px 8px; }
+.liquid .row1 { display: flex; align-items: baseline; gap: 8px; }
+.liquid .spd { font-size: 38px; font-weight: 700; color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,0.3); }
+.liquid .spd small { font-size: 12px; font-weight: 500; opacity: 0.75; }
+.liquid .pillrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.liquid .pill { background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.2); border-radius: 20px; padding: 4px 11px; }
+.liquid .pill .pk { font-size: 8px; color: rgba(255,255,255,0.6); letter-spacing: 0.5px; }
+.liquid .pill .pv { font-size: 13px; color: #fff; font-weight: 600; }
+
+/* ═══ ⑤ 工业压力表(物理仪表盘) ═══ */
+.industrial { width: 300px; background: linear-gradient(160deg, #3a3f45, #23272c); border-radius: 14px; padding: 16px;
+  border: 1px solid #15181b; box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 12px 36px rgba(0,0,0,0.55); }
+.industrial .plate { background: linear-gradient(180deg, #c8b891, #b3a276); border-radius: 6px; padding: 10px 14px; color: #2b2620;
+  box-shadow: inset 0 2px 6px rgba(0,0,0,0.25); }
+.industrial .row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid rgba(43,38,32,0.15); }
+.industrial .row:last-child { border-bottom: none; }
+.industrial .gauge { display: flex; align-items: center; gap: 8px; }
+.industrial .dial { width: 26px; height: 26px; border-radius: 50%; background: conic-gradient(from 220deg, #d64545 var(--p,50%), #e8e0cc 0);
+  border: 3px solid #8a7d5c; position: relative; }
+.industrial .dial::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: #efe8d5; }
+.industrial .k { font-size: 9px; letter-spacing: 1px; font-weight: 700; text-transform: uppercase; opacity: 0.75; }
+.industrial .v { font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.industrial .screw { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #9aa2ab, #4a5058); }
+.industrial .top { display: flex; justify-content: space-between; margin-bottom: 8px; }
+.industrial .lamp { width: 10px; height: 10px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+.industrial .readout { background: #101614; color: #7cf7b0; border-radius: 4px; padding: 6px 10px; font-size: 22px; letter-spacing: 1px;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.7); border: 1px solid #0a0f0d; }
+
+/* ═══ ⑥ 报纸头版(新闻排印) ═══ */
+.news { width: 300px; background: #f7f3ea; color: #1a1a1a; padding: 16px 18px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+.news .mast { border-bottom: 3px double #1a1a1a; padding-bottom: 6px; margin-bottom: 8px; }
+.news .paper { font-family: Georgia, "Times New Roman", serif; font-size: 10px; letter-spacing: 3px; text-transform: uppercase; text-align: center; }
+.news .date { font-size: 8px; color: #888; text-align: center; margin-top: 2px; }
+.news .head { font-family: Georgia, serif; font-size: 30px; font-weight: 700; line-height: 1; margin: 6px 0 2px; }
+.news .head small { font-size: 12px; font-weight: 400; color: #555; font-family: Georgia, serif; }
+.news .cols { column-count: 2; column-gap: 16px; column-rule: 1px solid rgba(0,0,0,0.15); }
+.news .it { break-inside: avoid; padding: 4px 0; border-bottom: 1px dotted rgba(0,0,0,0.25); }
+.news .it .k { font-size: 8px; letter-spacing: 1px; text-transform: uppercase; color: #a33; font-weight: 700; }
+.news .it .v { font-size: 14px; font-weight: 700; font-family: Georgia, serif; }
+
+/* ═══ ⑦ 蒸汽波·日落网格 ═══ */
+.vapor { width: 300px; border-radius: 12px; overflow: hidden; position: relative; box-shadow: 0 14px 44px rgba(0,0,0,0.55);
+  background: linear-gradient(180deg, #2b1055 0%, #7b2d8b 40%, #ff6b9d 62%, #ff9a5a 70%, #1a0b2e 70.5%); padding: 18px; color: #fff; }
+.vapor .sun { width: 110px; height: 110px; border-radius: 50%; margin: 2px auto 0;
+  background: linear-gradient(180deg, #ffe25a, #ff6b9d 55%, #ff5a5a);
+  mask: repeating-linear-gradient(180deg, #000 0 10px, transparent 10px 14px), linear-gradient(#000,#000);
+  mask-composite: intersect; -webkit-mask-composite: source-in; }
+.vapor .spd { text-align: center; font-size: 40px; font-weight: 800; letter-spacing: 2px; margin-top: -46px; position: relative;
+  color: #fff; text-shadow: 3px 3px 0 #ff2e97, -2px -2px 0 #00e5ff; font-style: italic; }
+.vapor .spd small { display: block; font-size: 10px; letter-spacing: 6px; opacity: 0.8; font-style: normal; }
+.vapor .grid-fx { position: absolute; left: 0; right: 0; bottom: 0; height: 34%;
+  background: repeating-linear-gradient(90deg, rgba(0,229,255,0.5) 0 1px, transparent 1px 28px),
+              repeating-linear-gradient(0deg, rgba(0,229,255,0.5) 0 1px, transparent 1px 16px),
+              linear-gradient(180deg, transparent, #0d0518);
+  transform: perspective(120px) rotateX(48deg) scale(1.4); transform-origin: bottom; }
+.vapor .stats { position: relative; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; margin-top: 12px; }
+.vapor .st { background: rgba(13,5,24,0.72); border: 1px solid rgba(0,229,255,0.4); padding: 4px 7px; }
+.vapor .st .k { font-size: 7.5px; color: #00e5ff; letter-spacing: 1px; }
+.vapor .st .v { font-size: 12.5px; font-weight: 700; text-shadow: 0 0 6px rgba(0,229,255,0.6); }
+
+/* ═══ ⑧ 蓝图制图(工程图纸) ═══ */
+.blueprint { width: 300px; background:
+  repeating-linear-gradient(0deg, transparent, transparent 19px, rgba(255,255,255,0.09) 19px, rgba(255,255,255,0.09) 20px),
+  repeating-linear-gradient(90deg, transparent, transparent 19px, rgba(255,255,255,0.09) 19px, rgba(255,255,255,0.09) 20px),
+  linear-gradient(160deg, #0d3b66, #082c4e); border: 1px solid rgba(255,255,255,0.25); border-radius: 4px;
+  padding: 16px 18px; color: #dcecff; box-shadow: 0 12px 40px rgba(0,0,0,0.5); position: relative; }
+.blueprint .stamp { position: absolute; top: 10px; right: 12px; border: 1.5px solid rgba(220,236,255,0.5); padding: 2px 7px;
+  font-size: 8px; letter-spacing: 2px; color: rgba(220,236,255,0.7); transform: rotate(4deg); }
+.blueprint .title-bl { font-size: 11px; letter-spacing: 2px; border-bottom: 1.5px solid rgba(220,236,255,0.4); padding-bottom: 6px; }
+.blueprint .draw { display: flex; align-items: baseline; gap: 8px; margin: 10px 0 4px; }
+.blueprint .dim { font-size: 34px; font-weight: 700; }
+.blueprint .dim small { font-size: 11px; opacity: 0.7; }
+.blueprint .dim-arrow { flex: 1; height: 8px; position: relative; border-top: 1px solid rgba(220,236,255,0.6); border-bottom: 1px solid rgba(220,236,255,0.6); }
+.blueprint .dim-arrow::before, .blueprint .dim-arrow::after { content: ""; position: absolute; top: -4px; width: 1px; height: 16px; background: rgba(220,236,255,0.6); }
+.blueprint .dim-arrow::before { left: 0; } .blueprint .dim-arrow::after { right: 0; }
+.blueprint .specs { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin-top: 8px; font-size: 11px; }
+.blueprint .specs .sk { border-left: 2px solid rgba(220,236,255,0.4); padding-left: 6px; opacity: 0.7; }
+.blueprint .specs .sv { font-variant-numeric: tabular-nums; }
+
+/* ═══ ⑨ 构成主义海报(红黑几何) ═══ */
+const_ = null;
+.construct { width: 300px; background: #efe9dd; color: #17140f; padding: 0; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,0.5); position: relative; }
+.construct .band { background: #d63a2f; color: #fff; padding: 8px 16px; display: flex; justify-content: space-between; align-items: center; }
+.construct .band .t { font-size: 12px; font-weight: 800; letter-spacing: 2px; }
+.construct .band .dotl { width: 9px; height: 9px; border-radius: 50%; background: #fff; }
+.construct .mega { padding: 10px 16px 6px; border-bottom: 3px solid #17140f; }
+.construct .mega .n { font-size: 52px; font-weight: 900; line-height: 0.95; letter-spacing: -2px; font-style: italic; }
+.construct .mega .u { font-size: 10px; font-weight: 700; letter-spacing: 2px; }
+.construct .cells { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+.construct .cell { padding: 7px 10px 8px; border-right: 1.5px solid #17140f; border-bottom: 1.5px solid #17140f; }
+.construct .cell:nth-child(3n) { border-right: none; }
+.construct .cell:nth-child(n+4) { border-bottom: none; }
+.construct .cell .k { font-size: 7.5px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: #d63a2f; }
+.construct .cell .v { font-size: 14px; font-weight: 800; margin-top: 1px; }
+.construct .diag { position: absolute; right: -30px; top: 70px; width: 90px; height: 90px; background: #17140f;
+  transform: rotate(45deg); opacity: 0.06; pointer-events: none; }
+
+/* ═══ ⑩ 蜂窝六边形(自然蜂巢) ═══ */
+.hive { width: 300px; padding: 14px; background:
+  radial-gradient(ellipse at 50% 0%, #1c2530, #10161d 70%); border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+.hive .hrow { display: flex; justify-content: center; margin-top: -8px; }
+.hive .hrow:first-child { margin-top: 0; }
+.hive .hex { width: 86px; height: 94px; clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  background: linear-gradient(160deg, rgba(110,231,168,0.14), rgba(122,215,255,0.10));
+  border: none; display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 0 3px; position: relative; }
+.hive .hex::before { content: ""; position: absolute; inset: 0; clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  background: #141c25; z-index: -1; }
+.hive .hex::after { content: ""; position: absolute; inset: 1.5px; clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  background: linear-gradient(160deg, #1b2530, #151d27); z-index: -1; }
+.hive .hex .k { font-size: 7.5px; color: rgba(255,255,255,0.4); letter-spacing: 1px; }
+.hive .hex .v { font-size: 14px; font-weight: 700; color: #cdeeff; margin-top: 2px; }
+.hive .hex.hero6 { background: linear-gradient(160deg, rgba(122,215,255,0.30), rgba(122,215,255,0.10)); }
+.hive .hex.hero6 .v { font-size: 24px; color: #7ad7ff; text-shadow: 0 0 14px rgba(122,215,255,0.5); }
+.hive .gap { width: 46px; }
+</style>
+</head>
+<body>
+<h1>zcode-meter · 10 种完全不同的卡</h1>
+<p class="sub">不是同一张卡换衣服 —— 每张的整体结构、材质、配色、排印全部推倒重来。数值口径一致,气质零重叠。</p>
+
+<div class="grid10">
+
+<!-- ① 瑞士极简 -->
+<div class="wrap">
+  <h2><span class="no">①</span> 瑞士国际主义 · 白纸黑字</h2>
+  <div class="stage light">
+    <div class="swiss">
+      <div class="top">
+        <span class="big">24.3<sup> tok/s</sup></span>
+        <span class="live"><i></i>LIVE</span>
+      </div>
+      <div class="tbl num">
+        <div class="r"><span class="k">Today · 今日</span><span class="v">1.2B <em>¥2489</em></span></div>
+        <div class="r"><span class="k">In / Out · 入出</span><span class="v">435.9M <em>/ 575K</em></span></div>
+        <div class="r"><span class="k">Cache · 缓存命中</span><span class="v">95.01<em>%</em></span></div>
+        <div class="r"><span class="k">TTF / Total</span><span class="v">3.0 <em>/ 7.2s</em></span></div>
+        <div class="r"><span class="k">Burn · 燃速</span><span class="v">28.5M <em>/h</em></span></div>
+        <div class="r"><span class="k">Avg · 均速</span><span class="v">56.8 <em>t/s</em></span></div>
+      </div>
+    </div>
+  </div>
+  <p class="note">白底、黑字、红色 LIVE 点、粗规则线。瑞士排印:巨大无衬线数字 + 小号大写标签 + 表格线。深色桌面上唯一亮卡,存在感靠对比而非发光。</p>
+</div>
+
+<!-- ② 琥珀 CRT -->
+<div class="wrap">
+  <h2><span class="no">②</span> 复古终端 · 琥珀磷屏 CRT</h2>
+  <div class="stage dark">
+    <div class="crt num">
+      <div class="hdr"><span>ZCODE-METER v0.8</span><span>TTY-01</span></div>
+      <div class="huge">24.3<small> tok/s</small> <span class="cursor"></span></div>
+      <table>
+        <tr><td>今日 TODAY</td><td>1.2B / ¥2489</td></tr>
+        <tr><td>入/出 IN-OUT</td><td>435.9M / 575K</td></tr>
+        <tr><td>命中 CACHE</td><td>95.01%</td></tr>
+        <tr><td>首字/总 TTF</td><td>3.0s / 7.2s</td></tr>
+        <tr><td>燃速 BURN</td><td>28.5M/h</td></tr>
+        <tr><td>均速 AVG</td><td>56.8 t/s</td></tr>
+      </table>
+    </div>
+  </div>
+  <p class="note">琥珀单色磷光屏:扫描线纹理、辉光文字、闪烁光标、表格式排版。信息以"终端会话"的语气呈现 —— 极客怀旧向,和 IDE 气质天然契合。</p>
+</div>
+
+<!-- ③ 黑板粉笔 -->
+<div class="wrap">
+  <h2><span class="no">③</span> 黑板粉笔 · 手写课堂</h2>
+  <div class="stage wallpaper">
+    <div class="chalk">
+      <div class="ttl">今 日 账 目</div>
+      <div class="sp"><span class="n">24.3</span> <span class="u">tok/s</span></div>
+      <div class="grid num">
+        <div class="it"><span>入 / 出</span><b>435.9M/575K</b></div>
+        <div class="it"><span>缓存命中</span><b>95.01%</b></div>
+        <div class="it"><span>首字/总</span><b>3.0/7.2s</b></div>
+        <div class="it"><span>燃速</span><b>28.5M/h</b></div>
+        <div class="it"><span>均燃</span><b>132.6M/h</b></div>
+        <div class="it"><span>均速</span><b>56.8 t/s</b></div>
+      </div>
+      <div class="corner">— 记于今日</div>
+    </div>
+  </div>
+  <p class="note">木框黑板+粉笔质感:数字用手写体、虚线像老师划的、右下角签名。温度感拉满的"每日账目板",和"用量记录"的隐喻天然契合。Qt 侧手写体+噪点纹理可近似。</p>
+</div>
+
+<!-- ④ 液态玻璃 -->
+<div class="wrap">
+  <h2><span class="no">④</span> 液态玻璃 · 彩泡药丸(iOS 17)</h2>
+  <div class="stage dark">
+    <div class="liquid">
+      <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+      <div class="in">
+        <div class="row1 num"><span class="spd">24.3<small> tok/s</small></span></div>
+        <div class="pillrow num">
+          <div class="pill"><div class="pk">今日</div><div class="pv">1.2B · ¥2489</div></div>
+          <div class="pill"><div class="pk">入/出</div><div class="pv">435.9M/575K</div></div>
+          <div class="pill"><div class="pk">命中</div><div class="pv">95.01%</div></div>
+          <div class="pill"><div class="pk">首字/总</div><div class="pv">3.0/7.2s</div></div>
+          <div class="pill"><div class="pk">燃速</div><div class="pv">28.5M/h</div></div>
+          <div class="pill"><div class="pk">均速</div><div class="pv">56.8 t/s</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note">柔边彩泡在磨砂玻璃后晕开,数据装进药丸胶囊流式换行 —— 没有"网格"这个概念,自然不存在对齐问题。圆角 28、发光、呼吸感,年轻 iOS 气质。Qt 侧=分层半透明圆角矩形+大圆角,可近似 85%。</p>
+</div>
+
+<!-- ⑤ 工业仪表 -->
+<div class="wrap">
+  <h2><span class="no">⑤</span> 工业机柜 · 压力表盘</h2>
+  <div class="stage dark">
+    <div class="industrial" style="position:relative">
+      <div class="screw" style="top:8px;left:8px"></div><div class="screw" style="top:8px;right:8px"></div>
+      <div class="screw" style="bottom:8px;left:8px"></div><div class="screw" style="bottom:8px;right:8px"></div>
+      <div class="top"><span class="lamp"></span><span style="font-size:9px;letter-spacing:2px;color:#9aa2ab">SYSTEM NOMINAL</span></div>
+      <div class="readout num">24.3 tok/s</div>
+      <div class="plate" style="margin-top:10px">
+        <div class="row"><span class="gauge"><span class="dial" style="--p:78%"></span><span class="k">Burn 燃速</span></span><span class="v num">28.5M/h</span></div>
+        <div class="row"><span class="gauge"><span class="dial" style="--p:64%"></span><span class="k">Avg 均燃</span></span><span class="v num">132.6M/h</span></div>
+        <div class="row"><span class="gauge"><span class="dial" style="--p:90%"></span><span class="k">Cache 命中</span></span><span class="v num">95.01%</span></div>
+        <div class="row"><span class="gauge"><span class="dial" style="--p:40%"></span><span class="k">TTF/Total</span></span><span class="v num">3.0/7.2s</span></div>
+        <div class="row"><span class="gauge"><span class="dial" style="--p:55%"></span><span class="k">In/Out</span></span><span class="v num">435.9M/575K</span></div>
+      </div>
+    </div>
+  </div>
+  <p class="note">金属机柜+铭牌+四角螺丝+绿色运行灯+LED 读数屏,数据行是黄铜铭牌上的小表盘。物理世界的"仪器感",和 token "流量/压力"的隐喻同构。Qt 全自绘无压力。</p>
+</div>
+
+<!-- ⑥ 报纸 -->
+<div class="wrap">
+  <h2><span class="no">⑥</span> 报纸头版 · 衬线排印</h2>
+  <div class="stage light">
+    <div class="news">
+      <div class="mast">
+        <div class="paper">The Meter Times</div>
+        <div class="date">今日号 · 第 1024 期 · 晴</div>
+      </div>
+      <div class="head">24.3 <small>tok/s — 持续输出中</small></div>
+      <div class="cols num">
+        <div class="it"><div class="k">入 / 出</div><div class="v">435.9M / 575K</div></div>
+        <div class="it"><div class="k">缓存命中</div><div class="v">95.01%</div></div>
+        <div class="it"><div class="k">首字 / 总</div><div class="v">3.0 / 7.2s</div></div>
+        <div class="it"><div class="k">燃速</div><div class="v">28.5M/h</div></div>
+        <div class="it"><div class="k">均燃</div><div class="v">132.6M/h</div></div>
+        <div class="it"><div class="k">均速</div><div class="v">56.8 t/s</div></div>
+      </div>
+    </div>
+  </div>
+  <p class="note">报纸头版语法:报眉(双细线)、衬线大标题、双栏分栏+栏间线、点线分隔。红色小签做栏目标题。把 token 用量当成"新闻"来排版 —— 反差感最强的一版。</p>
+</div>
+
+<!-- ⑦ 蒸汽波 -->
+<div class="wrap">
+  <h2><span class="no">⑦</span> 蒸汽波 · 落日透视网格</h2>
+  <div class="stage dark">
+    <div class="vapor">
+      <div class="sun"></div>
+      <div class="spd">24.3<small>TOK / S</small></div>
+      <div class="stats num">
+        <div class="st"><div class="k">IN/OUT</div><div class="v">435.9M</div></div>
+        <div class="st"><div class="k">CACHE</div><div class="v">95.01%</div></div>
+        <div class="st"><div class="k">TTF/TOT</div><div class="v">3.0/7.2</div></div>
+        <div class="st"><div class="k">BURN</div><div class="v">28.5M/h</div></div>
+        <div class="st"><div class="k">AVG.BURN</div><div class="v">132.6M</div></div>
+        <div class="st"><div class="k">AVG.TPS</div><div class="v">56.8</div></div>
+      </div>
+      <div class="grid-fx"></div>
+    </div>
+  </div>
+  <p class="note">条纹落日、品红/青双色错位阴影、底部透视地平线网格。数据行是霓虹边框舱。80 年代复古未来主义,装饰性拉满 —— 桌面上最抢眼的一版。</p>
+</div>
+
+<!-- ⑧ 蓝图 -->
+<div class="wrap">
+  <h2><span class="no">⑧</span> 工程蓝图 · 制图规范</h2>
+  <div class="stage dark">
+    <div class="blueprint num">
+      <div class="stamp">FIG. 08-B</div>
+      <div class="title-bl">THROUGHPUT — 瞬时吞吐视图</div>
+      <div class="draw">
+        <span class="dim">24.3<small> tok/s</small></span>
+        <span class="dim-arrow"></span>
+      </div>
+      <div class="specs">
+        <span class="sk">入 / 出</span><span class="sv">435.9M / 575K</span>
+        <span class="sk">缓存命中</span><span class="sv">95.01%</span>
+        <span class="sk">首字 / 总</span><span class="sv">3.0s / 7.2s</span>
+        <span class="sk">燃速</span><span class="sv">28.5M/h</span>
+        <span class="sk">均燃</span><span class="sv">132.6M/h</span>
+        <span class="sk">均速</span><span class="sv">56.8 t/s</span>
+      </div>
+    </div>
+  </div>
+  <p class="note">蓝图网格纸+图签图框:主数字当作"标注尺寸"画双箭头尺寸线,参数表用制图的左竖线键列。冷静、精确、工程师审美,和"meter"这个名字天作之合。</p>
+</div>
+
+<!-- ⑨ 构成主义 -->
+<div class="wrap">
+  <h2><span class="no">⑨</span> 构成主义 · 红黑海报</h2>
+  <div class="stage light">
+    <div class="construct">
+      <div class="diag"></div>
+      <div class="band"><span class="t">ZCODE·METER</span><span class="dotl"></span></div>
+      <div class="mega num">24.3<span style="font-size:14px;font-weight:700"> TOK/S</span></div>
+      <div class="cells num">
+        <div class="cell"><div class="k">入出</div><div class="v">435.9M/575K</div></div>
+        <div class="cell"><div class="k">命中</div><div class="v">95.01%</div></div>
+        <div class="cell"><div class="k">首/总</div><div class="v">3.0/7.2s</div></div>
+        <div class="cell"><div class="k">燃速</div><div class="v">28.5M/h</div></div>
+        <div class="cell"><div class="k">均燃</div><div class="v">132.6M/h</div></div>
+        <div class="cell"><div class="k">均速</div><div class="v">56.8 t/s</div></div>
+      </div>
+    </div>
+  </div>
+  <p class="note">俄国构成主义海报:红头带、超大斜体数字、粗黑格线把六格压成"版面分区"、背景暗斜块。强烈、直接、海报式冲击力,数字是版面的主角。</p>
+</div>
+
+<!-- ⑩ 蜂窝 -->
+<div class="wrap">
+  <h2><span class="no">⑩</span> 蜂窝 · 六边形蜂巢</h2>
+  <div class="stage dark">
+    <div class="hive">
+      <div class="hrow">
+        <div class="hex hero6"><div class="k">TOK/S</div><div class="v">24.3</div></div>
+      </div>
+      <div class="hrow">
+        <div class="hex"><div class="k">入/出</div><div class="v num">435.9M</div></div>
+        <div class="hex"><div class="k">命中</div><div class="v num">95.0%</div></div>
+        <div class="hex"><div class="k">首/总</div><div class="v num">3.0/7.2</div></div>
+      </div>
+      <div class="hrow" style="margin-top:-26px">
+        <div class="hex" style="margin-left:26px"><div class="k">燃速</div><div class="v num">28.5M/h</div></div>
+        <div class="hex"><div class="k">均速</div><div class="v num">56.8</div></div>
+      </div>
+    </div>
+  </div>
+  <p class="note">蜂巢六边形阵列:主速度占顶部大巢房,数据按 3+2 蜂窝排布,巢房微光渐变。"六边形容器"让对齐问题彻底消失(图形自对齐),有机、自然、独一无二。</p>
+</div>
+
+</div>
+<p class="note" style="margin-top:22px">Qt 可实现性:①④⑥⑨=纯 QSS+字体;②=扫描线纹理+辉光(QPainter);③=手写体+噪点;⑤=conic 环 QPainter drawArc;⑦=渐变+transform(QLinearGradient+透视近似);⑧=网格纹理+QPainterPath 尺寸线;⑩=QPainterPath 六边形 clip-path。无图片依赖。</p>
+</body>
+</html>

@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import sqlite3
+from pathlib import Path
 
 from .base import UsageSource
 
@@ -20,8 +21,19 @@ DB_PATH = os.path.join(ZCODE_DIR, "db", "db.sqlite")
 
 
 def connect_ro() -> sqlite3.Connection:
-    """只读连接:引擎轮询与 UI 侧图表/菜单查询共用,统一 open 参数。"""
-    return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=2)
+    """只读连接:引擎轮询与 UI 侧图表/菜单查询共用,统一 open 参数。
+    路径必须经 as_uri() 百分号编码后再拼查询串:原生路径直拼 file: URI 时,
+    '#' 会被 SQLite 当 URI fragment 起点 —— 从 '#' 截断到结尾,连 ?mode=ro
+    一并卷走,只读失效后在截断出的错误路径静默创建空库文件(写副作用);
+    '%' 会被当百分号解码前缀,编码序列即解析失败。用户名/目录含这两个
+    字符时打开的是错误的库或打不开,上层 except sqlite3.Error 一律吞成
+    0/[](ZCode 源静默清零)。as_uri() 对相对路径抛 ValueError,而测试会
+    monkeypatch 相对形态的 DB_PATH,先 abspath 归一(与 sqlite 相对 cwd
+    解析的旧行为一致)。"""
+    p = Path(DB_PATH)
+    if not p.is_absolute():
+        p = Path(os.path.abspath(p))
+    return sqlite3.connect(p.as_uri() + "?mode=ro", uri=True, timeout=2)
 
 
 def today0_ms() -> int:

@@ -1596,6 +1596,98 @@ def test_quota_refresh_optional_key():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ================= 皮肤配置键(v0.8.x 皮肤系统:白名单/归一化/可选键落盘) =================
+
+def test_skin_optional_key():
+    """skin 配置键语义(白名单归一化 + 可选键落盘,结构镜像
+    test_quota_refresh_optional_key):
+    ①三键 cfg 落盘文件仍三键 —— 既有 test_save_config_roundtrip back2 三键
+    全等断言零改动的根基;load 恒含归一化 skin(缺省 "glass");
+    ②白名单内非缺省值("crt")save 落盘读回环相等;glass 输入=整键省略
+    (文件无 skin 键,与 quota_refresh="auto" 同省键纪律);
+    ③非法值("dark"/123/[]/"")save 整键省略、load 读含非法值的文件也
+    回 "glass"(其他三键不受污染,坏值不驻留文件);
+    ④缺文件早退路径恒含 skin=="glass"(默认 dict 携带,『恒含』才是完整
+    承诺 —— 只在函数末尾置键会让早退路径仍是无键形状)。
+    全部显式 path 临时文件,不碰真实 zm_config.json。"""
+    import json as jsonmod
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_skin_"))
+    orig_path = de.CONFIG_PATH
+    base = {"quota_api_key": "sk-x", "daily_budget_cny": 5, "alert_pct": [20.0, 10.0]}
+    three = {"quota_api_key": "sk-x", "daily_budget_cny": 5.0,
+             "alert_pct": [20.0, 10.0]}
+    try:
+        # ⓪ 白名单契约:SKIN_IDS 9 款无重复、glass 在首位(缺省即第 0 款);
+        # _norm_skin 纯函数对任意类型输入安全(list/bool/None 不抛错)
+        check("白名单:9 款无重复且 glass 在首位", len(de.SKIN_IDS) == 9
+              and len(set(de.SKIN_IDS)) == 9 and de.SKIN_IDS[0] == "glass",
+              str(de.SKIN_IDS))
+        check("norm:白名单内原样返回", de._norm_skin("crt") == "crt"
+              and de._norm_skin("vaporwave") == "vaporwave")
+        check("norm:白名单外/任意类型 → None", de._norm_skin("dark") is None
+              and de._norm_skin(123) is None and de._norm_skin([]) is None
+              and de._norm_skin("") is None and de._norm_skin(None) is None
+              and de._norm_skin(True) is None)
+        # ① 三键 cfg(无 skin)→ 原子文件形状仍三键;load 恒含 skin="glass"
+        p1 = str(tmp / "c1.json")
+        check("save:三键 cfg 返回 True", de.save_config(base, path=p1) is True)
+        raw = jsonmod.loads(_Path(p1).read_text(encoding="utf-8"))
+        check("save:文件无 skin 键(仍三键)", set(raw) == set(three),
+              str(sorted(raw)))
+        de.CONFIG_PATH = p1
+        back = de.load_config()
+        check("load:无键 → skin=glass", back.get("skin") == "glass",
+              str(back.get("skin")))
+        check("load:其他三键不受污染(可选键除外)",
+              all(back.get(k) == v for k, v in three.items()), str(back))
+        # ② 合法非缺省值回环:crt 落盘读回环相等;glass 输入=整键省略
+        p2 = str(tmp / "c_crt.json")
+        check("save:crt 落盘 True",
+              de.save_config(dict(base, skin="crt"), path=p2) is True)
+        raw = jsonmod.loads(_Path(p2).read_text(encoding="utf-8"))
+        check("save:crt 文件含键同值", raw.get("skin") == "crt", str(sorted(raw)))
+        de.CONFIG_PATH = p2
+        check("load:crt 回环相等", de.load_config().get("skin") == "crt",
+              str(de.load_config()))
+        p3 = str(tmp / "c_glass.json")
+        check("save:glass 输入落盘 True",
+              de.save_config(dict(base, skin="glass"), path=p3) is True)
+        raw = jsonmod.loads(_Path(p3).read_text(encoding="utf-8"))
+        check("save:glass 输入整键省略", "skin" not in raw, str(sorted(raw)))
+        # ③ 非法值:save 省键(文件仍三键)、load 遇非法值恒回 glass
+        for bad in ("dark", 123, [], ""):
+            p = str(tmp / f"bad_{bad!r}.json")
+            check(f"save:非法 {bad!r} 仍可落盘",
+                  de.save_config(dict(base, skin=bad), path=p) is True)
+            raw = jsonmod.loads(_Path(p).read_text(encoding="utf-8"))
+            check(f"save:非法 {bad!r} 整键省略", "skin" not in raw,
+                  str(sorted(raw)))
+        pb = str(tmp / "load_bad.json")
+        _Path(pb).write_text(jsonmod.dumps(
+            {"quota_api_key": "sk-x", "daily_budget_cny": 5,
+             "alert_pct": [20, 10], "skin": "dark"}), encoding="utf-8")
+        de.CONFIG_PATH = pb
+        back = de.load_config()
+        check("load:文件含非法 dark → glass", back.get("skin") == "glass",
+              str(back.get("skin")))
+        check("load:其他三键不受污染(可选键除外)",
+              all(back.get(k) == v for k, v in three.items()), str(back))
+        # ④ 缺文件早退路径恒含 skin(默认 dict 携带;键缺失会让『恒含』
+        # 塌成 .get 兜底,T2 期 cfg["skin"] 直读就 KeyError)
+        de.CONFIG_PATH = str(tmp / "no_such_file.json")
+        back = de.load_config()
+        check("load:缺文件 → 恒含 skin=glass",
+              "skin" in back and back["skin"] == "glass", str(back))
+    finally:
+        de.CONFIG_PATH = orig_path
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ================= 趋势外推(T3:trend_forecast 纯函数,合成行手算对账) =================
 
 def test_trend_forecast_hand_computed():
@@ -1833,6 +1925,8 @@ if __name__ == "__main__":
     # ---- 刷新档位显式化(T8:手动档决策边界 + quota_refresh 可选键语义) ----
     print("== test_quota_fetch_decision_manual_mode =="); test_quota_fetch_decision_manual_mode()
     print("== test_quota_refresh_optional_key ==");       test_quota_refresh_optional_key()
+    # ---- 皮肤配置键(v0.8.x 皮肤系统:白名单/归一化/可选键落盘) ----
+    print("== test_skin_optional_key ==");                test_skin_optional_key()
     # ---- 趋势外推(T3:trend_forecast 纯函数,合成行手算对账,零网络零库) ----
     print("== test_trend_forecast_hand_computed ==");     test_trend_forecast_hand_computed()
     # ---- 速度趋势 sparkline 数据源(v0.8.0 T4:合成库手算对账,值/序/截断/排除/异常) ----

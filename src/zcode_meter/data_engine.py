@@ -162,13 +162,36 @@ def _norm_quota_refresh(v):
     return None
 
 
+# 皮肤白名单(9 款):glass=缺省(现玻璃仪表),其余 8 款视觉见
+# design/skins-8x3.html 定稿。数据层只管配置键的合法性白名单;渲染与未实现
+# id 的回退在 UI 层(skins.py registry 缺项回退玻璃)—— 白名单先行钉死
+# 全部 9 个 id,手改文件指向尚未实现的皮肤也不在配置层报错
+SKIN_IDS = ("glass", "swiss", "crt", "chalk", "liquid",
+            "industrial", "newspaper", "vaporwave", "blueprint")
+
+
+def _norm_skin(v):
+    """skin(皮肤配置键)白名单归一化:仅 SKIN_IDS 内的 id 合法并原样返回,
+    否则 None(镜像 _norm_quota_refresh 的纯函数口径)。元组成员判定对任意
+    类型输入都安全(数字/bool/None/list 一律不匹配,不抛错),无需 isinstance
+    预筛。缺省语义由调用方定:load_config 恒回 "glass"(键归一化后必在,
+    消费方免 .get 兜底),save_config 非法/缺省整键省略(可选键纪律)。"""
+    return v if v in SKIN_IDS else None
+
+
 def load_config() -> dict:
     """zm_config.json(用户本地文件,已 .gitignore,防 key 随仓库提交):
     quota_api_key(str)、daily_budget_cny(>0 数字)、alert_pct(正数列表)、
-    quota_refresh(可选:仅文件含合法值时含键,见 _norm_quota_refresh)。
+    quota_refresh(可选:仅文件含合法值时含键,见 _norm_quota_refresh)、
+    bar_segments(规范化后必含)、skin(归一化后必含,白名单外/缺省恒
+    "glass",见 _norm_skin)。
     缺文件/坏 JSON/字段类型不对一律回退默认,不抛错。任何日志与调试路径
     都不得打印 key 明文(泄漏面专查项)。"""
-    cfg = {"quota_api_key": "", "daily_budget_cny": None, "alert_pct": [20.0, 10.0]}
+    # skin 放默认 dict 而非仅函数末尾:缺文件/坏 JSON 的早退路径返回的也是
+    # 这份 dict —— 恒含 "glass" 才算『消费方免 .get 兜底』,否则早退路径
+    # 仍是无 skin 键形状,恒含就是半截承诺
+    cfg = {"quota_api_key": "", "daily_budget_cny": None, "alert_pct": [20.0, 10.0],
+           "skin": "glass"}
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             obj = json.load(f)
@@ -193,6 +216,10 @@ def load_config() -> dict:
         cfg["quota_refresh"] = rv
     # 可选键:贴边条可勾选段(v0.8.0 对版期;缺省全开=存量文件零迁移)
     cfg["bar_segments"] = _norm_bar_segments(obj.get("bar_segments"))
+    # 皮肤键恒置(与 bar_segments 同款『归一化后必在』形状):白名单外/
+    # 缺省一律回 "glass" —— 存量文件无此键零迁移,非法值(含手改错别字)
+    # 不抛错静默回玻璃,save_config 侧对 glass 整键省略(见下方可选键纪律)
+    cfg["skin"] = _norm_skin(obj.get("skin")) or "glass"
     return cfg
 
 
@@ -236,6 +263,13 @@ def save_config(cfg: dict, path: str | None = None) -> bool:
     segs = cfg.get("bar_segments")
     if segs is not None:
         out["bar_segments"] = _norm_bar_segments(segs)
+    # 皮肤可选键:仅白名单内且非缺省 glass 才写 —— 选玻璃=整键省略(镜像
+    # quota_refresh="auto" 省键注释:缺省值落盘只会让旧文件平白多一个无
+    # 信息量的键、翻掉三键形状断言);白名单外非法值同样省键,load_config
+    # 读回恒得 glass(坏值不驻留文件)
+    sk = _norm_skin(cfg.get("skin"))
+    if sk is not None and sk != "glass":
+        out["skin"] = sk
     tmp = p + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -898,15 +932,24 @@ class DataEngine(threading.Thread):
             con.close()
             return sid or ""
         except (sqlite3.Error, TypeError):
-            # 兜底:part 不可用时退回 rollout mtime
+            # 兜底:part 不可用时退回 rollout mtime。兜底必须沿用主路径的
+            # 排除红线(sess_subagent*/sess_dwf-*):子代理/工作流的流式输出
+            # 同样落 rollout 文件,且工作流运行期其 mtime 恰恰最新 —— 不排除
+            # 则兜底把统计劫持到子代理头上,等于 v0.2.0 主路径事故在兜底路径
+            # 复发(实测 rollout 目录曾一度仅剩 dwf 文件,劫持 100% 命中)。
             try:
                 best, best_t = "", 0
                 for name in os.listdir(ROLL_DIR):
-                    if name.startswith("model-io-sess_") and name.endswith(".jsonl"):
-                        p = os.path.join(ROLL_DIR, name)
-                        t = os.path.getmtime(p)
-                        if t > best_t:
-                            best_t, best = t, name[len("model-io-"):-len(".jsonl")]
+                    if not (name.startswith("model-io-sess_")
+                            and name.endswith(".jsonl")):
+                        continue
+                    sid = name[len("model-io-"):-len(".jsonl")]
+                    if sid.startswith(("sess_subagent", "sess_dwf-")):
+                        continue
+                    p = os.path.join(ROLL_DIR, name)
+                    t = os.path.getmtime(p)
+                    if t > best_t:
+                        best_t, best = t, sid
                 return best
             except OSError:
                 return ""
@@ -1564,8 +1607,14 @@ class DataEngine(threading.Thread):
 
     # ---- 主循环 ----
     def run(self):
-        if not self.session_id:
-            return
+        # P1 修复:session_id 为空(全新机器先装 meter 后才用 zcode、启动时
+        # DB 缺失/被写锁超 2s/part 表空)绝不能直接 return —— 那会连三个轮询
+        # 线程都不起,本线程永久死亡且无重试无看门狗,整卡从此零数据、无报错,
+        # 唯一恢复方式是重启应用(线程二度 start 直接 RuntimeError)。空 id 下
+        # 会话级查询自然空转(session_id='' 匹配不到行,今日用量等全局字段
+        # 照常出数),主循环每 0.5s 的 _refresh_session 会在首个可识别会话
+        # 出现时经 _switch_session 完成自愈 —— 前提是循环活着,这就是本行
+        # 存在的意义。
         self.snap.title = self._session_title()
         self._poll_stats()
         self._init_tps_for_session()

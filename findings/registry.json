@@ -1,5 +1,98 @@
 {
-  "open": [],
+  "open": [
+    {
+      "title": "__version__ 停在 0.6.0,而工作副本已含 v0.7.0+v0.8.0 两版已落地改动,且唯一消费者 test_package.py:36 把 0.6.0 硬编码钉死,版本漂移永远不会被任何机制暴露",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "零副作用设计声明引用『tests/test_package.py 断言①』作护栏,但该测试没有任何可执行断言检查这一点——不变式只活在测试 docstring 里,日后往 __init__.py 加 import 不会让任何测试变红",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "『「import zcode_meter」必须可以无开销地用于版本探测』被无条件陈述,但仅在 sys.path 先含 src/ 时成立;从仓库根(自然 cwd,且仓库无 pyproject/setup.py 包永远不会被安装)import 直接 ModuleNotFoundError 崩溃,该前提 docstring 未写",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "库缺失/打不开时 CLI 报『窗口内无 completed 用量记录』并以 rc=0 退出,故障与真空窗不可区分",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "--days 最大允许 366,但 MAX_SCAN_ROWS=100k 行闸会静默截断更早记录,口径行/表头不揭示,『近 N 天』合计将变成无声下限",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "表头/合计行的中文按字符数而非显示宽度补位,与 ASCII 数据列错位约 2 列,tokens/¥ 列头对不齐数据",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "换号/清号分支的套餐缓存清理清单缺 `_plan_left_tok`/`_pct_ratio`/`_last_pct_seen`/`_last_win_tok_seen` 四项:新账号首次查询立即用旧账号校准的 ratio 显示『~N tokens』,且 `_last_pct_seen` 残留旧号 pct 使首个校准样本跨账号混算,违反代码自身声明的『旧账号数据零残留』不变式",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "两个异常处理器在 except 块内裸 `open(\"zm_error.log\", \"a\")`:落 cwd 而非全项目统一的 app_dir() 锚点,且该 I/O 无防护 —— cwd 只读或不可写(frozen exe、快捷方式『起始位置』不同)时 open 自身抛 OSError 从 except 二次逃逸,Qt 槽吞掉后原始异常与诊断日志双双丢失,症状恰是代码反复防御的『点击没反应』",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "load_config 的三条早退路径(缺文件/坏 JSON/非 dict)返回的 dict 没有 bar_segments 键,违反本函数 docstring『bar_segments(规范化后必含)』的自声明契约;skin 键做过同款修复(191-194 行注释),bar_segments 漏了",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "_handle_log_line 对 obj 无 isinstance(dict) 守卫,一行合法 JSON 但非对象(数组/数字/字符串)会 AttributeError 打死 _tail_loop 线程(外层只捕 OSError),generating/idle 状态机与 tps_est 从此静默失效",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "_on_request_done 的会话查询缺 query_source='main_turn' 过滤——8 处会话口径查询中唯一漏网,compact/workflow_child 行会覆盖 tps_exact/last_ttft/last_duration 并污染 chars/token 校准",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "global_tps 在请求完成的那一拍,part 增长与 completed 重叠加权双计同一批输出 token(约 2× 尖峰),与 _global_completed_tps docstring『不重不漏』的声明不符",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "run() 主循环写 snap.state/snap.gen_elapsed 不持 snap_lock,与持锁重建 Snapshot 的 _switch_session 存在丢更新竞态——切会话恰逢状态翻转时,新快照带着过期 state 且 last_state 已记账,UI 整轮请求期间显示错误状态",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "_switch_session 重置 _last_len 却不重置 _exact_out_chars,跨会话残留旧会话字符数÷新会话 token 数,切换后首个未被 part 轮询采到的快速请求会把 chars/token 校准带偏",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "新增源模块漏补字面导入行时,注释与 README 宣称的失败症状『exe 启动即 ImportError』与实测不符:真实症状是 exe 正常启动、该源被静默丢弃(dev 环境可见、exe 不可见)——恰是本包 docstring(第 37-38 行『数据缺失比报错更难被发现』)自认最坏的失败类别,且无任何测试/打包守卫钉住『字面导入行 ↔ 包内模块文件』的对应关系",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "发现机制只过滤 Source=基类本体的再导出(cls is not UsageSource),不过滤对兄弟源类的再导出——第三方模块写 `from .zcode import Source` 会让同一源类实例化两次,today_by_source 出现两行同名同值,卡片显示用量翻倍的假象",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "源契约允许抛异常(未实现方法默认 raise NotImplementedError)+ 发现机制不校验方法实现,而引擎侧唯一护栏是 except sqlite3.Error,第三方源缺方法或抛非 sqlite 异常会静默杀死 _db_loop 轮询线程,整卡冻结",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "daily_usage 是契约上的无消费者 API:引擎从未调用它,历史图表走引擎自己的 SQL,该方法连同两个实现与测试成了无调用方的维护面,形状漂移无应用层信号",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "类级 _file_cache 只增不删,文件被删除/轮转后其已解析行仍永久驻留,长驻进程内存无界缓慢增长(资源泄露,量级小)",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "(mtime,size) 变化即整文件从字节 0 重解析,重扫成本 O(文件大小) 且在引擎线程 snap_lock 内执行;改增量 tail 解析可降为 O(新增字节)",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "today_usage 每秒与 _poll_stats 的今日用量 SQL 逐字同文双跑(同 tick 同 WHERE 两条聚合),且 UI 在仅一个源可用时根本不渲染该结果 —— 每秒一次纯冗余查询+连接开关",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "today_usage/daily_usage 的 con.close() 不在 try/finally 里,查询抛错路径连接不显式关闭 —— 与本仓库自己在 fetch_recent_speeds 钉死的关连接纪律相悖(当前 CPython 引用计数会兜底关闭,无持久泄漏,属一致性问题)",
+      "date": "2026-09-29"
+    },
+    {
+      "title": "ZCodeSource.daily_usage 全仓零调用方(死接口实现),且相比其刻意镜像的 fetch_daily_usage 缺 MAX_SCAN_ROWS 行数下限 —— 一旦被接线即与历史图表口径分叉且无性能闸",
+      "date": "2026-09-29"
+    }
+  ],
   "fixed": [
     {
       "title": "卡片信息层级重排:今日用量+金额升为第二主数字,套餐剩余两级化,ttft/dur 合并压缩低频字段",
@@ -8,6 +101,26 @@
     {
       "title": "四档间距标度+分节符分级:SP token 化,并按重排后自然尺寸重估 CARD_W/CARD_H",
       "date": "2026-09-28"
+    },
+    {
+      "title": "_update_quota 的剩余 token 校准按 UI 轮询节拍(200ms)而非 quota 新数据到达节拍执行:d_tok 只覆盖一个 200ms tick 的块增量、d_pct 却是整个刷新间隔(3min)的跳变,比例低估 300~900 倍并永久遮蔽正确的冷启动估算;同时 fetch_billing_blocks(1)(开 SQLite 连接+聚合 SQL)每 200ms 在 UI 线程跑一次,5 次/秒常驻",
+      "date": "2026-09-29",
+      "fix": "v0.9.x 新数据闸:整段 quota 搬运只在 fetched_at 变化的新数据到达时执行一次(app.py:2112-2115 与 _plan_fetched_at 比对,docstring 2090-2105);_last_pct_seen/_last_win_tok_seen 仅随闸内更新,d_pct/d_tok 同覆盖一个刷新间隔(2132-2154),消除 300~900 倍系统性低估;fetch_billing_blocks(1) 只在闸内执行,不再每 200ms 打 DB(2138-2142);换号/清号分支同步清 _pct_ratio/_last_pct_seen/_last_win_tok_seen 校准态(2030-2036)"
+    },
+    {
+      "title": "会话识别的 rollout 兜底分支没有排除 subagent/dwf 会话——主路径的历史红线(subagent 劫持会话统计)在兜底路径重蹈,属注册表教训复发(P1)",
+      "date": "2026-09-29",
+      "fix": "兜底循环沿用主路径排除红线:跳过 sess_subagent*/sess_dwf-*(data_engine.py:947-948),注释载明不排除等于 v0.2.0 主路径劫持事故在兜底路径复发(实测 rollout 目录曾仅剩 dwf 文件,劫持 100% 命中)"
+    },
+    {
+      "title": "run() 在 session_id 为空时直接 return,引擎线程永久死亡且无任何重试/看门狗——启动时刻没有可识别会话,整个计量器从此零数据、无报错",
+      "date": "2026-09-29",
+      "fix": "删除 session_id 为空即 return 的早退(data_engine.py:1609-1623):空 id 下三个轮询线程照常启动、会话级查询自然空转(session_id='' 匹配不到行),主循环每 0.5s 的 _refresh_session 在首个可识别会话出现时经 _switch_session 自愈"
+    },
+    {
+      "title": "connect_ro 把原生路径直拼进 file: URI 且不做百分号编码,路径含 '#' 或 '%' 时静默打开错误库/打不开,而上层 except sqlite3.Error 一律吞成 0 —— ZCode 源静默清零(数据错误且有具体触发路径);复核补强:'#' 还会连带吞掉 ?mode=ro 使只读连接在截断路径静默创建新空库文件(写副作用)",
+      "date": "2026-09-29",
+      "fix": "connect_ro 改 Path(DB_PATH).as_uri() 百分号编码后再拼 ?mode=ro,相对路径先 abspath 归一(兼容测试 monkeypatch 相对形态 DB_PATH)(zcode.py:23-36);docstring 载明 '#' 截断连 ?mode=ro 一并卷走与 '%' 误解码两类失效及写副作用"
     }
   ],
   "proposed": [

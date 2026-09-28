@@ -14,9 +14,10 @@ from pathlib import Path
 os.environ.setdefault("ZM_NO_STATE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMenu  # noqa: E402
 
 import zcode_meter.app as m  # noqa: E402
+import zcode_meter.data_engine as de  # noqa: E402
 from PySide6.QtGui import QColor  # noqa: E402
 
 FAILED = []
@@ -31,7 +32,13 @@ def check(name, cond, detail=""):
 def main() -> int:
     app = QApplication(sys.argv)
     win = m.MeterWindow()
-    win._apply_snapshot(win.snap)
+    # ---- v0.9 T3:钉基线 setup 行升级为 _apply_skin(T2 期原语退役) ----
+    # load_config 无守卫直读用户真实 zm_config.json(ZM_NO_STATE 只拦写不拦
+    # 读),T1 落地后用户若配了非 glass 皮肤,窗口字族/尺寸会随皮肤漂,既有
+    # 断言翻车。这里显式钉回 glass;persist=False 走与用户右键切换同一条
+    # 即时重建路径(卡=防钳宽纪律),但不落盘。setup 行允许演进,下方断言
+    # 一字不改(断言=check() 调用,setup=其前的窗口准备)。
+    win._apply_skin("glass", persist=False)
 
     sizes = []
     for i in range(4):
@@ -532,6 +539,353 @@ def main() -> int:
           all(QColor(c).isValid() for c in
               (m.C_FG, m.C_DIM, m.C_BG, m.C_BORDER, m.C_ACCENT, m.C_WARN,
                m.C_ACCENT_DIM, m.C_TIER_OK, m.C_TIER_DANGER)))
+
+    # ==== v0.9 T2 皮肤基建:glass 逐位不变 + 九款骨架 + registry 回退 ====
+    # ① glass qss/qss_bar 逐位相等:skins 由统一模板渲染,glass palette
+    #   镜像 C_* 常量 —— 两侧任一漂移此断言当场翻车(F2 守卫的皮肤版)
+    check("皮肤:glass qss/qss_bar 与 m.QSS/m.QSS_BAR 逐位相等",
+          m.skins.REGISTRY["glass"].qss == m.QSS
+          and m.skins.REGISTRY["glass"].qss_bar == m.QSS_BAR)
+    check("皮肤:glass today_cost_sep 恒单空格(今日段文案逐位口径)",
+          m.skins.REGISTRY["glass"].today_cost_sep == " ")
+    check("皮肤:registry 九款齐全且键序==SKIN_IDS(T1 白名单同源)",
+          tuple(m.skins.REGISTRY.keys()) == m.skins.SKIN_IDS
+          and m.skins.SKIN_IDS[0] == "glass")
+    # ② 九皮肤 palette 守卫(F2 扩展):QSS 侧四档(soft/half/vstrong/sep)
+    #   允许 rgba 字面 —— 前三档是 N2 半透明文字档,sep 是 QFrame#sep 的
+    #   QSS 背景(T4 起为半透明,叠装饰底做细线);rgba 只活在 QSS、不进
+    #   QColor(str)(本机 isValid()==False 实测,app.py:78-82 同源结论),
+    #   其余键必须 QColor 可解析 hex(绘制件消费侧红线)
+    check("皮肤:九款 palette 非rgba键全 QColor 可解析(soft/half/vstrong/sep 四档 QSS 侧豁免)",
+          all(QColor(v).isValid()
+              for sk in m.skins.REGISTRY.values()
+              for k, v in sk.palette.items()
+              if k not in ("soft", "half", "vstrong", "sep")))
+    check("皮肤:九款 palette rgba 豁免键恒 rgba( 字面(F2 纪律,soft/half/vstrong)",
+          all(str(v).startswith("rgba(")
+              for sk in m.skins.REGISTRY.values()
+              for k, v in sk.palette.items()
+              if k in ("soft", "half", "vstrong")))
+    # sep 双形合法:glass 恒 hex(镜像 C_BORDER 逐位红线),八款新皮肤允许
+    # rgba 半透明(QSS 背景字面)—— 只验『QSS 可消费』,不强制哪一种
+    check("皮肤:九款 palette sep 均为 hex 或 rgba( 字面(QSS 可消费)",
+          all(str(v).startswith("rgba(") or QColor(v).isValid()
+              for sk in m.skins.REGISTRY.values()
+              for k, v in sk.palette.items() if k == "sep"))
+    check("皮肤:glass palette 镜像 C_*(fg/dim/accent/warn/sep 防漂)",
+          m.skins.REGISTRY["glass"].palette["fg"] == m.C_FG
+          and m.skins.REGISTRY["glass"].palette["dim"] == m.C_DIM
+          and m.skins.REGISTRY["glass"].palette["accent"] == m.C_ACCENT
+          and m.skins.REGISTRY["glass"].palette["warn"] == m.C_WARN
+          and m.skins.REGISTRY["glass"].palette["sep"] == m.C_BORDER)
+    check("皮肤:glass 绘制侧色镜像 C_*/白α 常量(spark/pulse/ring 零漂)",
+          m.skins.REGISTRY["glass"].spark_line == QColor(m.C_ACCENT_DIM)
+          and m.skins.REGISTRY["glass"].spark_dot == QColor(m.C_ACCENT)
+          and m.skins.REGISTRY["glass"].pulse_idle == QColor(255, 255, 255, 89)
+          and m.skins.REGISTRY["glass"].pulse_active == QColor(m.C_ACCENT_DIM)
+          and m.skins.REGISTRY["glass"].pulse_core == QColor(96, 205, 255, 230)
+          and m.skins.REGISTRY["glass"].ring_base == QColor(255, 255, 255, 26))
+    # 骨架结构:九款 SkinDef 字段齐全,三键 radius/contrast_bg 形状恒定
+    check("皮肤:九款骨架字段齐全(radius/contrast_bg 三键+色字段)",
+          all(all(hasattr(sk, a) for a in
+                  ("id", "menu_label", "palette", "radius", "spark_line",
+                   "spark_dot", "pulse_idle", "pulse_active", "pulse_core",
+                   "ring_base", "sep", "sep_card", "sep_card_weak",
+                   "contrast_bg", "today_cost_sep", "font_mono_families",
+                   "font_decor", "deco", "qss", "qss_bar"))
+              and all(k in sk.radius for k in ("card", "h", "v"))
+              and all(k in sk.contrast_bg for k in ("card", "h", "v"))
+              for sk in m.skins.REGISTRY.values()))
+    check("皮肤:九款绘制侧色字段均 QColor 实例(rgba 字面不进 painter)",
+          all(isinstance(getattr(sk, a), QColor)
+              for sk in m.skins.REGISTRY.values()
+              for a in ("spark_line", "spark_dot", "pulse_idle",
+                        "pulse_active", "pulse_core", "ring_base")))
+    check("皮肤:玻璃 mono 字族==mk_mono 缺省(字族零漂)",
+          m.skins.REGISTRY["glass"].font_mono_families == ("Cascadia Code",
+                                                           "Consolas"))
+    # ③ wiring:_skin() 分派与 _skin_qss() 形态分派(glass 基线已钉)
+    win._build_card()
+    check("皮肤:win._skin()==glass 项且卡形态 _skin_qss()==m.QSS",
+          win._skin() is m.skins.REGISTRY["glass"]
+          and win.skin_id == "glass" and win._skin_qss() == m.QSS)
+    win._build_bar()
+    check("皮肤:条形态 _skin_qss()==m.QSS_BAR(形态分派不串档)",
+          win._skin_qss() == m.QSS_BAR)
+    win._build_card()
+    # ④【T2 期安全】registry 仅 glass 时,任何合法白名单 id 均 not KeyError:
+    #   _skin() get-or-fallback 回退 glass 注册表项(T1 白名单先行落地/
+    #   手改文件指向未实现 id 的真实时序,spec 风险表双保险之一)
+    _saved_registry = m.skins.REGISTRY
+    m.skins.REGISTRY = {"glass": _saved_registry["glass"]}
+    try:
+        _fb_ok = True
+        for _sid in m.skins.SKIN_IDS:
+            win.skin_id = _sid
+            if win._skin() is not m.skins.REGISTRY["glass"]:
+                _fb_ok = False
+            if win._skin_qss() != m.QSS:   # 回退玻璃渲染:qss 同 glass 逐位
+                _fb_ok = False
+        check("皮肤:T2 期安全 registry 仅 glass → 合法 id 不 KeyError 回退玻璃",
+              _fb_ok)
+    finally:
+        m.skins.REGISTRY = _saved_registry
+        win.skin_id = "glass"
+    # deco 定稿守卫(T4 已逐款实现,原『T2 骨架恒 None』过渡断言随落地退役):
+    # glass 无装饰(None=paintEvent 既有玻璃路径逐位不动),八款 deco 可调用;
+    # registry 缺项回退玻璃的性质不因此破 —— paintEvent 按 deco 分派,None
+    # 即玻璃兜底(上方 ④ 回退断言已覆盖该路径)
+    check("皮肤:T4 定稿:glass deco=None(玻璃路径逐位),八款 deco 可调用",
+          m.skins.REGISTRY["glass"].deco is None
+          and all(callable(m.skins.REGISTRY[_s].deco)
+                  for _s in m.skins.SKIN_IDS if _s != "glass"))
+
+    # ==== v0.9 T3 皮肤切换机制:_apply_skin 即时重建/子菜单/持久化守卫/丢键修复 ====
+    # 满载快照(注入先例见前 :79-87)+ 套餐/倒计时注入:九皮肤×三形态全走
+    # 产品切换路径 _apply_skin(persist=False),与右键菜单同一条代码路径
+    win.snap = m.Snapshot(
+        state="idle", model="GLM-5.3", title="t", tps_exact=137.9,
+        global_tps=42.0,
+        today_tokens=1_200_000_000, today_cost_cny=2489.0,
+        today_by_source=[("ZCode", 1_200_000_000)], plan_remaining_pct=87.0,
+        burn_tokens_per_hour=31_300_000, burn_avg_tokens_per_hour=129_700_000,
+        session_in=448_000_000, session_out=624_000,
+        recent_speeds=[20, 35, 28, 44, 30, 52, 38],
+        speed_by_model=[("bigmodel-api", "GLM-5.3", 56.8, 0)])
+    win._plan_pct = 87.0
+    win._plan_left_tok = 2_100_000_000.0
+    win._plan_next_reset = time.time() * 1000 + 90 * 60_000
+    win.bar_segments = {"h": list(m.BAR_SEGMENTS_H), "v": list(m.BAR_SEGMENTS_V)}
+
+    # ① 9×3 切换循环(循环本身无异常即断言的一半):逐皮肤逐形态 ——
+    #    卡=防钳宽纪律(313x341);条=尺寸机制对一切皮肤同上限(竖定宽
+    #    BAR_V_W/横高≤34);F4 属性矩阵非 None 集合逐皮肤不变(置 None
+    #    纪律在任意皮肤下都不漏,v0.4.0 悬空引用教训的皮肤版兜底)
+    F4_KEYS = ("dot", "tps_lbl", "tps_unit_lbl", "spark", "today_lbl",
+               "today_cost_lbl", "today_src_lbl", "state_lbl", "model_name_lbl",
+               "model_rows", "plan_section", "plan_ring", "plan_cap_lbl",
+               "plan_tok_lbl", "plan_sub_lbl", "plan_left_k", "plan_left_v",
+               "plan_lbl", "in_out_lbl", "rate_lbl", "timing_lbl", "burn_lbl",
+               "avg_burn_lbl", "avg_lbl", "in_lbl", "out_lbl", "title_lbl",
+               "est_lbl", "elapsed_lbl", "cache_lbl", "ttft_lbl", "dur_lbl",
+               "plan_cd_lbl", "vbar_in_cap", "vbar_burn_cap", "sep_plan",
+               "sep_burn", "sep_today", "vsep_plan", "vsep_burn",
+               "vsep_today", "vsep_in")
+
+    def _f4_nonnone():
+        return frozenset(k for k in F4_KEYS if getattr(win, k, None) is not None)
+
+    _f4_glass = {}
+    for _sid in m.skins.SKIN_IDS:
+        for _form, _dock in (("card", None), ("h", "top"), ("v", "left")):
+            win.dock = _dock
+            win._apply_skin(_sid, persist=False)   # 切换保持当前形态(dock 不变)
+            if _form == "card":
+                check(f"皮肤循环 {_sid} 卡:_bar_form 归位+防钳宽(313x341)",
+                      win._bar_form is None
+                      and win.width() == m.MeterWindow.CARD_W
+                      and win.height() == m.MeterWindow.CARD_H,
+                      f"{win.width()}x{win.height()}")
+            else:
+                _vert = _form == "v"
+                _w, _h = win._bar_size(_vert)
+                check(f"皮肤循环 {_sid} {'竖' if _vert else '横'}条:"
+                      + ("宽==BAR_V_W(100 定宽不随皮肤漂)" if _vert
+                         else "高<=34(对一切皮肤同上限)"),
+                      win._bar_form == _form
+                      and ((_w == m.MeterWindow.BAR_V_W) if _vert else (_h <= 34)),
+                      f"{_w}x{_h}")
+            _cur = _f4_nonnone()
+            if _sid == "glass":
+                _f4_glass[_form] = _cur
+            else:
+                check(f"皮肤循环 {_sid} {_form}:F4 非 None 集合与玻璃一致",
+                      _cur == _f4_glass[_form], str(_cur ^ _f4_glass[_form]))
+    check("皮肤循环:9×3 全矩阵经 _apply_skin 重建(27 次,三形态基准齐全)",
+          len(_f4_glass) == 3 and all(_f4_glass.values()))
+
+    # 段开关在新皮肤下仍工作:经「显示内容」菜单动作真实触发(非玻璃皮肤
+    # 活动时关 plan 段 → toggle 的重征路径走 _skin_qss,件未建(None))
+    win.dock = "top"
+    win._apply_skin("swiss", persist=False)
+    _seg_host = QMenu()
+    win._add_segment_menu(_seg_host)
+    _seg_menu = next(a for a in _seg_host.actions()
+                     if a.text() == "显示内容").menu()
+    _plan_act = next(a for a in _seg_menu.actions()
+                     if a.text() == m.BAR_SEGMENT_LABELS_H["plan"])
+    # Qt6 检查型 QAction.trigger() 先翻转勾态再发 triggered(新勾态):
+    # 当前勾着(True)→ trigger() 发 triggered(False) → toggle("plan", False)
+    # → 摘段重建+落盘(ZM_NO_STATE 守卫静默跳过)。实测先 setChecked(False)
+    # 再 trigger() 会被翻回 True(等于没关),探针复盘结论
+    _plan_act.setChecked(True)
+    _plan_act.trigger()
+    check("新皮肤下段开关:关 plan → plan_ring/sep_plan 未建,速度/今日仍显",
+          win.plan_ring is None and win.sep_plan is None
+          and win.tps_lbl is not None and win.today_lbl is not None,
+          f"ring={win.plan_ring} segs={win.bar_segments.get('h')}")
+    win.bar_segments = {"h": list(m.BAR_SEGMENTS_H), "v": list(m.BAR_SEGMENTS_V)}
+    win._apply_skin("swiss", persist=False)          # 复位全段重建(仍 swiss)
+
+    # ② 皮肤子菜单:九项 checkable 单选,勾态唯一且==当前皮肤;triggered →
+    #    _apply_skin(persist 默认 True,ZM_NO_STATE 守卫下落盘被静默跳过)
+    _skin_host = QMenu()
+    win._add_skin_menu(_skin_host)
+    _skin_menu = next(a for a in _skin_host.actions()
+                      if a.text() == "皮肤").menu()
+    _acts = _skin_menu.actions()
+    _checked = [a for a in _acts if a.isChecked()]
+    check("皮肤子菜单:九项且勾态唯一(当前=swiss)",
+          len(_acts) == 9 and len(_checked) == 1
+          and _checked[0].text() == m.skins.REGISTRY["swiss"].menu_label,
+          f"{len(_acts)}项 勾={[a.text() for a in _checked]}")
+    _crt_act = next(a for a in _acts
+                    if a.text() == m.skins.REGISTRY["crt"].menu_label)
+    _crt_act.setChecked(True)
+    _crt_act.trigger()                               # → _apply_skin("crt")
+    check("皮肤子菜单 triggered:即时切到 crt 且注册表分派跟随(形态保持横条)",
+          win.skin_id == "crt" and win._skin() is m.skins.REGISTRY["crt"]
+          and win._bar_form == "h")
+    win._apply_skin("glass", persist=False)
+    # 此处 dock 仍 "top"(条形态):玻璃复位后应得 qss_bar(形态分派正确性)
+    check("皮肤复位:回 glass 且条形态 qss_bar 与玻璃逐位(QActionGroup 可逆入口)",
+          win.skin_id == "glass" and win._skin_qss() == m.QSS_BAR)
+
+    # ③ ZM_NO_STATE=1(本文件头注入)下 _save_config_skin 静默跳过:守卫由
+    #    save_config 默认路径内建,即便待写值是非 glass 也不得碰真实配置
+    _cfg_file = Path(de.CONFIG_PATH)
+    _before = _cfg_file.read_bytes() if _cfg_file.exists() else None
+    win.skin_id = "vaporwave"
+    win._save_config_skin()
+    win._save_config_segments()
+    _after = _cfg_file.read_bytes() if _cfg_file.exists() else None
+    check("ZM_NO_STATE 下 _save_config_skin 静默跳过(真实配置零改写)",
+          _before == _after, f"beforeNone={_before is None} afterNone={_after is None}")
+    win.skin_id = "glass"
+
+    # ⑥ _apply_config 透传(设置保存丢键修复):monkeypatch m.save_config
+    #    捕参 —— 四键输入也恒带 bar_segments(等于内存态);非 glass 时 skin
+    #    随行;不受设置窗四键输入影响(glass 不添 skin 键,可选键纪律)
+    _captured = []
+    _orig_save = m.save_config
+    m.save_config = lambda c, path=None: (
+        _captured.append(dict(c)), _orig_save(c, path))[1]
+    try:
+        win._apply_config({"quota_api_key": "", "daily_budget_cny": None,
+                           "alert_pct": [20.0, 10.0]})   # 设置窗 _parse_input 四键形状
+        check("_apply_config 透传:四键输入恒带 bar_segments(glass 不添 skin 键)",
+              bool(_captured)
+              and _captured[-1].get("bar_segments") == win.bar_segments
+              and "skin" not in _captured[-1],
+              str(sorted(_captured[-1])) if _captured else "no-call")
+        win._apply_skin("crt", persist=False)
+        win._apply_config({"quota_api_key": "", "daily_budget_cny": 5.0,
+                           "alert_pct": [30.0, 15.0]})
+        check("_apply_config 透传:非 glass 时 skin 随行落盘保活(丢键修复)",
+              _captured[-1].get("skin") == "crt"
+              and _captured[-1].get("bar_segments") == win.bar_segments,
+              str(sorted(_captured[-1])))
+    finally:
+        m.save_config = _orig_save
+    win.dock = None
+    win._apply_skin("glass", persist=False)   # 离场复位:玻璃+卡形态(防钳宽路径)
+    check("皮肤复位:回 glass 且卡形态 qss 与玻璃逐位(可逆入口)",
+          win.skin_id == "glass" and win._bar_form is None
+          and win._skin_qss() == m.QSS)
+
+    # ==== v0.9 T3-④(验收 ticket 补齐):报纸双空格档(三处定稿微调之一) ====
+    # HTML :484 &nbsp;&nbsp; —— 横条今日段 量↔金额 分隔符经 today_cost_sep
+    # 落地,只动静态分隔字符、不碰数值格式化(口径红线);玻璃恒单空格由
+    # 上方 T2 组与既有 today 文案断言(:257『今 1.2M ≈¥12』)钉死
+    win.dock = "top"
+    win._apply_skin("newspaper", persist=False)
+    check("报纸双空格档:today_cost_sep='  ' 且横条今日段量价间双空格",
+          m.skins.REGISTRY["newspaper"].today_cost_sep == "  "
+          and win.today_lbl.text() ==
+          f"今 {m.fmt_k(win.snap.today_tokens)}  "
+          f"{'≈' if win.snap.today_cost_partial else ''}"
+          f"¥{win.snap.today_cost_cny:.0f}",
+          repr(win.today_lbl.text()))
+    win._apply_skin("glass", persist=False)
+    win.dock = None
+
+    # ==== v0.9 T5 浅色可读性:WCAG 对比度机器闸(contrast_bg 口径钉死) ====
+    # spec 步骤⑦⑧(D 修订口径),闸的三道钉死:
+    # - contrast_bg=该形态 deco 实际铺底中【承载字段文本的面】的底色,由
+    #   skins.py 逐款如实申报(蒸汽波=统计暗格与落日亮带最坏合成 #51213d/
+    #   #2c1038、工业=readout 暗屏 #101614、液态玻璃=白.14 药丸合成底;
+    #   blob/光晕/落日亮带等无字装饰带不得充当 —— 『挑暗底自证』被申报
+    #   口径封死);
+    # - 半透明档(rgba 字面)按 α 与申报底逐通道合成后再比(WCAG 以实际
+    #   渲染色为准,QSS 不透明合成即所见);
+    # - 分档按角色语义(spec『字段文本(k/v/段文字)≥4.5:1,主数字/帽标等
+    #   大字≥3:1』)映射到 palette 键:
+    #   · 字段文本档(数据值与段文字,10-14px)= dim/soft/half/vstrong ≥4.5;
+    #   · 大字档(主数字 accent / 今日 hero fg)≥3.0;
+    #   · faint 微标签档(卡 k 标与竖条帽标同 role)≥3.0 —— 4.5 对该档在
+    #     任何底色上都不可满足:玻璃 faint #68696c 亮度 0.141,纯黑底上也
+    #     只有 3.83:1,而玻璃 QSS 已由本文件 T2 组逐位断言冻结(改色即
+    #     违约),故按 spec 帽标同档钉 3:1,数值上即『换肤不劣于缺省玻璃
+    #     (3.02)』的下限;
+    #   · warn 不进闸:唯一消费者 plan_lbl 的文本色恒被 tier 内联覆盖
+    #     (本文件 tier 注入断言 styleSheet()=='color: #6ee7a8;' 钉死)或
+    #     空文本,QSS 类色不落屏;
+    # - tier 三档色(#6ee7a8/#ffd166/#ff6b6b)不进闸:nonGoal 钉死全局色
+    #   不随皮肤换色,琥珀在奶白底偏弱已记 README 人工目视清单;
+    # - 九皮肤×三形态全测,逐皮肤取三形态最低值达标(spec『三形态各测取
+    #   最低者达标』);玻璃同闸通过(最低档 faint 3.02)。
+    def _t5_parse(col):
+        """'#rrggbb' → (r,g,b,255);'rgba(r,g,b,a)' → 四元组(仅 palette
+        半透明档与 sep 用,palette hex 键与 contrast_bg 申报底均为实色)。"""
+        c = col.strip()
+        if c.startswith("rgba"):
+            parts = c[c.index("(") + 1:c.rindex(")")].split(",")
+            return tuple(int(p) for p in parts)
+        c = c.lstrip("#")
+        return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16), 255)
+
+    def _t5_lin(v8):
+        v = v8 / 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+    def _t5_lum(rgb):
+        return (0.2126 * _t5_lin(rgb[0]) + 0.7152 * _t5_lin(rgb[1])
+                + 0.0722 * _t5_lin(rgb[2]))
+
+    def _t5_ratio(a, b):
+        la, lb = _t5_lum(a), _t5_lum(b)
+        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+    def _t5_worst(sk, roles):
+        """roles 各键在 contrast_bg 三形态申报底上的最低对比度(WCAG 2.x
+        相对亮度公式;返回 (ratio, role, form) 供断言详情定位)。"""
+        worst = (99.0, "", "")
+        for form in ("card", "h", "v"):
+            bg = _t5_parse(sk.contrast_bg[form])[:3]
+            for role in roles:
+                fg = _t5_parse(sk.palette[role])
+                a = fg[3] / 255.0
+                comp = tuple(round(a * fg[i] + (1 - a) * bg[i])
+                             for i in range(3))       # rgba 档实色合成
+                r = _t5_ratio(comp, bg)
+                if r < worst[0]:
+                    worst = (r, role, form)
+        return worst
+
+    _T5_FIELD = ("dim", "soft", "half", "vstrong")   # 字段文本 ≥4.5
+    _T5_BIG = ("fg", "accent")                        # 主数字/hero 大字 ≥3.0
+    _T5_MICRO = ("faint",)                            # 微标签/帽标档 ≥3.0
+    for _sid in m.skins.SKIN_IDS:
+        _sk = m.skins.REGISTRY[_sid]
+        _wf, _rf, _ff = _t5_worst(_sk, _T5_FIELD)
+        _wb, _rb, _fb = _t5_worst(_sk, _T5_BIG)
+        _wm, _rm, _fm = _t5_worst(_sk, _T5_MICRO)
+        check(f"皮肤对比度 {_sid}:字段文本档>=4.5(三形态最低)",
+              _wf >= 4.5, f"min={_wf:.2f}({_rf}/{_ff})")
+        check(f"皮肤对比度 {_sid}:大字档>=3.0",
+              _wb >= 3.0, f"min={_wb:.2f}({_rb}/{_fb})")
+        check(f"皮肤对比度 {_sid}:微标签档>=3.0(玻璃底线)",
+              _wm >= 3.0, f"min={_wm:.2f}({_rm}/{_fm})")
 
     win.close()
     if FAILED:
