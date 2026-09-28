@@ -139,19 +139,19 @@ def main() -> int:
     win._plan_next_reset = _t.time() * 1000 + 90 * 60_000     # 90 分钟后
     win._build_bar(); win._apply_snapshot(win.snap)
     ht = win.plan_lbl.text()
-    check("横条倒计时入条(plan_cd_lbl 独立段,原文空格保留)",
+    check("横条倒计时入条(plan_cd_lbl 独立段,条形态紧凑无空格)",
           ht == "42% ~2.1B" and "后重置" not in ht and "\n" not in ht
-          and win.plan_cd_lbl.isVisible() and win.plan_cd_lbl.text() == "1h 30m",
+          and win.plan_cd_lbl.isVisible() and win.plan_cd_lbl.text() == "1h30m",
           f"{ht!r}/{win.plan_cd_lbl.text()!r}")
     win._build_bar(vertical=True); win._apply_snapshot(win.snap)
     check("竖条倒计时入条(k 行 [~lt, cd] join)",
           win.plan_lbl.text() == "42%"
-          and win.plan_sub_lbl.text() == "~2.1B · 1h 30m",
+          and win.plan_sub_lbl.text() == "~2.1B · 1h30m",
           f"{win.plan_lbl.text()!r}/{win.plan_sub_lbl.text()!r}")
     win._plan_left_tok = None
     win._apply_snapshot(win.snap)
     check("竖条 k 行:lt 缺 → 仅 cd 段",
-          win.plan_lbl.text() == "42%" and win.plan_sub_lbl.text() == "1h 30m",
+          win.plan_lbl.text() == "42%" and win.plan_sub_lbl.text() == "1h30m",
           f"{win.plan_lbl.text()!r}/{win.plan_sub_lbl.text()!r}")
     win._plan_next_reset = None
     win._apply_snapshot(win.snap)
@@ -200,10 +200,10 @@ def main() -> int:
     win.snap.today_cost_partial = True
     win._build_bar(); win._apply_snapshot(win.snap)
     check("横条今日段:金额段(partial ≈,金额取整)",
-          win.today_lbl.text() == "今1.2M ≈¥12", win.today_lbl.text())
+          win.today_lbl.text() == "今 1.2M ≈¥12", win.today_lbl.text())
     win.snap.today_cost_cny = None
     win._apply_snapshot(win.snap)
-    check("横条今日段:cost=0 省金额段", win.today_lbl.text() == "今1.2M",
+    check("横条今日段:cost=0 省金额段", win.today_lbl.text() == "今 1.2M",
           win.today_lbl.text())
 
     # 燃速段均燃(横条拼接后缀/竖条 k 行,口径与卡片一致)

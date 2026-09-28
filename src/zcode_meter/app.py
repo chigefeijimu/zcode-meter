@@ -977,6 +977,7 @@ class MeterWindow(QWidget):
         self.dock = None
         self._build_card()
         self.setStyleSheet(QSS)
+        self.layout().activate()   # 同 _unset_dock:刷新窗口最小宽,防钳宽
         self.setGeometry(x, y, w, h)
         self._apply_snapshot(self.snap)
         self._save_state()               # 拖离贴边也是形态变化,同样即时落盘
@@ -1123,6 +1124,11 @@ class MeterWindow(QWidget):
         self.dock = None
         self._build_card()
         self.setStyleSheet(QSS)
+        # 先激活新布局:顶层布局激活时会把布局最小宽写入窗口
+        # minimumWidth —— 横条时代的最小宽(~470)若未刷新,setGeometry
+        # (313) 被钳成 490 宽,之后没人再缩回(用户『取消贴边卡片变宽』
+        # 病根,2026-09-28)
+        self.layout().activate()
         x = max(min(g.left(), sg.right() - self.CARD_W - 8), sg.left() + 8)
         y = max(min(g.top(), sg.bottom() - self.CARD_H - 8), sg.top() + 8)
         self.setGeometry(x, y, self.CARD_W, self.CARD_H)
@@ -1888,7 +1894,9 @@ class MeterWindow(QWidget):
         if self._bar_form == "h":
             cost_txt = (f" {'≈' if s.today_cost_partial else ''}¥{cost:.0f}"
                         if cost else "")
-            self.today_lbl.setText(f"今{fmt_k(s.today_tokens)}{cost_txt}")
+            # 『今』与数字间留空格(用户对版 2026-09-28:CJK 字面贴 mono 数字
+            # 过挤;原型『今481M』写法从宽,以用户观感为准)
+            self.today_lbl.setText(f"今 {fmt_k(s.today_tokens)}{cost_txt}")
         else:
             self.today_lbl.setText(fmt_k(s.today_tokens))
         # ---- 套餐段(plan_on)/燃速段(burn_on):段/组数据缺席时其前
@@ -1898,7 +1906,8 @@ class MeterWindow(QWidget):
         burn = s.burn_tokens_per_hour or 0.0
         burn_on = burn > 0
         cd = format_countdown_hm(self._plan_next_reset)
-        if self._bar_form == "h":
+        cd_bar = cd.replace(" ", "") if cd else cd   # 条形态紧凑档(原型『1h23m』
+        if self._bar_form == "h":                    # 无空格;卡片『2h 55m 后重置』保留)
             self.sep_plan.setVisible(plan_on)
             self.sep_burn.setVisible(burn_on)   # sep_today 恒显(今日恒在),无显隐逻辑
             self.plan_ring.setVisible(plan_on)
@@ -1914,7 +1923,7 @@ class MeterWindow(QWidget):
                     f"{pct:.0f}%" + (f" ~{fmt_k(int(lt))}" if lt is not None else ""))
                 self.plan_lbl.setStyleSheet(f"color: {color};")
                 if cd:
-                    self.plan_cd_lbl.setText(cd)
+                    self.plan_cd_lbl.setText(cd_bar)
             if burn_on:
                 # 瞬时燃速(最近请求吞吐)优先,无单请求数据退回 60min 窗口值;
                 # 后接会话平均燃速 —— 口径一字不动(v0.7 既有分支)
@@ -1939,7 +1948,7 @@ class MeterWindow(QWidget):
                 lt = self._plan_left_tok
                 self.plan_sub_lbl.setText(" · ".join(
                     seg for seg in (f"~{fmt_k(int(lt))}" if lt is not None else None,
-                                    cd or None) if seg))
+                                    cd_bar or None) if seg))
             self.burn_lbl.setVisible(burn_on)
             self.vbar_burn_cap.setVisible(burn_on)
             if burn_on:
