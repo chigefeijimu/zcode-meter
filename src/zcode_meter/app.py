@@ -816,9 +816,9 @@ class MeterWindow(QWidget):
         self._bar_form = "v" if vertical else "h"
         if vertical:
             root.addStretch(1)   # 首尾对称弹性:条高富余时内容整体垂直居中(用户要求)
-        self.dot = self._mk_lbl("●", "dim", "Segoe UI", 8)
-        root.addWidget(self.dot)
         if not vertical:
+            self.dot = self._mk_lbl("●", "dim", "Segoe UI", 8)
+            root.addWidget(self.dot)
             # 分组:速率 | 延迟 | 用量 | 计时,组间细竖线分隔
             self.tps_lbl = self._mk_lbl("-- tok/s", "accent", C_MONO, 9)
             root.addWidget(self.tps_lbl)
@@ -865,7 +865,10 @@ class MeterWindow(QWidget):
                 lb = self._mk_lbl(txt, "dim", "Microsoft YaHei UI", 8)
                 lb.setAlignment(Qt.AlignCenter)
                 return lb
-            # 组1 主数字:实时速度
+            # 组1 主数字:实时速度(状态点紧贴其上,状态与"速度在变"同义)
+            self.dot = self._mk_lbl("●", "dim", "Segoe UI", 8)
+            self.dot.setAlignment(Qt.AlignCenter)
+            root.addWidget(self.dot)
             self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 12)
             self.tps_lbl.setFont(QFont(C_MONO, 12, QFont.Bold))
             self.tps_lbl.setAlignment(Qt.AlignCenter)
