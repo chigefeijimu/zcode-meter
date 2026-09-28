@@ -1105,7 +1105,7 @@ class MeterWindow(QWidget):
                 total_h += w.sizeHint().height()
                 n += 1
             return self.BAR_V_W, max(total_h + 8 * max(n - 1, 0), 10)
-        total_w, max_h = 16 + 2, 0
+        total_w, max_h = 28 + 2, 0     # 左右边距 14×2(预览 padding 5px 14px)+ 边框
         for i in range(lay.count()):
             w = lay.itemAt(i).widget()
             if w is None or w.isHidden():
@@ -1113,7 +1113,9 @@ class MeterWindow(QWidget):
             hs = w.sizeHint()
             max_h = max(max_h, hs.height() + pad)
             total_w += hs.width() + pad + sp
-        return max(total_w - sp, 10), max_h + 2 + 2
+        # 高度:最高子件 + 上下边距 5×2 + 边框 2 + 余量 2(2026-09-28 横条
+        # 对版随布局参数同步,旧锚 margins(2,0,2,0))
+        return max(total_w - sp, 10), max_h + 10 + 2 + 2
 
     def _unset_dock(self):
         sg = self.screen().availableGeometry()
@@ -1388,40 +1390,47 @@ class MeterWindow(QWidget):
             # stretch 保留:条高富余时仍垂直居中,贴边态则 16px 呼吸
             root.setContentsMargins(8, 16, 8, 16)
         else:
-            root.setContentsMargins(2, 0, 2, 0)   # 四周最小留白(收窄)
-        root.setSpacing(8 if vertical else SP["xs"])   # 预览 gap 8(竖条)
+            # 预览 .g-bar padding 5px 14px(:102):上下 5、左右 14(旧 2/0
+            # 收窄版无呼吸,用户对版 2026-09-28)
+            root.setContentsMargins(14, 5, 14, 5)
+        root.setSpacing(8 if vertical else 10)   # 预览 gap:竖条 8、横条 10
         self._bar_form = "v" if vertical else "h"
         if vertical:
             root.addStretch(1)   # 首尾对称弹性:条高富余时内容整体垂直居中(用户要求)
         if not vertical:
             self.dot = PulseIndicator(10)
             root.addWidget(self.dot)
-            self.tps_lbl = self._mk_lbl("-- t/s", "accent", C_MONO, 14)
+            self.tps_lbl = self._mk_lbl("--", "accent", C_MONO, 14)
             self.tps_lbl.setFont(mk_mono(14, QFont.Bold))
             root.addWidget(self.tps_lbl)
+            # 单位与速度分色分号(预览 :232 spd 蓝 14 与 dim t/s 12 分离;
+            # 旧单 label 全蓝 14。文本恒 "t/s",_apply_snapshot 只更新数字)
+            self.tps_unit_lbl = self._mk_lbl("t/s", "dim", C_MONO, 12)
+            root.addWidget(self.tps_unit_lbl)
             self.spark = SparklineWidget(44, 16)
             root.addWidget(self.spark)
             self.sep_plan = self._mk_sep(False)
             root.addWidget(self.sep_plan)
             # 套餐段:实画小环(RingWidget12,不用 ⊙ 字形 —— Cascadia 无该
-            # 字形保证,风险表引 ⏱ 字体合并先例 CHANGELOG v0.7:12)
+            # 字形保证,风险表引 ⏱ 字体合并先例 CHANGELOG v0.7:12)。
+            # 段文字 9→12px(预览 .g-bar 基准 12,用户对版 2026-09-28)
             self.plan_ring = RingWidget(12, center_text=False)
             root.addWidget(self.plan_ring)
-            self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 9)
-            self.plan_lbl.setFont(mk_mono(9, QFont.DemiBold))   # 600(tier 色由 _apply_snapshot 注入)
+            self.plan_lbl = self._mk_lbl("", "warn", C_MONO, 12)
+            self.plan_lbl.setFont(mk_mono(12, QFont.DemiBold))   # 600(tier 色由 _apply_snapshot 注入)
             root.addWidget(self.plan_lbl)
-            self.plan_cd_lbl = self._mk_lbl("", "dim", C_MONO, 9)
+            self.plan_cd_lbl = self._mk_lbl("", "dim", C_MONO, 12)
             root.addWidget(self.plan_cd_lbl)
             self.sep_today = self._mk_sep(False)
             root.addWidget(self.sep_today)
             # 今日段:『今X』+金额段 f" ≈¥N"(金额取整;cost=0 省段/N3、
             # partial ≈ 前缀 —— 与卡片同守卫,由 _apply_snapshot 拼装)
-            self.today_lbl = self._mk_lbl("", "dim", C_MONO, 9)
+            self.today_lbl = self._mk_lbl("", "dim", C_MONO, 12)
             root.addWidget(self.today_lbl)
             self.sep_burn = self._mk_sep(False)
             root.addWidget(self.sep_burn)
             # 燃速段:瞬时优先口径不变(dim),文案由 _apply_snapshot 拼装
-            self.burn_lbl = self._mk_lbl("", "dim", C_MONO, 9)
+            self.burn_lbl = self._mk_lbl("", "dim", C_MONO, 12)
             root.addWidget(self.burn_lbl)
             # ---- 竖条专属件置 None(F4 横列) ----
             self.plan_sub_lbl = None
@@ -1492,6 +1501,7 @@ class MeterWindow(QWidget):
             # ---- 横条专属件置 None(F4 竖列) ----
             self.plan_ring = None
             self.plan_cd_lbl = None
+            self.tps_unit_lbl = None    # 竖条单位走『TOK/S』caption
             self.sep_plan = self.sep_burn = self.sep_today = None
         # ---- 两形态共通(F4 修正版属性总表,唯一权威)----
         # 卡建件两种条形态都不建;三形态全 None 的已删件(title/est/elapsed/
@@ -1509,7 +1519,6 @@ class MeterWindow(QWidget):
         self.model_rows = None
         self.model_name_lbl = None
         self.today_cost_lbl = None
-        self.tps_unit_lbl = None
         self._model_rows_items = []
 
     # ---- 菜单 ----
@@ -1864,7 +1873,8 @@ class MeterWindow(QWidget):
             self.vsep_in.setVisible(True)
         speed_txt = f"{tps:.1f}" if tps else "--"
         if self._bar_form == "h":
-            self.tps_lbl.setText(speed_txt + " t/s")   # 14pt Bold 蓝 + 单位
+            self.tps_lbl.setText(speed_txt)   # 14px Bold 蓝;单位恒显 "t/s" dim
+            self.tps_unit_lbl.setVisible(True)
         else:
             self.tps_lbl.setText(speed_txt)            # 单位由『TOK/S』caption 表达
         # sparkline 三形态恒建:<2 点隐藏不闪空(与卡片同口径,T-4 风险);
