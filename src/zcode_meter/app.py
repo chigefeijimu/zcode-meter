@@ -1391,10 +1391,16 @@ class MeterWindow(QWidget):
             if self.burn_lbl is not None:
                 self.burn_lbl.setVisible(burn_on)
                 if burn_on:
-                    # 竖条分组:纯数值(组语义由上方套餐组的延续性表达)
-                    self.burn_lbl.setText(
-                        fmt_k(int(burn)) + "/h" if self._bar_form == "v"
-                        else f"燃速 {fmt_k(int(burn))}/h")
+                    if self._bar_form == "v":
+                        # 竖条分组:纯数值(组语义由上方套餐组的延续性表达)
+                        self.burn_lbl.setText(fmt_k(int(burn)) + "/h")
+                    else:
+                        # 横条:实时燃速 + 会话平均燃速(平均燃速统计)
+                        t = f"燃速 {fmt_k(int(burn))}/h"
+                        ab = s.burn_avg_tokens_per_hour
+                        if ab:
+                            t += f" · 均燃 {fmt_k(int(ab))}/h"
+                        self.burn_lbl.setText(t)
             if self._budget_sep is not None:
                 self._budget_sep.setVisible(plan_on or burn_on)
         if self.ttft_lbl is not None:

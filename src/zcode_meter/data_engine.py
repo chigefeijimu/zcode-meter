@@ -774,6 +774,7 @@ class Snapshot:
                                         # 实际不按量扣费,此为等值成本估算)
     today_cost_partial: bool = False    # 含未知模型 → 金额为下限(UI 加 ≈)
     burn_tokens_per_hour: float = 0.0   # 燃速 = trailing 60min 窗口 token 和
+    burn_avg_tokens_per_hour: float | None = None   # 会话平均燃速 Σ(in+out)/Σ净生成h
     burn_cny_per_hour: float = 0.0      # 燃速金额版(元/h,同窗口)
     est_hours_left: float | None = None # (日预算-今日花费)/燃速;未配预算或
                                         # 燃速 0 → None(活跃不足 60min 会低估)
@@ -968,7 +969,8 @@ class DataEngine(threading.Thread):
                 # 按 提供商+模型 分组的均速(Σ输出token ÷ Σ净生成时长),按总用量降序
                 speed_rows = con.execute(
                     "SELECT provider_id, model_id, SUM(output_tokens),"
-                    " COALESCE(SUM(MAX(duration_ms - COALESCE(time_to_first_token_ms,0), 1)),0)"
+                    " COALESCE(SUM(MAX(duration_ms - COALESCE(time_to_first_token_ms,0), 1)),0),"
+                    " COALESCE(SUM(input_tokens),0)"
                     " FROM model_usage WHERE status='completed' AND session_id=?"
                     " AND query_source='main_turn' AND duration_ms IS NOT NULL"
                     " GROUP BY provider_id, model_id"
@@ -976,7 +978,13 @@ class DataEngine(threading.Thread):
                     (self.session_id,)).fetchall()
                 speed_by_model = [
                     (p, m, (o / (d / 1000)) if o and d else None, o)
-                    for p, m, o, d in speed_rows]
+                    for p, m, o, d, _i in speed_rows]
+                # 会话平均燃速 = Σ(in+out)/Σ净生成时长(实时燃速的 in+out
+                # 口径 × tps_avg 的会话时长口径 —— 两个既有口径的自然组合)
+                tot_tok = sum((r[4] or 0) + (r[2] or 0) for r in speed_rows)
+                tot_gen_ms = sum(r[3] or 0 for r in speed_rows)
+                self.snap.burn_avg_tokens_per_hour = (
+                    tot_tok / (tot_gen_ms / 3_600_000)) if tot_gen_ms else None
                 today0 = today0_ms()
                 # 今日用量=全部真实消耗(main_turn+subagent 等所有来源),
                 # 与 ZCode 自身统计口径一致;cancelled 请求 token 为 0 无影响
