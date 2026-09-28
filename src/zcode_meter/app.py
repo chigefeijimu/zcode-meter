@@ -1309,7 +1309,9 @@ class MeterWindow(QWidget):
         self.avg_lbl = cell("--")
         # 末列(⏱首/总、均速)值右对齐:下半部右缘与上半部(sparkline 右端/
         # 多源/预算余量,均 297)共线 —— 用户反馈『下半右侧往右放一点,卡片
-        # 上下左右视觉对齐』(2026-09-28)。k 行仍左对齐(列头惯例)。
+        # 上下左右视觉对齐』(2026-09-28);k 行同步右对齐(用户反馈『标题和
+        # 数值开头对齐』:值右对齐后其开头浮动,列头仍贴左则错位 —— 两行同
+        # 右缘即天然对齐)
         for lb in (self.timing_lbl, self.avg_lbl):
             lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         for col, (k, v) in enumerate((
@@ -1321,8 +1323,10 @@ class MeterWindow(QWidget):
             # 值(入出/命中/首总)同落 row1 同格叠印 —— 真机『文字重叠』
             # 的真因(2026-09-28 用户截图+findChildren 几何转储定位:燃速
             # g=(16,207) 与 in_out 值全等),此前误诊为列宽/elide 问题。
-            grid.addWidget(self._mk_lbl(k, "faint", "Microsoft YaHei UI", 9),
-                           (col // 3) * 2, col % 3)
+            k_lb = self._mk_lbl(k, "faint", "Microsoft YaHei UI", 9)
+            if v in (self.timing_lbl, self.avg_lbl):
+                k_lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            grid.addWidget(k_lb, (col // 3) * 2, col % 3)
             grid.addWidget(v, (col // 3) * 2 + 1, col % 3)
         root.addLayout(grid)
 
