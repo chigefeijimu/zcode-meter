@@ -97,7 +97,10 @@ def main() -> int:
     check("横条仍单行(高度<=30)", "\n" not in ht)
     win._build_bar(vertical=True); win._apply_snapshot(win.snap)
     vt = win.plan_lbl.text()
-    check("竖条倒计时入条(两行)", vt.startswith("42%") and "\n" in vt and len(vt.split("\n")[1]) <= 7, vt)
+    check("竖条倒计时入条(plan_sub 独立行)",
+          vt.startswith("42%") and win.plan_sub_lbl is not None
+          and win.plan_sub_lbl.text() != "" and len(win.plan_sub_lbl.text()) <= 7,
+          f"{vt!r}/{win.plan_sub_lbl.text() if win.plan_sub_lbl else None!r}")
     win._plan_next_reset = None
     check("预算段竖条宽度仍<=90", vs2[0][0] <= 90, str(vs2[0]))
     # 数据缺席:整段隐藏(含分隔线),不残留空占位
