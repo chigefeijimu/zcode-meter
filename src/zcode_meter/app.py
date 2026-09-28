@@ -684,13 +684,13 @@ class MeterWindow(QWidget):
     # 设计宽 313(预览 :36);满载文本自然宽实测 372>313,按 spec『elide/
     # 固定列宽』修宽度策略(CARD_GRID_COL_W),三态收敛 313。视觉对版
     # (2026-09-28)字号 px 化后重测(findings/measure_card_baseline.py,
-    # 原生平台+停引擎三闸防真实数据竞态):满载 0~4 行模型 → 268/281/
-    # 294/307/320 → CARD_H=322;grid 键值同格叠印修复(第二组键落 row2/
-    # 值落 row3,4 行结构)后重测 → 284/297/310/323/336,全矩阵 max=336 →
-    # CARD_H=338(336 截断点+2 余量)。机制不变:
+    # 原生平台+停引擎三闸防真实数据竞态):grid 键值叠印修复(4 行结构)→
+    # 284/297/310/323/336;模型行对版(行高 1.8 节奏/线上 10 下 8/速度
+    # 600 字重)再测 → 305/318/331/344/357,全矩阵 max=357 → CARD_H=359
+    # (357 截断点+2 余量)。机制不变:
     # _unset_dock/_restore_state/_detach_to_pointer 用它 setGeometry,偏小会
     # 静默截断(ui-verify 只打印不校验,需人工目视)。
-    CARD_W, CARD_H = 313, 338
+    CARD_W, CARD_H = 313, 359
     # grid 六格固定列宽(v0.8.0 T5+T2 宽度策略裁决):满载文本自然宽实测
     # 372 > CARD_W 313(findings/measure_card_baseline.py,13pt 字号期),按
     # spec 的『elide/固定列宽』修标签宽度策略 —— 列宽钉死后 v label 走
@@ -1272,18 +1272,30 @@ class MeterWindow(QWidget):
         # faint 89 档/速度右 10pt half 128 档),替换 v0.7 单 QLabel 多行
         # join —— 独立 label 才能左右分栏且行内距受布局 spacing 管。
         # 四行结构恒建、按数据显隐(_apply_card),rows 不足 4 不撑高。
-        root.addWidget(self._mk_card_sep("rgba(255,255,255,0.05)"))
+        # ⑥ 模型列表 rows[:4](预览 .g-models :93-96/.m :94-96):容器+每行
+        # HBox(名左/速度右)+分隔线入容器。视觉对版(2026-09-28)按预览补:
+        # - margin-top:10 → 分节线距 grid 10px(root spacing 6 + 容器上边距 4)
+        # - padding-top:8 → 线距首行 8px(addSpacing)
+        # - .m line-height:1.8 → 18px 行节奏(10px 字自然行高 ~13 + 行距 5)
+        # - 速度 b:600 字重(DemiBold)
+        # 名 10px faint 89 档/速度右 10px half 128 档;四行结构恒建、按数据
+        # 显隐(_apply_card),rows 不足 4 不撑高。
         self.model_rows = QWidget()
         mv = QVBoxLayout(self.model_rows)
-        mv.setContentsMargins(0, 0, 0, 0)
+        mv.setContentsMargins(0, 4, 0, 0)
         mv.setSpacing(0)
+        mv.addWidget(self._mk_card_sep("rgba(255,255,255,0.05)"))
+        mv.addSpacing(8)
         self._model_rows_items = []          # [(name_lbl, tps_lbl)]×4,随容器重建
         for _i in range(4):
+            if _i:
+                mv.addSpacing(5)
             row = QHBoxLayout()
             row.setSpacing(SP["s"])
             nm = self._mk_lbl("", "faint", "Microsoft YaHei UI", 10)
             row.addWidget(nm, 1)
             sp = self._mk_lbl("", "half", C_MONO, 10)
+            sp.setFont(mk_mono(10, QFont.DemiBold))
             row.addWidget(sp)
             mv.addLayout(row)
             self._model_rows_items.append((nm, sp))
@@ -1976,12 +1988,14 @@ class MeterWindow(QWidget):
             sp_lbl.setHidden(not on)
             if on:
                 prov, model, tps_m, _out = rows[i]
-                # elide 必须用『本行名 label』的 10pt 字体量宽 —— 用状态行
-                # 8pt 字体的 metrics 会低估 ~25%,长名穿透上限反推撑宽卡
-                # (实测 model_rows 462px 假峰的病根)
+                # elide 必须用『本行名 label』的 10px 字体量宽 —— 用状态行
+                # 字体的 metrics 会低估,长名穿透上限反推撑宽卡(实测
+                # model_rows 462px 假峰的病根)。215:内容宽 281 − 最宽速度
+                # "999.9 t/s"≈60 − 行距 6(预览 .m 两端 space-between,名占
+                # 满余宽;旧 190 收窄无据)
                 fmn = QFontMetrics(nm.font())
-                nm.setText(fmn.elidedText(f"{prov}/{model}",
-                                          Qt.ElideRight, 190))
+                nm.setText(fmn.elidedText(f"{prov} / {model}",
+                                          Qt.ElideRight, 215))
                 sp_lbl.setText(f"{tps_m:.1f} t/s" if tps_m else "-- t/s")
 
     def _refit_dock(self):

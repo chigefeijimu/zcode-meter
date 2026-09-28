@@ -414,7 +414,7 @@ def main() -> int:
     _nm0, _sp0 = win._model_rows_items[0]
     _nm3, _sp3 = win._model_rows_items[3]
     check("卡片模型行:行内容(无『均』前缀)+ 超出 rows[:4] 隐藏",
-          _nm0.text() == "bigmodel/glm-5.3-flash" and _sp0.text() == "12.3 t/s"
+          _nm0.text() == "bigmodel / glm-5.3-flash" and _sp0.text() == "12.3 t/s"
           and _nm3.isHidden() and _sp3.isHidden(),
           f"{_nm0.text()!r}/{_sp0.text()!r}")
 
