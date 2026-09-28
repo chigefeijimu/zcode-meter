@@ -1092,17 +1092,19 @@ class MeterWindow(QWidget):
         sp = 6
         pad = 3          # 每控件安全余量:中文在 Consolas 回退渲染时 sizeHint 会低估
         if vertical:
-            # 边框 2 + 上下边距 16×2(预览 padding 16px 8px)+ 项间距 8
-            # (预览 gap 8)+ 每控件 pad 3 安全余量;末尾 −8 去尾距。
-            # 旧公式锚 margins(8,0,8,0)+spacing 4,2026-09-28 竖条对版随
-            # 布局参数同步更新。
-            total_h = 2 + 32
+            # 边框 2 + 上下边距 16×2 + 4px 总余量 + 项间距 8×(n−1)。
+            # 旧式每控件 pad 3 ×~13 项 ≈ 39px 虚高全被首尾 stretch 均分,
+            # 上下白 ~35px(用户对版 2026-09-28『还是太远』);高度侧
+            # sizeHint 足够准,余量收敛为总量 4(不足由 stretch 先垫)。
+            total_h = 38
+            n = 0
             for i in range(lay.count()):
                 w = lay.itemAt(i).widget()
                 if w is None or w.isHidden():
                     continue
-                total_h += w.sizeHint().height() + pad + 8
-            return self.BAR_V_W, max(total_h - 8, 10)
+                total_h += w.sizeHint().height()
+                n += 1
+            return self.BAR_V_W, max(total_h + 8 * max(n - 1, 0), 10)
         total_w, max_h = 16 + 2, 0
         for i in range(lay.count()):
             w = lay.itemAt(i).widget()
