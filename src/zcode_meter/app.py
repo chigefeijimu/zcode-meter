@@ -435,7 +435,9 @@ class MeterWindow(QWidget):
     # 0~4 行模型 → 303/303/317/331/345,全矩阵 max=345 <400 全容纳,按
     # ceil(max/2)*2 规则 350→346(多源/plan_sub 行常驻不再撑高,0/1 行同高)。
     CARD_W, CARD_H = 250, 346
-    _settle_timer = None          # 类级默认:moveEvent 可能早于 __init__ 定时器创建          # 逻辑像素(DIP),Qt 自动做 DPI 换算
+    _settle_timer = None          # 类级默认:moveEvent 可能早于 __init__ 定时器创建
+    _in_prog_move = False         # 程序性移动(吸附/恢复)期间,moveEvent 不喂防抖
+    _dock_guard_until = 0.0       # 贴边保护期:吸附后的连锁 settle 判定直接跳过          # 逻辑像素(DIP),Qt 自动做 DPI 换算
     BAR_H, BAR_V = 24, 38
     EDGE_NEAR = 30
 
@@ -609,9 +611,10 @@ class MeterWindow(QWidget):
 
     def moveEvent(self, event):
         super().moveEvent(event)
-        # 拖动/任何窗口移动:重置防抖,停止移动 150ms 后做贴边判定
-        if self._settle_timer is not None:
-            self._settle_timer.start()
+        if self._in_prog_move or self._settle_timer is None:
+            return   # 程序性移动(吸附自身)不触发判定链
+        # 用户拖动:重置防抖,停止移动 150ms 后做贴边判定
+        self._settle_timer.start()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -646,6 +649,8 @@ class MeterWindow(QWidget):
     def _settle(self):
         """贴边判定按【鼠标触边】:指针怼到屏幕边缘即贴对应边。
         指针(物理)与工作区(物理)同坐标系比较,鼠标碰到真实边缘必触发。"""
+        if time.time() < self._dock_guard_until:
+            return   # 刚吸附完:此时的 settle 是吸附移动的连锁反应,不是用户意图
         pos = self._pointer_pos()
         try:
             hwnd = int(self.winId())
@@ -676,6 +681,8 @@ class MeterWindow(QWidget):
             vertical = self.dock in ("left", "right")
             w, h = self._bar_size(vertical)
             scale = self.devicePixelRatioF()
+            self._in_prog_move = True
+            self._dock_guard_until = time.time() + 0.8   # 吸附后的连锁判定保护期
             pw, ph = round(w * scale), round(h * scale)
             hwnd = int(self.winId())
             l, t, r_, b_ = monitor_workarea_of(hwnd)
@@ -691,6 +698,8 @@ class MeterWindow(QWidget):
         except Exception:
             import traceback
             dbg("apply_dock_geometry failed: " + traceback.format_exc()[-200:])
+        finally:
+            self._in_prog_move = False
 
     def _set_dock(self, side: str):
         """贴边成胶囊条:宽高按各 label 的 sizeHint 聚合计算,恰好包住文字。
