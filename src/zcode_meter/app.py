@@ -619,6 +619,31 @@ class MeterWindow(QWidget):
         elif not want and self.dock:
             self._unset_dock()
 
+    def _snap_physical_edge(self):
+        """物理级贴边校正:Qt setGeometry 走逻辑像素,DPI≠100% 时与
+        Win32 物理工作区存在换算偏差(实测 125% 下右贴边可超出 20px,
+        内容被屏幕外缘遮挡)。此处直接以 GetWindowRect/MonitorFromWindow
+        的物理坐标把窗口吸附回真实边缘 —— 对任何换算误差免疫的终审。"""
+        if self.dock not in ("left", "right", "top", "bottom"):
+            return
+        try:
+            hwnd = int(self.winId())
+            rc = wt.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rc))
+            l, t, r_, b_ = (monitor_workarea_of(hwnd))
+            if self.dock == "right":
+                user32.SetWindowPos(hwnd, None, r_ - (rc.right - rc.left),
+                                    rc.top, 0, 0, 0x0001 | 0x0010)  # NOSIZE|NOACTIVATE
+            elif self.dock == "left":
+                user32.SetWindowPos(hwnd, None, l, rc.top, 0, 0, 0x0001 | 0x0010)
+            elif self.dock == "top":
+                user32.SetWindowPos(hwnd, None, rc.left, t, 0, 0, 0x0001 | 0x0010)
+            else:
+                user32.SetWindowPos(hwnd, None, rc.left,
+                                    b_ - (rc.bottom - rc.top), 0, 0, 0x0001 | 0x0010)
+        except Exception:
+            pass
+
     def _set_dock(self, side: str):
         """贴边成胶囊条:宽高按各 label 的 sizeHint 聚合计算,恰好包住文字。
         注意 QWidget 顶层在 QSS border 下 sizeHint() 返回废值(16x2),
@@ -640,6 +665,7 @@ class MeterWindow(QWidget):
             x = max(min(cx - w // 2, sg.right() - w - 2), sg.left() + 2)
             y = sg.top() if side == "top" else sg.bottom() - h + 1
         self.setGeometry(x, y, w, h)     # 不锁死:_refit_dock 周期校验,自愈任何几何漂移
+        self._snap_physical_edge()       # 物理级终审:DPI 换算偏差在此校正
         self._save_state()               # 形态变化即时落盘,兜强杀/崩溃路径
 
     def _mk_sep(self, vertical: bool) -> QFrame:
@@ -1364,6 +1390,7 @@ class MeterWindow(QWidget):
             self.setGeometry(sg.left(), sg.center().y() - h // 2, w, h)
         else:
             self.setGeometry(sg.right() - w + 1, sg.center().y() - h // 2, w, h)
+        self._snap_physical_edge()
 
     def _tick_breath(self):
         self._breath = (self._breath + 0.08) % 1.0
