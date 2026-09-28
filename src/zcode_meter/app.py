@@ -685,12 +685,12 @@ class MeterWindow(QWidget):
     # 固定列宽』修宽度策略(CARD_GRID_COL_W),三态收敛 313。视觉对版
     # (2026-09-28)字号 px 化后重测(findings/measure_card_baseline.py,
     # 原生平台+停引擎三闸防真实数据竞态):满载 0~4 行模型 → 268/281/
-    # 294/307/320,全矩阵 max=320 → CARD_H=322(320 截断点+2 余量);预览
-    # .g-card 满载(3 行模型)322,与 3 行态 307 同量级,纵向收敛达成
-    # (首版 pt 字号曾把满载顶到 344+、真机比预览高 ~100px)。机制不变:
+    # 294/307/320 → CARD_H=322;grid 键值同格叠印修复(第二组键落 row2/
+    # 值落 row3,4 行结构)后重测 → 284/297/310/323/336,全矩阵 max=336 →
+    # CARD_H=338(336 截断点+2 余量)。机制不变:
     # _unset_dock/_restore_state/_detach_to_pointer 用它 setGeometry,偏小会
     # 静默截断(ui-verify 只打印不校验,需人工目视)。
-    CARD_W, CARD_H = 313, 322
+    CARD_W, CARD_H = 313, 338
     # grid 六格固定列宽(v0.8.0 T5+T2 宽度策略裁决):满载文本自然宽实测
     # 372 > CARD_W 313(findings/measure_card_baseline.py,13pt 字号期),按
     # spec 的『elide/固定列宽』修标签宽度策略 —— 列宽钉死后 v label 走
@@ -1258,9 +1258,14 @@ class MeterWindow(QWidget):
                 ("入 / 出", self.in_out_lbl), ("缓存命中", self.rate_lbl),
                 ("⏱ 首 / 总", self.timing_lbl), ("燃速", self.burn_lbl),
                 ("均燃", self.avg_burn_lbl), ("均速", self.avg_lbl))):
+            # k/v 行号必须按『第几对』展开成 4 行(0=k1,1=v1,2=k2,3=v2)。
+            # v0.8.0 首版误写 col//3(+1):第二组键(燃速/均燃/均速)与第一组
+            # 值(入出/命中/首总)同落 row1 同格叠印 —— 真机『文字重叠』
+            # 的真因(2026-09-28 用户截图+findChildren 几何转储定位:燃速
+            # g=(16,207) 与 in_out 值全等),此前误诊为列宽/elide 问题。
             grid.addWidget(self._mk_lbl(k, "faint", "Microsoft YaHei UI", 9),
-                           col // 3, col % 3)
-            grid.addWidget(v, col // 3 + 1, col % 3)
+                           (col // 3) * 2, col % 3)
+            grid.addWidget(v, (col // 3) * 2 + 1, col % 3)
         root.addLayout(grid)
 
         # ⑥ 模型列表 rows[:4](预览 :187-190):容器+每行 HBox(名左 10pt
