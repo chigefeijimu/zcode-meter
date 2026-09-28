@@ -483,6 +483,11 @@ class MeterWindow(QWidget):
         self._plan_fetched_at: float | None = None
         self._plan_next_reset: float | None = None
         self._plan_left_tok: float | None = None   # 剩余量推算(当前块token×剩余%/已用%)
+        # 剩余量动态校准:每次 quota 刷新若 pct 跳变,用本地窗口 token 增量
+        # 标定"1%=X token"(EMA);比块累计推算更即时、不带历史误差
+        self._pct_ratio: float | None = None        # 1% 对应的 token 数
+        self._last_pct_seen: float | None = None
+        self._last_win_tok_seen: float | None = None
         # 重置事件判据的 prev 侧(上一次 quota 快照):_update_quota 在覆盖它
         # 之前先与最新快照比对。换号/清号分支必须一并置 None —— 残留旧账号
         # 快照会让新号首查的 nextResetTime 前跳被误判成『额度已重置』
@@ -1248,17 +1253,36 @@ class MeterWindow(QWidget):
         if pct is not None:
             self._plan_pct = pct
             self.snap.plan_remaining_pct = pct
-            # 剩余量推算:当前活动 5h 块的本地 token 用量 ÷ 已用% = 窗口
-            # 总额度,反出剩余 —— 两个本地量拼出绝对值(接口不回绝对量)
-            used_pct = 100.0 - pct
+            # 剩余量估算(两级):
+            # ① 动态校准:相邻两次 quota 刷新的 pct 跳变 × 本地窗口 token
+            #    增量 → ratio(1%=X token,EMA 平滑) → 剩余 = pct×ratio。
+            #    即时且自校准,不依赖块初期的大分母,不带整块历史误差。
+            # ② 冷启动退守:当前 5h 块本地用量 ÷ 已用% 反推(块累计口径)。
+            # 接口不回 token 绝对量(TIME_LIMIT 的 usage/remaining 是工具
+            # 次数额度,非 token —— 2026-09-28 实测原始 payload 确认)。
             try:
                 blocks = self.eng.fetch_billing_blocks(1)
-                cur_tok = next((t for _s, t, c in blocks if c), None)
-                if cur_tok and used_pct > 0.5:      # 已用%过低时推算失真大,不显示
-                    self._plan_left_tok = cur_tok * pct / used_pct
-                else:
-                    self._plan_left_tok = None
+                win_tok = next((t for _s, t, c in blocks if c), None)
             except Exception:
+                win_tok = None
+            used_pct = 100.0 - pct
+            # ① 校准:pct 有跳变且本地窗口用量可读
+            if (self._last_pct_seen is not None and win_tok is not None
+                    and self._last_win_tok_seen is not None):
+                d_pct = self._last_pct_seen - pct      # pct 下降 = 消耗
+                d_tok = win_tok - self._last_win_tok_seen
+                if d_pct >= 1 and d_tok > 0:
+                    new_ratio = d_tok / d_pct
+                    self._pct_ratio = (new_ratio if self._pct_ratio is None
+                                       else self._pct_ratio * 0.6 + new_ratio * 0.4)  # EMA
+            self._last_pct_seen = pct
+            self._last_win_tok_seen = float(win_tok) if win_tok else None
+            # ② 估算输出
+            if self._pct_ratio is not None:
+                self._plan_left_tok = self._pct_ratio * pct
+            elif win_tok and used_pct > 0.5:
+                self._plan_left_tok = win_tok * pct / used_pct
+            else:
                 self._plan_left_tok = None
         fa = data.get("fetched_at")
         if isinstance(fa, (int, float)) and not isinstance(fa, bool) and fa > 0:
