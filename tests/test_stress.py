@@ -76,7 +76,7 @@ def main() -> int:
         sizes2.append(("h", win._bar_size(False)))
         check(f"预算段循环{i} 横条:plan/burn 可见且文案正确",
               win.plan_lbl.isVisible() and win.burn_lbl.isVisible()
-              and win.plan_lbl.text() == "套餐剩余 42%"
+              and win.plan_lbl.text() == "剩 42%"
               and win.burn_lbl.text() == "燃速 12.3K/h"
               and win._budget_sep.isVisible())
         win._build_bar(vertical=True); win._apply_snapshot(win.snap)
@@ -94,7 +94,7 @@ def main() -> int:
     win._plan_next_reset = _t.time() * 1000 + 90 * 60_000     # 90 分钟后
     win._build_bar(); win._apply_snapshot(win.snap)
     ht = win.plan_lbl.text()
-    check("横条倒计时入条", ht.startswith("套餐剩余 42% · ") and "后重置" in ht, ht)
+    check("横条倒计时入条", ht.startswith("剩 42%") and "后重置" in ht, ht)
     check("横条仍单行(高度<=30)", "\n" not in ht)
     win._build_bar(vertical=True); win._apply_snapshot(win.snap)
     vt = win.plan_lbl.text()
@@ -152,7 +152,7 @@ def main() -> int:
     win._plan_fetched_at = time.time() - 180
     win._plan_next_reset = time.time() * 1000 + 90 * 60_000
     win._apply_snapshot(win.snap)
-    check("卡片 plan hero", win.plan_lbl.text() == "套餐剩余 42%",
+    check("卡片 plan hero", win.plan_lbl.text() == "剩 42%",
           win.plan_lbl.text())
     check("卡片 plan sub:age+cd 双在场",
           win.plan_sub_lbl.text() == "· 3分钟前 · 1h 30m 后重置",

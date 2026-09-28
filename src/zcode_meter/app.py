@@ -242,8 +242,12 @@ class TrayController:
         approx = "≈" if s.today_cost_partial else ""
         self._ov_cost.setText(f"今日 {approx}¥{cost:.2f}")
         pct = self.win._plan_pct
-        self._ov_plan.setText(f"套餐剩余 {pct:.0f}%" if pct is not None
-                              else "套餐剩余 —")
+        if pct is None:
+            self._ov_plan.setText("套餐剩余 —")
+        else:
+            lt = self.win._plan_left_tok
+            self._ov_plan.setText(
+                f"剩 {pct:.0f}%" + (f" · ~{fmt_k(int(lt))}" if lt is not None else ""))
         self._ov_burn.setText(
             f"燃速 {fmt_k(int(s.burn_tokens_per_hour or 0))}/h")
 
@@ -478,6 +482,7 @@ class MeterWindow(QWidget):
         # 纯本地递减,不为它发请求);换号/清号时随三缓存一并清零
         self._plan_fetched_at: float | None = None
         self._plan_next_reset: float | None = None
+        self._plan_left_tok: float | None = None   # 剩余量推算(当前块token×剩余%/已用%)
         # 重置事件判据的 prev 侧(上一次 quota 快照):_update_quota 在覆盖它
         # 之前先与最新快照比对。换号/清号分支必须一并置 None —— 残留旧账号
         # 快照会让新号首查的 nextResetTime 前跳被误判成『额度已重置』
@@ -1243,6 +1248,18 @@ class MeterWindow(QWidget):
         if pct is not None:
             self._plan_pct = pct
             self.snap.plan_remaining_pct = pct
+            # 剩余量推算:当前活动 5h 块的本地 token 用量 ÷ 已用% = 窗口
+            # 总额度,反出剩余 —— 两个本地量拼出绝对值(接口不回绝对量)
+            used_pct = 100.0 - pct
+            try:
+                blocks = self.eng.fetch_billing_blocks(1)
+                cur_tok = next((t for _s, t, c in blocks if c), None)
+                if cur_tok and used_pct > 0.5:      # 已用%过低时推算失真大,不显示
+                    self._plan_left_tok = cur_tok * pct / used_pct
+                else:
+                    self._plan_left_tok = None
+            except Exception:
+                self._plan_left_tok = None
         fa = data.get("fetched_at")
         if isinstance(fa, (int, float)) and not isinstance(fa, bool) and fa > 0:
             self._plan_fetched_at = float(fa)
@@ -1354,7 +1371,11 @@ class MeterWindow(QWidget):
                 else:
                     # v0.7 T-A 两级化:hero 只留主数字,新鲜度/重置倒计时降
                     # 为 plan_sub_lbl 副文本(faint 色,明显弱于正文)
-                    self.plan_lbl.setText(f"套餐剩余 {self._plan_pct:.0f}%")
+                    t = f"剩 {self._plan_pct:.0f}%"
+                    lt = self._plan_left_tok
+                    if lt is not None:
+                        t += f" · ~{fmt_k(int(lt))}"
+                    self.plan_lbl.setText(t)
             if self.plan_sub_lbl is not None:
                 if self._plan_pct is None:
                     self.plan_sub_lbl.setText("")
@@ -1378,7 +1399,10 @@ class MeterWindow(QWidget):
                     # 重置倒计时一并入条(纯本地计算,零请求);无数据自然省略
                     cd = format_countdown_hm(self._plan_next_reset)
                     if self._bar_form == "h":
-                        t = f"套餐剩余 {self._plan_pct:.0f}%"
+                        t = f"剩 {self._plan_pct:.0f}%"
+                        lt = self._plan_left_tok
+                        if lt is not None:
+                            t += f" · ~{fmt_k(int(lt))}"
                         if cd:
                             t += f" · {cd}后重置"
                         self.plan_lbl.setText(t)
@@ -1387,7 +1411,11 @@ class MeterWindow(QWidget):
                         # (独立 label,行距走布局 spacing,与今日组同构)
                         self.plan_lbl.setText(f"{self._plan_pct:.0f}%")
                         if self.plan_sub_lbl is not None:
-                            self.plan_sub_lbl.setText(cd or "")
+                            sub = cd or ""
+                            lt = self._plan_left_tok
+                            if lt is not None:
+                                sub = (f"~{fmt_k(int(lt))}" + (f" · {sub}" if sub else ""))
+                            self.plan_sub_lbl.setText(sub)
             if self.burn_lbl is not None:
                 self.burn_lbl.setVisible(burn_on)
                 if burn_on:
