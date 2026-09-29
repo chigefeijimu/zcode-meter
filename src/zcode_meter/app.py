@@ -937,12 +937,15 @@ class MeterWindow(QWidget):
         if not ok:
             self._pill_geo = None
             return
+        # 六个独立小药丸(用户 2026-09-29『药丸不应该是六个吗』—— k 一丸、
+        # v 一丸,不是每列一整个大药丸):每丸罩自己的那一行,高=行高+呼吸
         pills = []
         for kg, vg in geos:
-            cx = (kg.left() + kg.right() + vg.left() + vg.right()) / 4.0
-            y0 = min(kg.top(), vg.top()) - 6.0
-            y1 = max(kg.bottom(), vg.bottom()) + 3.0
-            pills.append((cx, float(y0), float(y1)))
+            for g in (kg, vg):
+                cx = (g.left() + g.right()) / 2.0
+                y0 = g.top() - 4.0
+                y1 = g.bottom() + 3.0
+                pills.append((cx, float(y0), float(y1)))
         self._pill_geo = {"pill_w": 93.0, "pills": pills}
 
     def _paint_glass(self, ev):
