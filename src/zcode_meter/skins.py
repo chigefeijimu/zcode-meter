@@ -352,21 +352,25 @@ def _liquid_bg(p, win, form) -> QPainterPath:
     w, h = win.width(), win.height()
     path = _base_path(win, r)
     # 暗幕(stage.dark 透过)。条形态(高30px)整体提亮一档:全黑幕+粗描边
-    # 在细条上读作『黑色外框』(用户反馈 2026-09-29),改亮灰蓝幕+细描边
+    # 在细条上读作『黑色外框』(用户反馈 2026-09-29),改亮灰蓝幕+细描边。
+    # 卡片同病第二轮(用户『黑色的打底还是没有去掉』):#0e1118 近黑幕撑满
+    # 整卡,HTML 的透亮玻璃感全无 —— 卡片也换亮灰蓝幕(比条略深保文字对
+    # 比),blob 半径/α 加大为视觉主体,『彩泡在浅玻璃后晕开』才成立
     base = QLinearGradient(0.0, 0.0, 0.0, float(h))
     if form in ("h", "v"):
         base.setColorAt(0.0, QColor("#2a3140"))
         base.setColorAt(1.0, QColor("#232a37"))
     else:
-        base.setColorAt(0.0, QColor("#0e1118"))
-        base.setColorAt(1.0, QColor("#171c26"))
+        base.setColorAt(0.0, QColor("#39415a"))
+        base.setColorAt(1.0, QColor("#2b3247"))
     p.fillPath(path, base)
     p.save()
     p.setClipPath(path)
     # 双 blob(#38bdf8/#a78bfa,HTML filter:blur → QRadialGradient 模拟;
-    # 卡 :110-111 120/100px 在左上/右下,条 :125-126 60px 缩小档)
-    blobs = ((44.0, 34.0, 95.0, 150, 56, 189, 248),
-             (w - 50.0, h - 44.0, 88.0, 140, 167, 139, 250))
+    # 卡 :110-111 120/100px 在左上/右下,条 :125-126 60px 缩小档)。
+    # 卡片档 α 150/140→190/175、半径 95/88→120/110:亮幕下彩泡要撑得住
+    blobs = ((44.0, 34.0, 120.0, 190, 56, 189, 248),
+             (w - 50.0, h - 44.0, 110.0, 175, 167, 139, 250))
     if form == "h":
         blobs = ((52.0, 0.0, 55.0, 128, 56, 189, 248),
                  (w - 90.0, float(h), 55.0, 115, 167, 139, 250))
@@ -781,7 +785,10 @@ _SKIN_LIQUID = SkinDef(
     pulse_core=_c(56, 189, 248, 230), ring_base=_c(255, 255, 255, 26),
     sep="rgba(255,255,255,77)",
     sep_card="rgba(255,255,255,46)", sep_card_weak="rgba(255,255,255,31)",
-    contrast_bg={"card": "#3a3f4a", "h": "#3a3f4a", "v": "#3a3f4a"},
+    # contrast_bg=白.14 药丸与玻璃底合成色的近似(评审 D 口径:药丸合成底,
+    # 非 blob 无字装饰带)。#343b4d=亮灰蓝幕(#39415a→#2b3247 渐变中点)与
+    # 药丸白.14 的合成近似 —— 2026-09-29 暗幕去黑第二轮随底色同步
+    contrast_bg={"card": "#343b4d", "h": "#343b4d", "v": "#343b4d"},
     today_cost_sep=" ",
     font_mono_families=("Cascadia Code", "Consolas"),
     deco=_deco_liquid,
