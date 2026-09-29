@@ -424,9 +424,11 @@ def _deco_liquid(p, win, form) -> None:
         lbs = _card_grid_vs(win)
         if len(lbs) == 6:
             rects = [lb.geometry() for lb in lbs]
-            union = _union(rects)
-            col_w = max(r.width() for r in rects)
-            row_h = max(r.height() for r in rects)
+            # 等宽上限 = min(列宽)+列距(8):三列中线距仅 93/89.5,100px 等宽
+            # 药丸相互重叠 7~10px(重叠互相盖住,视觉上『不是六个』2026-09-29);
+            # min 列宽+半列距×2 是不重叠前提下的最大等宽
+            col_w = min(r.width() for r in rects)
+            pill_w = float(col_w) + 8.0
             # 每列中线 = 该列 k/v 两 label 的几何中点 x(居中文字的视觉锚)
             for col in range(3):
                 k_lb, v_lb = lbs[col], lbs[col + 3]
@@ -434,11 +436,10 @@ def _deco_liquid(p, win, form) -> None:
                 cx = (kg.left() + kg.right() + vg.left() + vg.right()) / 4.0
                 top = min(kg.top(), vg.top()) - 12       # k 行上探:帽标+呼吸
                 bot = max(kg.bottom(), vg.bottom()) + 3
-                pw = min(float(col_w), 100.0)            # 等宽上限:列距 8 不压邻列
                 p.setPen(QPen(QColor(255, 255, 255, 51)))
                 p.setBrush(QColor(255, 255, 255, 36))
                 p.drawRoundedRect(
-                    QRectF(cx - pw / 2.0, top, pw, bot - top), 14, 14)
+                    QRectF(cx - pill_w / 2.0, top, pill_w, bot - top), 14, 14)
         else:
             for lb in lbs:
                 g = _pill_rect(lb, 1, 16, 2)

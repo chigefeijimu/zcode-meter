@@ -1042,6 +1042,14 @@ class MeterWindow(QWidget):
         # 用户拖动:重置防抖,停止移动 150ms 后做贴边判定
         self._settle_timer.start()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # 贴边↔卡片形态切换窗口尺寸剧变(条 801x40 ↔ 卡 313x341),Qt 的
+        # resize 重绘对增大的方向只补画新增区域,自绘 paintEvent 的渐变按
+        # 新尺寸整体重算,但旧尺寸帧可能残留在备份位图上 → 恢复卡片后右侧
+        # 出现一条『白边』(用户截图 2026-09-29)。强制整窗重绘消残影。
+        self.update()
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             QTimer.singleShot(90, self._settle)   # 保留双保险(release 到达时立即判定)
