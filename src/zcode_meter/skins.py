@@ -416,30 +416,29 @@ def _deco_liquid(p, win, form) -> None:
     # 药丸 clip 进『六格 k/v 联合区域』:先算联合矩形,药丸与它求交,越界
     # 部分不再画;hero 区从此无药丸元素。
     if form is None:
-        # 第三轮(用户『药丸旁边还是有竖线』+『六丸等宽、文字居中』):
-        # 逐 label 外扩的药丸在上下排衔接处留下边框缝(放大约 2px 竖线),
-        # 且各列宽随内容漂移 —— 改按『三列等宽×两排等高』的网格片绘制:
-        # 六格联合区横向三等分、纵向两等分,圆角矩形片间留 6px 缝,文字
-        # 对齐交给布局(grid k/v 本就左对齐,片居中性由等宽保证)。
+        # 第三轮(用户『药丸旁边还是有竖线』+『六丸等宽、文字居中』)→
+        # 第四轮修正(用户『药丸的结构被你破坏掉了』):三等分联合区的药丸
+        # 与 grid 实际列宽(102/68/95 非等分)错位,文字挤在药丸左半 ——
+        # 药丸必须锚每列中线画:宽 = 最大列宽(等宽诉求),x = 列中线 ± 半宽,
+        # y = 该列 k/v 联合区上下外扩。片间缝 = 列距自然形成,无衔接竖缝。
         lbs = _card_grid_vs(win)
         if len(lbs) == 6:
             rects = [lb.geometry() for lb in lbs]
             union = _union(rects)
-            ux0, uy0, ux1, uy1 = (union.left(), union.top(),
-                                  union.right(), union.bottom())
-            cw = (ux1 - ux0) / 3.0
-            rh = (uy1 - uy0) / 2.0
-            gap = 3.0
-            for row in range(2):
-                for col in range(3):
-                    x0 = ux0 + col * cw + gap
-                    x1 = ux0 + (col + 1) * cw - gap
-                    y0 = uy0 + row * rh + (gap if row else gap + 2)
-                    y1 = uy0 + (row + 1) * rh - gap
-                    p.setPen(QPen(QColor(255, 255, 255, 51)))
-                    p.setBrush(QColor(255, 255, 255, 36))
-                    p.drawRoundedRect(QRectF(x0, y0, x1 - x0, y1 - y0),
-                                      14, 14)
+            col_w = max(r.width() for r in rects)
+            row_h = max(r.height() for r in rects)
+            # 每列中线 = 该列 k/v 两 label 的几何中点 x(居中文字的视觉锚)
+            for col in range(3):
+                k_lb, v_lb = lbs[col], lbs[col + 3]
+                kg, vg = k_lb.geometry(), v_lb.geometry()
+                cx = (kg.left() + kg.right() + vg.left() + vg.right()) / 4.0
+                top = min(kg.top(), vg.top()) - 12       # k 行上探:帽标+呼吸
+                bot = max(kg.bottom(), vg.bottom()) + 3
+                pw = min(float(col_w), 100.0)            # 等宽上限:列距 8 不压邻列
+                p.setPen(QPen(QColor(255, 255, 255, 51)))
+                p.setBrush(QColor(255, 255, 255, 36))
+                p.drawRoundedRect(
+                    QRectF(cx - pw / 2.0, top, pw, bot - top), 14, 14)
         else:
             for lb in lbs:
                 g = _pill_rect(lb, 1, 16, 2)
