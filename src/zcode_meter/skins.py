@@ -56,6 +56,11 @@ from PySide6.QtGui import (
     QColor, QFont, QLinearGradient, QPainterPath, QPen, QRadialGradient,
 )
 
+# 卡片六格药丸(liquid)内文字预算:药丸宽 93 − 两侧留白 7×2。
+# _apply_card 对 liquid 皮肤的 grid v 文本按此值 elide —— 防文字溢出
+# 药丸边界(用户 2026-09-29『药丸内部文字超出边界』)。其它皮肤不受限。
+LIQUID_GRID_TEXT_W = 79
+
 # 白名单与顺序钉死(T1 SKIN_IDS 同源;glass=缺省第 0 款)
 SKIN_IDS = ("glass", "swiss", "crt", "chalk", "liquid",
             "industrial", "newspaper", "vaporwave", "blueprint")
@@ -423,7 +428,13 @@ def _deco_liquid(p, win, form) -> None:
         # activate/repaint 怎么排都有竞态窗。定稿:药丸几何【确定性计算】
         # —— 卡片 grid 是类常量(内容宽 281=313-16-16、三列
         # CARD_GRID_COL_W、列距 8),直接算六格位置,零运行时几何依赖。
-        # 等宽取 min(中线距, min列宽+列距) → 89,六片互不重叠且罩住文字列。
+        # 等宽药丸宽:三列中线距 93/89.5、文本最宽列(col0)84px。89 时
+        # 84px 文本只剩 2.5px 边距(用户『文字超出药丸边界』)—— 加宽到
+        # 与 col0 同宽 102:中线距 93 < 102 会重叠 → 重排三列等宽布局:
+        # 六丸等宽 = 内容宽 281 扣两道缝 8×2 → 88.3?仍窄。定稿:等宽
+        # 93(min 中线距,恰好互切)+ 文字侧配合 —— elide 上限缩到
+        # 药丸内宽(93-2×7 pad=79),超宽文本截断(『_/出』类长值省略号),
+        # 由 _apply_card 的 elide 分派读取 skins 常量。药丸等宽 93。
         cw = win.CARD_GRID_COL_W
         margin, gap = 16, 8
         xs = [margin]
@@ -431,7 +442,8 @@ def _deco_liquid(p, win, form) -> None:
             xs.append(xs[-1] + w_ + gap)
         centers = [x + w_ / 2.0 for x, w_ in zip(xs, cw)]
         span = min(centers[1] - centers[0], centers[2] - centers[1])
-        pill_w = min(span - 4.0, min(cw) + gap)     # 89:不重叠的最大等宽
+        pill_w = span                              # 93:相邻药丸恰相切不叠
+        pill_pad = 7.0                             # 药丸内水平留白(文字预算)
         # 纵向锚窗口底向上(模型列表 4 行恒建≈76 + 段距,grid 高≈64):
         # 模型行不足 4 行时 grid 上移,药丸浮在模型区 —— 可接受近似
         # (定稿取舍:比几何竞态可靠得多;模型行满载是常态)

@@ -2461,15 +2461,19 @@ class MeterWindow(QWidget):
             lb.setToolTip(text if el != text else "")
 
         cw = self.CARD_GRID_COL_W
+        # liquid 皮肤:药丸等宽 93、内留白 7×2,文字预算 79 —— 超宽截断
+        # 防溢出药丸边界(用户 2026-09-29);其它皮肤按列宽(elide 纪律不变)
+        liquid = (self.skin_id == "liquid")
+        text_w = (skins.LIQUID_GRID_TEXT_W if liquid else 0)
         in_out_txt = f"{fmt_k(s.session_in)} / {fmt_k(s.session_out)}"
-        _elide(self.in_out_lbl, in_out_txt, cw[0])
-        _elide(self.rate_lbl, f"{s.cache_rate:.2f}%", cw[1])
+        _elide(self.in_out_lbl, in_out_txt, text_w or cw[0])
+        _elide(self.rate_lbl, f"{s.cache_rate:.2f}%", text_w or cw[1])
         tt = f"{s.last_ttft:.1f}" if s.last_ttft is not None else "--"
         du = f"{s.last_duration:.1f}s" if s.last_duration is not None else "--"
-        _elide(self.timing_lbl, f"{tt} / {du}", cw[2])
+        _elide(self.timing_lbl, f"{tt} / {du}", text_w or cw[2])
         burn = s.burn_tokens_per_hour or 0.0
         burn_txt = f"{fmt_k(int(burn))}/h"
-        _elide(self.burn_lbl, burn_txt, cw[0])
+        _elide(self.burn_lbl, burn_txt, text_w or cw[0])
         if s.est_hours_left is not None:
             self.burn_lbl.setToolTip(
                 burn_txt + (" · 预算已超支" if s.est_hours_left <= 0
@@ -2478,8 +2482,10 @@ class MeterWindow(QWidget):
             self.burn_lbl.setToolTip("")
         ab = s.burn_avg_tokens_per_hour
         _elide(self.avg_burn_lbl,
-               f"{fmt_k(int(ab))}/h" if ab is not None else "--", cw[1])
-        _elide(self.avg_lbl, f"{s.tps_avg:.1f} t/s" if s.tps_avg else "--", cw[2])
+               f"{fmt_k(int(ab))}/h" if ab is not None else "--",
+               text_w or cw[1])
+        _elide(self.avg_lbl, f"{s.tps_avg:.1f} t/s" if s.tps_avg else "--",
+               text_w or cw[2])
         # ⑥ 模型列表 rows[:4]:首行不带『均』前缀(v0.7→v0.8 有意变更),
         # 行数不足隐藏(容器高度随可见行收缩)
         rows = (s.speed_by_model or [])[:4]
