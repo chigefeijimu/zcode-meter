@@ -387,6 +387,17 @@ def _liquid_bg(p, win, form) -> QPainterPath:
     ov.setColorAt(0.0, QColor(255, 255, 255, 41 if form is None else 34))
     ov.setColorAt(1.0, QColor(255, 255, 255, 13))
     p.fillRect(0, 0, w, h, ov)
+    # 第三轮补充(用户『底部的黑幕的边界还是在』):药丸区被白.14 垫亮,
+    # 幕布渐变到卡底最暗,两者交界显出一条水平边界 —— 幕布尾部再提亮一档
+    # (#2b3247→#333a4f),底部与药丸区亮度衔接
+    if form is None:
+        tail = QLinearGradient(0.0, h * 0.55, 0.0, float(h))
+        tail.setColorAt(0.0, QColor(51, 58, 79, 0))
+        tail.setColorAt(1.0, QColor(63, 71, 94, 130))
+        p.save()
+        p.setClipPath(path)
+        p.fillRect(0, 0, w, h, tail)
+        p.restore()
     p.restore()
     return path
 
@@ -784,7 +795,9 @@ _SKIN_LIQUID = SkinDef(
     pulse_idle=_c(255, 255, 255, 89), pulse_active=_c(56, 189, 248),
     pulse_core=_c(56, 189, 248, 230), ring_base=_c(255, 255, 255, 26),
     sep="rgba(255,255,255,77)",
-    sep_card="rgba(255,255,255,46)", sep_card_weak="rgba(255,255,255,31)",
+    # 卡片分节线 transparent(用户 2026-09-29『既然用了玻璃药丸就不需要
+    # 再用竖线分隔』—— 药丸已是分组语言,叠线即拥挤);sep_card_weak 同理
+    sep_card="transparent", sep_card_weak="transparent",
     # contrast_bg=白.14 药丸与玻璃底合成色的近似(评审 D 口径:药丸合成底,
     # 非 blob 无字装饰带)。#343b4d=亮灰蓝幕(#39415a→#2b3247 渐变中点)与
     # 药丸白.14 的合成近似 —— 2026-09-29 暗幕去黑第二轮随底色同步
