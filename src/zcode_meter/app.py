@@ -1106,21 +1106,16 @@ class MeterWindow(QWidget):
         x = max(min(pos.x() - w // 2, sg.right() - w - 2), sg.left() + 2)
         y = max(min(pos.y() - 12, sg.bottom() - h - 2), sg.top() + 2)
         self.dock = None
-        # 销毁重建延后到事件栈外:此处由 mousePressEvent 调用,栈上还有
-        # 刚返回的 paint/输入事件对旧控件的引用;同步 _build_card 删全部
-        # 旧 C++ 对象 → access violation(真机『一取消贴边就崩』crash log
-        # 栈顶 _build_card→SparklineWidget.__init__,2026-09-29)。
-        # singleShot(0) 让本栈先完全返回再重建。
-        QTimer.singleShot(0, lambda: self._rebuild_card_at(x, y, w, h))
-        self._save_state()               # 拖离贴边也是形态变化,同样即时落盘
-
-    def _rebuild_card_at(self, x, y, w, h):
-        """卡片重建(事件栈外):_detach_to_pointer 的延迟半程。"""
+        # 同步重建(回滚 singleShot 延迟):延迟版被 startSystemMove 的
+        # 模态拖动循环吞掉 —— 拖动恢复卡片变长条(用户 2026-09-29)。崩溃
+        # 真因是 paint 里 measure 读已销毁对象(paintEvent 已修:形态守卫
+        # +异常保护),重建本身同步是安全的(v0.8.0 前素来如此)。
         self._build_card()
         self.setStyleSheet(self._skin_qss())   # 皮肤化(T2):卡形态 → qss
         self.layout().activate()   # 刷新窗口最小宽,防钳宽(旧最小宽钳 313)
         self.setGeometry(x, y, w, h)
         self._apply_snapshot(self.snap)
+        self._save_state()               # 拖离贴边也是形态变化,同样即时落盘
 
     # ---- 贴边判定(全 Qt 逻辑坐标,无 DPI 手算) ----
     def _pointer_pos(self):
@@ -1272,11 +1267,16 @@ class MeterWindow(QWidget):
         self.dock = None
         # 同 _detach_to_pointer:重建延后到事件栈外(可能由 settle/菜单
         # 触发,栈上同样有 paint/输入事件对旧控件的引用)
+        self._build_card()
+        self.setStyleSheet(self._skin_qss())   # 皮肤化(T2):卡形态 → qss
+        # 先激活新布局:顶层布局激活时会把布局最小宽写入窗口
+        # minimumWidth —— 横条时代的最小宽若未刷新,setGeometry(313)
+        # 被钳成条宽(用户『取消贴边卡片变宽』病根,2026-09-28)
+        self.layout().activate()
         x = max(min(g.left(), sg.right() - self.CARD_W - 8), sg.left() + 8)
         y = max(min(g.top(), sg.bottom() - self.CARD_H - 8), sg.top() + 8)
-        QTimer.singleShot(0, lambda: self._rebuild_card_at(x, y,
-                                                           self.CARD_W,
-                                                           self.CARD_H))
+        self.setGeometry(x, y, self.CARD_W, self.CARD_H)
+        self._apply_snapshot(self.snap)
         self._save_state()               # 形态变化即时落盘,兜强杀/崩溃路径
 
     # ---- 布局 ----
