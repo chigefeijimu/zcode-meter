@@ -901,10 +901,16 @@ class MeterWindow(QWidget):
         deco = self._skin().deco
         if deco is not None:
             # 布局激活只在真实显示态做:--verify/无事件循环环境里 activate
-            # 会挂起(实测 timeout),而 verify 根本不消费药丸几何
+            # 会挂起(实测 timeout),而 verify 根本不消费药丸几何。
+            # measure 全程异常保护:_build_card 重建后旧的 C++ 对象可能已
+            # 删,geometry() 抛 RuntimeError 会反复打断 paint → 窗口画不出
+            # 来(用户『重启一下小插件』起不来即此);任何异常=该帧无药丸。
             if self.isVisible() and self.layout() is not None:
                 self.layout().activate()
-                self._measure_pill_geo()
+                try:
+                    self._measure_pill_geo()
+                except RuntimeError:
+                    self._pill_geo = None
             p = QPainter(self)
             p.setRenderHint(QPainter.Antialiasing)
             deco(p, self, self._bar_form)
@@ -913,7 +919,7 @@ class MeterWindow(QWidget):
 
     def _measure_pill_geo(self):
         """量六格 k/v 几何写 _pill_geo 缓存(deco 消费;布局激活后量,精确)。
-        量不到(竞态/未布局)置 None,deco 该帧跳过药丸只画底。"""
+        量不到(竞态/未布局/label 已销毁)置 None,deco 该帧跳过药丸只画底。"""
         lbs = skins._card_grid_vs(self)
         pairs = [(lbs[0], lbs[3]), (lbs[1], lbs[4]), (lbs[2], lbs[5])]
         try:
