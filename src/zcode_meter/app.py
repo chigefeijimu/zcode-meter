@@ -757,7 +757,8 @@ class MeterWindow(QWidget):
     # ⏱首/总 95("0.8 / 12.4s"=86),合计 265+16+32=313 收敛。
     CARD_GRID_COL_W = (102, 68, 95)
     _bar_form = None              # 类级默认:paintEvent 可能早于首次 _build_card
-    _pill_geo = None              # 液态玻璃药丸几何缓存(_apply_card 末尾量取)
+    _pill_geo = None              # 液态玻璃药丸几何缓存(事件循环下一拍量取)
+    _pill_measure_pending = False # 防重复排程的量取闸
     _settle_timer = None          # 类级默认:moveEvent 可能早于 __init__ 定时器创建
     _in_prog_move = False         # 程序性移动(吸附/恢复)期间,moveEvent 不喂防抖
     _dock_guard_until = 0.0       # 贴边保护期:吸附后的连锁 settle 判定直接跳过          # 逻辑像素(DIP),Qt 自动做 DPI 换算
@@ -900,18 +901,14 @@ class MeterWindow(QWidget):
         SO:78795785);activate 幂等,已激活时零开销。"""
         deco = self._skin().deco
         if deco is not None:
-            # 布局激活只在真实显示态做:--verify/无事件循环环境里 activate
-            # 会挂起(实测 timeout),而 verify 根本不消费药丸几何。
-            # measure 全程异常保护:_build_card 重建后旧的 C++ 对象可能已
-            # 删,geometry() 抛 RuntimeError 会反复打断 paint → 窗口画不出
-            # 来(用户『重启一下小插件』起不来即此);任何异常=该帧无药丸。
-            if (self.isVisible() and self.layout() is not None
-                    and self._bar_form is None):
-                self.layout().activate()
-                try:
-                    self._measure_pill_geo()
-                except (RuntimeError, IndexError):
-                    self._pill_geo = None
+            # 药丸几何缓存未建(首帧/竞态)→ 排一拍后量(此时 Qt 事件循环
+            # 已自然完成布局激活,几何必然新鲜;--verify 无循环不触发,
+            # 天然守卫),本帧先画无药丸的干净底。
+            if (self._bar_form is None and self._pill_geo is None
+                    and not self._pill_measure_pending
+                    and self.isVisible()):
+                self._pill_measure_pending = True
+                QTimer.singleShot(0, self._measure_pill_geo)
             p = QPainter(self)
             p.setRenderHint(QPainter.Antialiasing)
             deco(p, self, self._bar_form)
@@ -919,15 +916,15 @@ class MeterWindow(QWidget):
         self._paint_glass(ev)
 
     def _measure_pill_geo(self):
-        """量六格 k/v 几何写 _pill_geo 缓存(deco 消费;布局激活后量,精确)。
-        量不到(竞态/未布局/label 已销毁)置 None,deco 该帧跳过药丸只画底。"""
-        lbs = skins._card_grid_vs(self)
-        if len(lbs) != 6:
-            # 条形态/重建中(延迟重建半程):无六格可量,该帧无药丸。
-            # paintEvent 每帧都调,守卫必须在任何索引之前
-            self._pill_geo = None
+        """事件循环下一拍量六格 k/v 几何写 _pill_geo(此时布局激活必然
+        已完成,几何新鲜)。量不到(极少)再排一拍,最多 5 次。"""
+        self._pill_measure_pending = False
+        vs = skins._card_grid_vs(self)
+        ks = getattr(self, "_grid_k_labels", None)
+        if (len(vs) != 6 or not ks or len(ks) != 6
+                or self._bar_form is not None):
             return
-        pairs = [(lbs[0], lbs[3]), (lbs[1], lbs[4]), (lbs[2], lbs[5])]
+        pairs = list(zip(ks, vs))     # 每丸 = 标题 label + 数值 label(同列)
         try:
             geos = [(kg.geometry(), vg.geometry()) for kg, vg in pairs]
             ok = all(g.height() > 0 and g.top() > 0
@@ -935,18 +932,20 @@ class MeterWindow(QWidget):
         except RuntimeError:
             ok = False
         if not ok:
-            self._pill_geo = None
+            self._pill_retry = getattr(self, "_pill_retry", 0) + 1
+            if self._pill_retry <= 5:
+                QTimer.singleShot(0, self._measure_pill_geo)
             return
-        # 六个独立小药丸(用户 2026-09-29『药丸不应该是六个吗』—— k 一丸、
-        # v 一丸,不是每列一整个大药丸):每丸罩自己的那一行,高=行高+呼吸
+        self._pill_retry = 0
+        # 六丸定稿(用户 2026-09-29):每丸完整包住『标题+数值』两行,
+        # 宽 81(中线距 93 留 12 缝),高=标题顶-4 到数值底+3
         pills = []
         for kg, vg in geos:
-            for g in (kg, vg):
-                cx = (g.left() + g.right()) / 2.0
-                y0 = g.top() - 4.0
-                y1 = g.bottom() + 3.0
-                pills.append((cx, float(y0), float(y1)))
-        self._pill_geo = {"pill_w": 93.0, "pills": pills}
+            cx = (kg.left() + kg.right() + vg.left() + vg.right()) / 4.0
+            y0 = min(kg.top(), vg.top()) - 4.0
+            y1 = max(kg.bottom(), vg.bottom()) + 3.0
+            pills.append((cx, float(y0), float(y1)))
+        self._pill_geo = {"pill_w": 81.0, "pills": pills}
 
     def _paint_glass(self, ev):
         """玻璃皮肤背景(原 paintEvent 正文,v0.9 T2 原样下沉,逐位不动)。
@@ -1492,6 +1491,11 @@ class MeterWindow(QWidget):
                 k_lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             grid.addWidget(k_lb, (col // 3) * 2, col % 3)
             grid.addWidget(v, (col // 3) * 2 + 1, col % 3)
+            # k label 引用入列表(liquid 药丸需要罩住标题 —— 第十轮真因:
+            # 标题 label 从未存引用,药丸几何无从包含它)
+            if col == 0:
+                self._grid_k_labels = []
+            self._grid_k_labels.append(k_lb)
         root.addLayout(grid)
 
         # ⑥ 模型列表 rows[:4](预览 :187-190):容器+每行 HBox(名左 10pt

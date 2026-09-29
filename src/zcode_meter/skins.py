@@ -56,10 +56,10 @@ from PySide6.QtGui import (
     QColor, QFont, QLinearGradient, QPainterPath, QPen, QRadialGradient,
 )
 
-# 卡片六格药丸(liquid)内文字预算:药丸宽 93 − 两侧留白 7×2。
+# 卡片六格药丸(liquid)内文字预算:药丸宽 81 − 两侧留白 5×2。
 # _apply_card 对 liquid 皮肤的 grid v 文本按此值 elide —— 防文字溢出
 # 药丸边界(用户 2026-09-29『药丸内部文字超出边界』)。其它皮肤不受限。
-LIQUID_GRID_TEXT_W = 79
+LIQUID_GRID_TEXT_W = 71
 
 # 白名单与顺序钉死(T1 SKIN_IDS 同源;glass=缺省第 0 款)
 SKIN_IDS = ("glass", "swiss", "crt", "chalk", "liquid",
