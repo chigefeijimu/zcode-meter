@@ -51,7 +51,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
-from PySide6.QtCore import QRect, QRectF
+from PySide6.QtCore import QPoint, QRect, QRectF
 from PySide6.QtGui import (
     QColor, QFont, QLinearGradient, QPainterPath, QPen, QRadialGradient,
 )
@@ -441,26 +441,31 @@ def _lens_edge(p, win, r: int, form: str) -> None:
 
 
 def _deco_liquid(p, win, form) -> None:
-    path = _liquid_bg(p, win, form)
     r = {"card": 26, "h": 18, "v": 22}[form or "card"]
 
-    # Liquid Glass 真背景管线(2026-09-29 用户拍板;同日用户要求
-    # 『贴边条与卡片形态样式一致』→ 三形态统一):DXcam 抓窗口矩形身后
-    # 画面 → 模糊 → drawImage 覆盖自绘幕布;抓取失败/无帧 → 保留
-    # _liquid_bg 的 veil 亮幕(回退)。画完继续叠药丸(不再 early-return
-    # —— 卡片分支曾因 return 跳过药丸绘制)。
+    # 真背景优先(2026-09-29 卡顿优化重排):先试 view(),有帧直接画帧
+    # +收边返回 —— _liquid_bg 的 veil(渐变填充+双径向渐变 blob+尾部
+    # 提亮,合计 ~0.5ms raster)只在不透明帧【完全盖住它】的场景下白画,
+    # 现在彻底移出有帧路径;无帧(dxcam 缺失/管线未启动)才落 veil。
     try:
         from zcode_meter import glass_effect
         if glass_effect.OK:
-            bg = glass_effect.latest()
+            bg = glass_effect.view(win)
             if bg is not None:
                 img = glass_effect.to_qimage(bg)
+                # 图带 devicePixelRatio → QPoint 定位 = 1:1 位块传输
+                # (帧物理尺寸=窗口物理尺寸,免每帧缩放重采样);clip 用
+                # 独立路径(不依赖 _liquid_bg 的返回值)
+                clip = _base_path(win, r)
                 p.save()
-                p.setClipPath(path)
-                p.drawImage(QRect(0, 0, win.width(), win.height()), img)
+                p.setClipPath(clip)
+                p.drawImage(QPoint(0, 0), img)
                 p.restore()
+                _lens_edge(p, win, r, form)
+                return
     except Exception:
         pass
+    path = _liquid_bg(p, win, form)   # 回退:自绘 veil 亮幕
     # 药丸绘制已全部移除(用户 2026-09-29『横线、竖线和药丸全部都不要,
     # 要像前一版的卡片一样干净纯粹』):卡片六格药丸/横条段底/竖条组底
     # 一并去除 —— 模糊背景 + 文字直读,玻璃本身即层次(前十轮药丸迭代

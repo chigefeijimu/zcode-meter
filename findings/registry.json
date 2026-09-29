@@ -91,6 +91,98 @@
     {
       "title": "ZCodeSource.daily_usage 全仓零调用方(死接口实现),且相比其刻意镜像的 fetch_daily_usage 缺 MAX_SCAN_ROWS 行数下限 —— 一旦被接线即与历史图表口径分叉且无性能闸",
       "date": "2026-09-29"
+    },
+    {
+      "title": "包顶层 docstring 的「包结构」清单停在 v0.6.0 迁移日快照,漏掉 v0.7.0/v0.8.0 已落地的 __main__(CLI 入口)/glass_effect/skins/sources 子包,与 README 已更新的目录树形成两份分叉的包自述",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "_pill_geo 缓存链整体已死:唯一失效分支不可达(_apply_card 只在 _bar_form is None 时被调用,elif _bar_form is not None 永假),且 liquid deco 已不再消费该缓存 —— paintEvent 仍每首帧排程量取(getattr+geometry 读取)产出无人读的结果",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "_try_acrylic_or_fallback 与 _enable_acrylic 是死代码(亚克力方案已撤),连带 skins._liquid_bg 的 acrylic_native 渲染分支成为不可达路径",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "设置保存双写在分裂失败路径违反自身不变式:设置窗先落 4 键 cfg(bar_segments/skin 从文件消失),_apply_config 补挂后的第二次写失败即 return —— 磁盘=新 key 且丢段开关/皮肤选择、内存 monitor 未换,与 docstring『失败即整体终止…内存态与磁盘不脱节』相反",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "paintEvent docstring 宣称『deco 前置 layout().activate()』但函数体没有任何 activate() 调用 —— 注释描述的修复机制不存在,误导后来者调试其自称已修的『3 个竖条药丸+横杠残影』类首帧旧几何问题",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "_global_part_tps 的 4000 行窗口被查询计划击穿:GROUP BY session_id 诱发 part 表全索引扫描(425,843 行),实测 70-96ms,每 POLL_DB=1s 跑一次且全程持 snap_lock —— 注释自述的『扫近 4000 行窗口防全表 GROUP BY』(1224 行)与真实计划相反",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "_global_completed_tps 的 completed_at>=? 谓词无索引可用,每秒全表 SCAN model_usage(54,890 行,实测 50-60ms);整个 _poll_stats SQL 批每秒 224-261ms 全程持 snap_lock,引擎 ~25% 时间在锁内扫库,UI 线程会话切换(同一把锁)直接撞上",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "recent_sessions 在 UI 线程(右键菜单构建,app.py:2157)对 part 表做全覆盖索引扫描 + 临时 B-tree 排序,无任何行数窗口,实测 76-150ms 且随 part 表(只增不减)无界增长 —— 同文件 _global_part_tps 尚知用 4000 行窗口防全表 GROUP BY,本查询同表同形态却无闸",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "_push 把活的可变 Snapshot 引用(非拷贝)放进 UI 队列,叠加三个 worker 线程不持 snap_lock 直接写 snap 字段(1213-1215/1303/1320-1327)与 UI 侧回写(app.py:2416/2327 写 plan_remaining_pct)—— docstring『数据线程推给 UI 的一份快照』(832 行)名不副实,实为跨线程共享黑板,单帧可读到跨 tick 撕裂组合",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "import 即执行 dxcam.create()(含适配器枚举与 create 内置 0.1s sleep),实测约 0.4s 附加到每次 import zcode_meter.app —— 无论皮肤是否 liquid、每次 pytest 会话同样白付;且 _cam() 二次 create 命中同键单例打 stderr WARNING 噪声",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "_capture_once 每个新帧都做 GaussianBlur+ascontiguousarray+BGR→RGB 翻转只为产出 _LAST_BG,而生产代码零消费者(skins 走 view(),latest() 仅 dev 脚本 zm_drag_test.py 使用);hide_cb 死参、_KNOWN 恒全 True 使 _edge_fill 兜底不可达 —— 三块死重可与 docstring 一并清偿",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "blink 与抓取线程对同一 cam 的 grab() 存在并发竞态:_BLINKING 只在 _capture_once 入口检查,线程越过检查进入 grab(250 行)后主线程 blink 才开始抓(119-127 行),dxcam 单发 grab 无 Python 锁且 AcquireNextFrame 在 multithread_guard 之外,交错时 blink 帧被线程抢走或触发误判 access-loss 的 _recover_output(主线程卡顿)",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "_BLUR 与 _BLUR_RECT 两行连续赋值非原子,后台线程 _refresh_blur 换图间隙若 paint 侧 view() 无锁读到『新数组+旧矩形』,会裁出错位视图并缓存进当前 (rect,version) 键,静止态版本不再推进时错误缓存长期命中",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "模块头两处导入纪律声明(『只允许 import PySide6.QtGui 与标准库』『不 import QtCore 也写得全』)被本文件自身违反:第 54 行顶层 import PySide6.QtCore(且 QRectF 全文件未用、QRect 仅出现在字符串注解 _union->\"QRect\" 中、真正需要的只有 QPoint),第 451 行运行时 from zcode_meter import glass_effect(若 glass_effect 未被先行 import,还会连带执行 glass_effect.py:27 的 dxcam.create() 从一次 paint 里初始化屏幕捕获设备);全测试目录无任何断言钉住该红线——纯文档不变式已失效且与 CHANGELOG.md『仅 import QtGui』宣传一并失真(无循环导入实害:glass_effect 只 import numpy/dxcam/cv2 及 stdlib,已读源核实)",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "SkinDef.radius 是无人消费其值的影子数据:8 款 deco 各自内嵌同名字径 dict 字面(liquid 更在 357 与 444 两处重复同一 dict),唯一访问器 _radius_of(:140)全仓零调用为死代码;唯一消费 sk.radius 的 test_stress.py:596 只断言三键存在、不比值——改 SkinDef.radius 或改 deco 内 dict 任一侧,另一侧无声漂移,圆角口径脱节无任何护栏(本仓『固定尺寸脱节』教训类)",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "CRT 皮肤卡片装饰版本行硬编码绘制 \"ZCODE-METER v0.8\",与 src/zcode_meter/__init__.py:13 的 __version__=\"0.6.0\"、CHANGELOG.md 头部 v0.8.0(未发布)、本模块头 v0.9 T2/T4 共存——同一产品第四处版本叙事,该绘制字面无人同步,版本推进后将永久过期且无守卫(注册表 open#1 的 __version__/test_package 钉死问题不覆盖此 literal)",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "_deco_liquid 真背景路径裸 except Exception: pass 吞掉捕获管线全部异常(to_qimage 形状错/视图缓存损坏/绘制异常一律无声降级为 veil,零诊断痕迹,故障症状只剩『玻璃不真了』无从排查);且 p.save()(:460)与 p.restore()(:463)之间若 setClipPath/drawImage 抛异常,except 接住后 painter 带着未配对的 save 与 clip 进入 _liquid_bg 兜底路径,后续 restore 计数失衡(Qt Unbalanced save/restore 告警)",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "液态皮肤药丸全量移除后,skins 注释自认『_pill_geo 缓存链路不再被消费』,但生产方未同步清理:app.py:933-937 每个非玻璃皮肤卡形态首帧仍排 QTimer 量取,app.py:944-991 _measure_pill_geo 仍算完整六丸几何(含最多 5 次重试链)写 self._pill_geo,而全仓 grep 无任何读取方——死代码 + 每次切回卡形态(app.py:2784 置 None)重跑一次无消费者的量取工作",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "Source 属性形态不合法时被静默丢弃:实例(`Source = MyCliSource()`,README 模板一行之差)、函数、或继承自模块自带基类副本的类——模块导入成功但发现循环无任何诊断地跳过,卡片静默缺一个源,恰是该文件自declared最坏失败类别(37-38 行『坏源模块让启动 loudly 失败,好过卡片静默缺一个源:数据缺失比报错更难被发现』)只对 ImportError 兑现、对形态错误不兑现",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "UsageSource 契约没有任何失败通道(today_usage 只能返回 int),迫使实现把故障吞成 0:坏库/锁库时卡片 today_by_source 把源故障当真实数据渲染成『ZCode 0』,缺库时又整行消失 —— 同一故障类别两种呈现,均无错误提示",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "today_usage 每秒在引擎线程 snap_lock 内对全量历史条目做 O(n) 日期过滤聚合(无按天预聚合),历史随 jsonl 无界增长,锁内热点线性恶化;_scan 每 15s 还要全量重建扁平 entries 列表",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "DB_PATH 经 data_engine 再导出后是 import 时刻的值拷贝:对 de.DB_PATH 赋值/monkeypatch 静默无效,唯一定义的单点 patch 契约只对 zsrc.DB_PATH 成立,且两个名字间无任何同步/漂移检测机制",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "connect_ro 的 URI 编码修复(fixed 注册表项)未清扫同包内 legacy_tk 的同形代码:该文件自带 ZCODE_DIR/DB_PATH 重复定义 + 原生路径直拼 `file:{DB_PATH}?mode=ro`,刚修复的 '#'/'%' 静默清零 bug 原样存活于随包分发的可运行文件中",
+      "date": "2026-09-30"
     }
   ],
   "fixed": [
@@ -121,6 +213,46 @@
       "title": "connect_ro 把原生路径直拼进 file: URI 且不做百分号编码,路径含 '#' 或 '%' 时静默打开错误库/打不开,而上层 except sqlite3.Error 一律吞成 0 —— ZCode 源静默清零(数据错误且有具体触发路径);复核补强:'#' 还会连带吞掉 ?mode=ro 使只读连接在截断路径静默创建新空库文件(写副作用)",
       "date": "2026-09-29",
       "fix": "connect_ro 改 Path(DB_PATH).as_uri() 百分号编码后再拼 ?mode=ro,相对路径先 abspath 归一(兼容测试 monkeypatch 相对形态 DB_PATH)(zcode.py:23-36);docstring 载明 '#' 截断连 ?mode=ro 一并卷走与 '%' 误解码两类失效及写副作用"
+    },
+    {
+      "title": "报表表头的半角 ¥(U+00A5)在 GBK/cp936 下不可编码:输出被重定向/管道时 Python 对非控制台 stdout 用 locale ANSI 编码(简中 Windows 缺省 cp936),print 整份报表在 ¥ 处 UnicodeEncodeError 崩溃 rc=1,重定向文件 0 字节 —— 模块 docstring(:39-40)自述『CLI 输出常被重定向/贴_issue』恰是唯一崩溃场景",
+      "date": "2026-09-30",
+      "fix": "双层修复:表头币符改全角 ￥(U+FFE5,实测 GBK 可编码)(__main__.py:54,注释 47-53 载明半角 ¥ U+00A5 在 cp936 不可编码、重定向时查询成功而整份报表在 print 处崩溃 rc=1/文件 0 字节的机理);CLI 入口加输出层双保险 sys.stdout.reconfigure(errors='replace')(94-95,hasattr 守卫兼容单测 io.StringIO),未来任何不可编码字符最坏降级为个别 '?'、报表结构/数字/口径行恒全"
+    },
+    {
+      "title": "切离 liquid 皮肤后 glass 管线(66ms _glass_timer + 500ms _idle_timer + DXcam 后台抓屏线程)永不停:_idle_refresh_tick 守卫无 skin_id 检查,非 liquid 皮肤上仍可触发 blink(setWindowOpacity(0.0) 约 40-60ms)造成窗口可见闪烁,抓屏线程常驻耗 CPU",
+      "date": "2026-09-30",
+      "fix": "新增 _stop_glass_pipeline(app.py:1137-1155):停 66ms _glass_timer 与 500ms _idle_timer 并调 glass_effect.stop_background_thread(),接入 _apply_skin 切离 liquid 分支(2191,_disable_acrylic 之后)与 aboutToQuit(896);_idle_refresh_tick 守卫补 skin 闸『skin_id != liquid 即 return』作第二道防线(1076-1079,QTimer.stop 不撤销已入队的 timeout 事件);_ensure_glass_timer 补 _state_guard 闸与 skin 闸(1105 起,防 pending singleShot 在切肤后把已停管线复活),切回 liquid 时补 start 恢复节拍(_ensure_idle_refresh,1053)"
+    },
+    {
+      "title": "托盘菜单『显示 / 隐藏』槽内直接 showNormal,重蹈项目自记载并反复设防的『菜单 triggered 槽内直接 show 被吞』坑:主窗收起到托盘后,从托盘右键菜单点『显示 / 隐藏』极可能『点击没反应』",
+      "date": "2026-09-30",
+      "fix": "『显示 / 隐藏』从直连槽改为 lambda: QTimer.singleShot(0, self.toggle)(app.py:309-310),与相邻『打开历史图表』/_open_settings 同款包裹:triggered 槽内直接 show 会被菜单关闭的鼠标抓取时序吞掉,toggle 恢复分支的 showNormal/raise_/activateWindow 三连调延到菜单模态循环返回之后执行(hide 分支延迟一拍无害)"
+    },
+    {
+      "title": "_handle_log_line 完全忽略日志行自带的 sessionId,dwf/子代理会话(引擎处处排除的 sess_dwf-*/sess_subagent*)的请求事件驱动整卡 generating 状态机、gen_elapsed 计时与 _poll_new_completed 门控 —— 注册表『subagent 污染会话判定』教训在第三条路径(日志事件)复发",
+      "date": "2026-09-30",
+      "fix": "_handle_log_line 沿用会话排除红线:先收紧事件白名单至三种请求事件(data_engine.py:1036-1038),再读日志行 sessionId,sid 以 sess_subagent/sess_dwf- 开头即 return、不驱动 _running 状态机(1046-1048);无 sessionId 键的行按旧路径处理不丢事件(1045 注释),completed 分支简化为 elif self._running(1053-1055)"
+    },
+    {
+      "title": "_FW/_FH 只在 seed_full 赋值一次,分辨率/显示器拓扑变化后所有抓取区域仍按旧屏幕尺寸夹取,cam.grab(region=...) 每拍抛 ValueError 被 249-252 行吞掉,玻璃管线静默永久冻结(或坐标错位),无自愈无信号",
+      "date": "2026-09-30",
+      "fix": "新增 _resync_output(glass_effect.py:190-221):整屏 grab 取相机真实尺寸,与 _FW/_FH 失配即 seed_full() 重播种干净基准并作废旧坐标系缓存(_PREV_RECT/_PREV_HOLE/_BLUR/_BLUR_RECT/_VIEW key);_capture_once 每拍用相机当前 width/height 对账(287-290,覆盖分辨率增大方向的静默坐标错位),grab 抛 ValueError(区域越界)不再吞掉而是主动 resync、下一拍自愈(315-321,覆盖缩小方向的永久冻结);seed_full 缓冲交换改持 _BUF_LOCK(183-186),运行期重播种与 paint 侧 view() 切片不再撕裂"
+    },
+    {
+      "title": "stop_background_thread 全仓零调用:切换离开 liquid 皮肤后后台抓取线程、_glass_timer(66ms)、_idle_timer(500ms)全部继续运行 —— 非 liquid(不透明)卡片会被 idle blink 周期性 setWindowOpacity(0) 整卡闪没,同时屏幕被 DXGI 持续复制而毫无视觉消费者",
+      "date": "2026-09-30",
+      "fix": "补齐调用点:app.py 新增 _stop_glass_pipeline(1137-1155)内调 glass_effect.stop_background_thread()(app.py:1155)——该接口自诞生起首次有调用方;切离 liquid(_apply_skin 2191)与 aboutToQuit(896)整体停机 DXcam 抓屏线程 + 66ms/500ms 两节拍表,不再无消费者常驻复制屏幕(与『切离 liquid 管线永不停』为同一修复的两个侧面)"
+    },
+    {
+      "title": "多显示器静默错误路径:相机只覆盖主输出,_window_rect_now 把窗口矩形夹进 [0,_FW]×[0,_FH],卡片拖到副屏后玻璃显示的是主屏内容的裁剪/冻结,无提示无回退",
+      "date": "2026-09-30",
+      "fix": "_window_rect_now 改为显式失败:窗口与相机覆盖区(主输出 [0,_FW]×[0,_FH])交集 <2px 时返回 None(glass_effect.py:246-247/254-255),不再把副屏矩形硬夹进主屏;view() 收 None 直接返回 None(471-477)交 _deco_liquid 落自绘 veil 兜底,_capture_once 收 None 放弃本拍(295-297);跨屏边缘部分交集仍按旧语义夹取交集保拖动连续(docstring 232-238)"
+    },
+    {
+      "title": "_claude_ts_local 只捕 ValueError,而 astimezone() 对 datetime 边界日期抛非 ValueError 异常(Windows 实测 OSError [Errno 22]):一行极端时间戳的 assistant 行让整个 jsonl 文件全部用量清零,且空结果按 (mtime,size) 写入类级 _file_cache 永久缓存 —— 静默数据错误,违背本函数自己『坏值返回 None、逐行跳过』的契约",
+      "date": "2026-09-30",
+      "fix": "except ValueError 扩为 except (ValueError, OSError, OverflowError)(claude.py:29,注释 30-37):Windows CRT localtime_s 对边界日期抛 OSError [Errno 22]、POSIX+东八区 fromutc 溢出抛 OverflowError,均非 ValueError 子类;坏时间戳行恢复『返回 None → 行级跳过』契约,不再穿透到 _parse_file 文件级 except OSError 把同文件好行一并清零并按 (mtime,size) 永久缓存空结果"
     }
   ],
   "proposed": [

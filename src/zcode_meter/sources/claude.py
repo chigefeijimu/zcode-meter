@@ -26,7 +26,14 @@ def _claude_ts_local(s):
         if d.tzinfo is None:
             d = d.replace(tzinfo=dt.timezone.utc)               # 裸时间按 UTC
         return d.astimezone()
-    except ValueError:
+    except (ValueError, OSError, OverflowError):
+        # 『坏值返回 None』是本函数的契约,但 astimezone 的失败面不止
+        # ValueError:边界日期(如 9999-12-31)在 Windows CRT localtime_s
+        # 抛 OSError [Errno 22],POSIX+东八区下 fromutc 溢出抛 OverflowError
+        # —— 两者都不是 ValueError 子类,一旦穿透,行级跳过失效,坏行
+        # 会让 _parse_file 的文件级 `except OSError: return []` 把同文件
+        # 好行一并清零,且空结果按 (mtime,size) 进 _file_cache 永久命中
+        # (2026-09-30 P1 实测:一行 9999 时间戳 → 整个 jsonl 今日用量归 0)。
         return None
 
 

@@ -300,7 +300,14 @@ class TrayController:
         m.addAction("打开历史图表",
                     lambda: QTimer.singleShot(0, self.win._open_history))
         m.addSeparator()
-        m.addAction("显示 / 隐藏", self.toggle)
+        # 与相邻『打开历史图表』同坑:triggered 槽内直接 show 会被菜单关闭
+        # 的鼠标抓取时序吞掉(项目内 _open_history/_open_settings 两处实测
+        # 记载,症状即『点击没反应』)。toggle 的恢复分支正是三连调
+        # showNormal/raise_/activateWindow —— 主窗收起到托盘后,这里恰是
+        # 用户最需要的恢复入口,必须延到菜单模态循环返回之后执行
+        # (2026-09-30 P1;hide 分支延迟一拍无害)。
+        m.addAction("显示 / 隐藏",
+                    lambda: QTimer.singleShot(0, self.toggle))
         m.addSeparator()
         m.addAction("退出", QApplication.quit)
         m.aboutToShow.connect(self._refresh_overview)
@@ -864,6 +871,14 @@ class MeterWindow(QWidget):
             self.resize(self.CARD_W, self.height())
         sg = QGuiApplication.primaryScreen().availableGeometry()
         self.move(sg.right() - self.CARD_W - 24, sg.top() + 90)
+        # Liquid Glass v3 时域干净缓冲种子:show 之前整屏无遮挡,抓一帧
+        # 全屏即整屏干净真值(失败静默,运行期拖动轨迹会逐步填满;
+        # _state_guard 环境不抓防测试拉起真实抓屏)
+        if self.skin_id == "liquid" and not _state_guard():
+            try:
+                glass_effect.seed_full()
+            except Exception:
+                pass
         self.show()
         # 先 show 再恢复:保存的是贴边形态时,_set_dock 里的 self.screen()
         # 只有窗口 map 后才反映真实所在屏(多显示器下不能锚错屏)。
@@ -872,11 +887,13 @@ class MeterWindow(QWidget):
         # Liquid Glass A:启动皮肤若是液态玻璃,窗口 map 后开亚克力
         # (winId 需要原生句柄,延到 80ms 润色同拍)
         if self.skin_id == "liquid":
-            # 同上:DXcam 管线自绘背景,不启用系统 backdrop(灰色整窗层)
             QTimer.singleShot(80, self._ensure_glass_timer)
 
-        # 兜菜单退出/事件循环正常退出路径的位置保存
+        # 兜菜单退出/事件循环正常退出路径的位置保存;顺手停玻璃管线:
+        # 线程虽是 daemon(进程退出自然回收),但退出序列里先停表先停
+        # 抓屏,可避免退出瞬间仍在写 _CLEAN 与 paint 侧最后一次取景竞态
         QApplication.instance().aboutToQuit.connect(self._save_state)
+        QApplication.instance().aboutToQuit.connect(self._stop_glass_pipeline)
 
         # 窗口 map 后做 DWM 润色 + 免激活
         QTimer.singleShot(80, self._win_polish)
@@ -1033,18 +1050,109 @@ class MeterWindow(QWidget):
         p.drawPath(path)
 
     # ---- Liquid Glass 方案 A:Windows 亚克力(真实背景模糊) ----
+    def _ensure_idle_refresh(self):
+        """静止盲区刷新(2026-09-29):卡片停下后正下方被自身遮挡,常规
+        抓取永远看不到 —— needs_blink(静止+环带有变)时 DWM cloak 一帧
+        (~12ms 原子隐藏)抓纯净背景后恢复。安静屏幕零触发;自身呼吸点
+        动画不触环带签名,不会自激。"""
+        t = getattr(self, "_idle_timer", None)
+        if t is not None:
+            # 已建但被 _stop_glass_pipeline 停过(切离 liquid 后切回):
+            # QTimer.stop 不解除连接,这里补 start 才能恢复节拍
+            if not t.isActive():
+                t.start(500)
+            return
+        self._idle_timer = QTimer(self)
+        self._idle_timer.timeout.connect(self._idle_refresh_tick)
+        self._idle_timer.start(500)
+
+    def _idle_refresh_tick(self):
+        from zcode_meter import glass_effect
+        import ctypes
+        # skin 闸是第二道防线(2026-09-30 P1):停表是第一道(_stop_glass_
+        # pipeline),但 QTimer.stop 不撤销已入队的 timeout 事件,切肤瞬间
+        # 仍可能有一拍到达 —— 非 liquid(不透明)卡片绝不能被 blink
+        # setWindowOpacity(0) 整卡闪没,该皮肤根本不消费抓屏缓冲。
+        if (self.skin_id != "liquid" or self._bar_form is not None
+                or not self.isVisible()
+                or not glass_effect.OK or not glass_effect.needs_blink()):
+            return
+        try:
+            # opacity 0 瞬时隐藏(v2,2026-09-29):DWMWA_CLOAK 实测 GDI
+            # 截图可见但 DXGI 复制流不反映(blink 抓回卡片自己,落盘实锤);
+            # opacity 0 在两条管线都即时生效(v3 hide_cb 时期抓到过干净帧)。
+            # 隐身时长 20ms 稳定期 + ~20ms 双帧抓取 ≈ 40ms(2026-09-29
+            # 用户『卡片会闪』:60ms→40ms,配合 glass_effect.needs_blink
+            # 的冷却 2.5s + 动画源 15s 静默)
+            self.setWindowOpacity(0.0)
+
+            def restore():
+                try:
+                    glass_effect.blink_capture()
+                finally:
+                    self.setWindowOpacity(1.0)
+                self.update()
+
+            QTimer.singleShot(20, restore)
+        except Exception:
+            pass
+
+    def _try_acrylic_or_fallback(self):
+        """启动路径:亚克力优先,失败落 DXcam。"""
+        if not self._enable_acrylic():
+            self._ensure_glass_timer()
+
     def _ensure_glass_timer(self):
         """Liquid Glass 真背景管线节拍(66ms≈15fps):DXcam 抓窗口矩形
         身后画面存 glass_effect.latest(),paint 只消费 —— 抓屏不能在
         paintEvent 里同步做(paint 抓到的是合成中的上一帧,拖动时背景
         冻结;后台节拍让拖动中背景实时流动)。"""
-        if getattr(self, "_glass_timer", None) is None:
-            self._glass_timer = QTimer(self)
-            self._glass_timer.timeout.connect(self._glass_tick)
-            self._glass_timer.start(66)   # 只更新区域坐标(轻)
-        glass_effect.set_hide_cb(self.setWindowOpacity)   # 自剔除回调
+        # 与 seed_full 同款 _state_guard 闸(--verify / ZM_NO_STATE):
+        # 回归/stress 测试循环切皮肤时不应拉起真实 DXcam 抓屏线程
+        # (2026-09-30 P1:此前只有 seed_full 有闸,测试经 _apply_skin
+        # 照样把抓屏线程带起来)。
+        if _state_guard():
+            return
+        # skin 闸:本函数是玻璃管线的唯一漏斗,但启动调用点是
+        # QTimer.singleShot(80) 延迟触发 —— 触发时皮肤可能已被切走
+        # (80ms 内的 _apply_skin/测试循环),漏斗内统一再校验,防止在
+        # 非 liquid 皮肤上把已停的管线重新拉起(实测:pending singleShot
+        # 在 processEvents 时把切离后的计时器/线程全部复活)。
+        if self.skin_id != "liquid":
+            return
+        t = getattr(self, "_glass_timer", None)
+        if t is None:
+            t = QTimer(self)
+            t.timeout.connect(self._glass_tick)
+            self._glass_timer = t
+        if not t.isActive():
+            # 新建,或切离 liquid 时被 _stop_glass_pipeline 停过:补 start
+            # 恢复节拍(连接未拆,只停了表)
+            t.start(66)   # 只更新区域坐标(轻)
+        glass_effect.set_hwnd(int(self.winId()))   # 精确窗洞(抓拍瞬间)
         glass_effect.start_background_thread()
+        self._ensure_idle_refresh()
         self._glass_tick()
+
+    def _stop_glass_pipeline(self):
+        """_ensure_glass_timer 的逆操作:整条 liquid 玻璃管线停机(节拍表
+        + idle blink 表 + DXcam 后台抓屏线程)。此前切离 liquid 只调
+        _disable_acrylic(仅重置 DWM accent),三个常驻件全部漏停:
+        - _idle_timer 的 500ms tick 在不透明皮肤上仍可触发 blink,把整卡
+          setWindowOpacity(0) 闪没 ~40ms(用户可见闪烁);
+        - 抓屏线程继续以 16/100ms 节拍做 DXGI 全屏复制,而八款非 liquid
+          皮肤的 deco 根本不消费 glass_effect 缓冲 —— 纯耗 CPU;
+        - glass_effect.stop_background_thread 自诞生起零调用(死接口),
+          这里补上调用点(2026-09-30 P1)。getattr 容缺:构造早期/早退
+          路径进入时保持无操作。"""
+        t = getattr(self, "_glass_timer", None)
+        if t is not None:
+            t.stop()
+        t = getattr(self, "_idle_timer", None)
+        if t is not None:
+            t.stop()
+        from zcode_meter import glass_effect
+        glass_effect.stop_background_thread()
 
     def _glass_tick(self):
         # 同步抓取区域为窗口当前【屏幕绝对矩形】(geometry 的 left/top 是
@@ -1056,11 +1164,12 @@ class MeterWindow(QWidget):
                                 self.height(), self.devicePixelRatioF())
 
     def _enable_acrylic(self):
-        """SetWindowCompositionAttribute 亚克力(未公开 API,调研 2026-09-29):
-        DWM 把窗口身后内容实时模糊后垫底 —— 『玻璃压住的底层光线』由系统
-        供给。tint 走液态玻璃亮灰蓝(ABGR:alpha 高字节)。失败/Win11 兼容
-        性问题 → 静默回退自绘亮幕(deco 的 base 渐变原样在),观感降级不
-        崩溃。仅液态玻璃皮肤调用。"""
+        """Liquid Glass 终极方案(2026-09-29 调研+实测定稿):ACCENT 亚克力
+        由 DWM 合成器渲染身后实时模糊 —— 120Hz 零 CPU、零抓取竞态、自动
+        排除自身窗口(自剔除问题在系统层不存在)。tint=亮幕主色 #39415a
+        (ABGR 0xA05A4139);DWMWCP_ROUND 系统圆角(角处亚克力近似方形,
+        由真玻璃材质自然收边)。失败(DWM 拒绝)→ 返回 False,deco 走
+        DXcam 管线兜底。"""
         import ctypes
         from ctypes import wintypes
 
@@ -1077,45 +1186,25 @@ class MeterWindow(QWidget):
 
         try:
             hwnd = int(self.winId())
-            # 首选 Win11 原生路径:DWMWA_SYSTEMBACKDROP_TYPE(38)=3(ACRYLIC)。
-            # 原 backdrop 遵守窗口圆角(老 API SetWindowCompositionAttribute
-            # 的模糊层是整窗矩形、SetWindowRgn 裁不住 → 四角黑块,对照实验
-            # 实锤 2026-09-29)。需先 DwmExtendFrameIntoMargins
             dwmapi = ctypes.windll.dwmapi
-            margins = ctypes.c_int(-1)   # -1 = 整个 client 区延伸进 frame
-            dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
-            backdrop = ctypes.c_int(3)   # DWMSBT_TRANSIENTWINDOW(亚克力)
-            ok = dwmapi.DwmSetWindowAttribute(
-                hwnd, 38, ctypes.byref(backdrop), 4) == 0
-            if ok:
-                self._acrylic_native = True
-                self.acrylic_native = True   # deco 消费(幕布减透)
-                return True
-            # 老系统兜底:老 API + region 裁剪(region 裁不住模糊层,
-            # 但老系统没有新 API,黑角换模糊是净值)
-            self._acrylic_native = False
-            self.acrylic_native = False
-            import math
-            r = 26
-            scale = self.devicePixelRatioF()
-            w = round(self.width() * scale)
-            h = round(self.height() * scale)
-            rr = round(r * scale)
-            region = ctypes.windll.gdi32.CreateRoundRectRgn(
-                0, 0, w + 1, h + 1, rr, rr)
-            ctypes.windll.user32.SetWindowRgn(hwnd, region, True)
-            accent = ACCENT_POLICY(4, 2, 0x00000000, 0)
+            pref = ctypes.c_int(2)          # DWMWCP_ROUND
+            dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), 4)
+            accent = ACCENT_POLICY(4, 2, 0xA05A4139, 0)
             data = WINCOMPATTRDATA(
                 19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
                 ctypes.sizeof(accent))
-            ok2 = ctypes.windll.user32.SetWindowCompositionAttribute(
-                hwnd, ctypes.byref(data))
-            return bool(ok2)
+            ok = bool(ctypes.windll.user32.SetWindowCompositionAttribute(
+                hwnd, ctypes.byref(data)))
+            self._acrylic_native = ok
+            self.acrylic_native = ok   # deco 消费:True=中心全透(DWM 是底)
+            return ok
         except Exception:
+            self._acrylic_native = False
+            self.acrylic_native = False
             return False
 
     def _disable_acrylic(self):
-        """关亚克力(ACCENT_ENABLE_BLURBEHIND=0 即恢复普通窗口)。"""
+        """关亚克力(ACCENT 0 恢复普通窗口)。"""
         import ctypes
         from ctypes import wintypes
 
@@ -1132,12 +1221,6 @@ class MeterWindow(QWidget):
 
         try:
             hwnd = int(self.winId())
-            if getattr(self, "_acrylic_native", False):
-                backdrop = ctypes.c_int(1)   # DWMSBT_NONE
-                ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    hwnd, 38, ctypes.byref(backdrop), 4)
-                self._acrylic_native = False
-                self.acrylic_native = False
             accent = ACCENT_POLICY(0, 0, 0, 0)
             data = WINCOMPATTRDATA(
                 19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
@@ -1146,8 +1229,9 @@ class MeterWindow(QWidget):
                 hwnd, ctypes.byref(data))
         except Exception:
             pass
+        self._acrylic_native = False
+        self.acrylic_native = False
 
-    # ---- Win32 润色(唯一保留的互操作,均为一次性安全调用) ----
     def _win_polish(self):
         try:
             user32 = ctypes.windll.user32
@@ -2094,12 +2178,17 @@ class MeterWindow(QWidget):
         # 离开该皮肤关掉恢复普通不透明窗口。失败静默(deco 自绘亮幕兜底)
         if self.isVisible():
             if skin_id == "liquid" and prev != "liquid":
-                # DXcam 自绘管线不需要系统 backdrop:亚克力层是 DWM 画的
-                # 【整窗矩形】灰色底(不受自绘圆角约束)—— 用户『卡片底部
-                # 一层东西+四角直角』就是它,2026-09-29 移除调用
+                # 亚克力方案已撤(2026-09-29):ACCENT 层与半透明窗口的
+                # 逐像素命中互斥 → 拖动/右键全失效(用户实测);DXcam
+                # 管线是当前唯一可用路线
                 self._ensure_glass_timer()
             elif prev == "liquid" and skin_id != "liquid":
-                self._disable_acrylic()   # 保底:清掉历史残留的 backdrop
+                self._disable_acrylic()
+                # 只关 DWM accent 不够(2026-09-30 P1):玻璃管线三件套
+                # (66ms 节拍表/500ms idle blink 表/DXcam 抓屏线程)必须
+                # 一并停机 —— 否则不透明卡片仍会被 idle blink 整卡闪没,
+                # 抓屏线程在无任何视觉消费者的情况下常驻复制屏幕。
+                self._stop_glass_pipeline()
         if self.dock:
             self._build_bar(vertical=self.dock in ("left", "right"))
             self.setStyleSheet(self._skin_qss())

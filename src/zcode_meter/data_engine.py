@@ -1033,14 +1033,26 @@ class DataEngine(threading.Thread):
         except json.JSONDecodeError:
             return
         ev = obj.get("event", "")
+        if ev not in ("model.request.started", "model.request.completed",
+                      "model.sdk.stream.completed"):
+            return
+        # 会话排除红线(与 _latest_session/fetch_session_usage 同款):dwf/
+        # subagent 会话(sess_dwf-*/sess_subagent*)的请求事件绝不能驱动
+        # generating 状态机 —— 实测日志里 90%+ 的请求事件来自 dwf,一旦
+        # 放行,空闲的主会话卡片会跟着子代理显示『生成中 Ns』+脉冲,
+        # _poll_new_completed 被 _running 门控停摆、tps_est 冻结不清理
+        # (『subagent 污染会话判定』教训在日志事件路径复发,2026-09-30 P1)。
+        # 无 sessionId 键的行按旧路径处理(不因缺键丢事件)。
+        sid = obj.get("sessionId")
+        if isinstance(sid, str) and sid.startswith(("sess_subagent", "sess_dwf-")):
+            return
         if ev == "model.request.started":
             self._running = True
             self._gen_start = time.time()
             self._last_len = None
-        elif ev in ("model.request.completed", "model.sdk.stream.completed"):
-            if self._running:
-                self._running = False
-                self._on_request_done()
+        elif self._running:
+            self._running = False
+            self._on_request_done()
 
     # ---- db 轮询 ----
     def _db_loop(self):
