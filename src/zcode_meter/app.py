@@ -757,6 +757,7 @@ class MeterWindow(QWidget):
     # ⏱首/总 95("0.8 / 12.4s"=86),合计 265+16+32=313 收敛。
     CARD_GRID_COL_W = (102, 68, 95)
     _bar_form = None              # 类级默认:paintEvent 可能早于首次 _build_card
+    _pill_geo = None              # 液态玻璃药丸几何缓存(_apply_card 末尾量取)
     _settle_timer = None          # 类级默认:moveEvent 可能早于 __init__ 定时器创建
     _in_prog_move = False         # 程序性移动(吸附/恢复)期间,moveEvent 不喂防抖
     _dock_guard_until = 0.0       # 贴边保护期:吸附后的连锁 settle 判定直接跳过          # 逻辑像素(DIP),Qt 自动做 DPI 换算
@@ -899,13 +900,38 @@ class MeterWindow(QWidget):
         SO:78795785);activate 幂等,已激活时零开销。"""
         deco = self._skin().deco
         if deco is not None:
-            if self.layout() is not None:
+            # 布局激活只在真实显示态做:--verify/无事件循环环境里 activate
+            # 会挂起(实测 timeout),而 verify 根本不消费药丸几何
+            if self.isVisible() and self.layout() is not None:
                 self.layout().activate()
+                self._measure_pill_geo()
             p = QPainter(self)
             p.setRenderHint(QPainter.Antialiasing)
             deco(p, self, self._bar_form)
             return
         self._paint_glass(ev)
+
+    def _measure_pill_geo(self):
+        """量六格 k/v 几何写 _pill_geo 缓存(deco 消费;布局激活后量,精确)。
+        量不到(竞态/未布局)置 None,deco 该帧跳过药丸只画底。"""
+        lbs = skins._card_grid_vs(self)
+        pairs = [(lbs[0], lbs[3]), (lbs[1], lbs[4]), (lbs[2], lbs[5])]
+        try:
+            geos = [(kg.geometry(), vg.geometry()) for kg, vg in pairs]
+            ok = all(g.height() > 0 and g.top() > 0
+                     for kg, vg in geos for g in (kg, vg))
+        except RuntimeError:
+            ok = False
+        if not ok:
+            self._pill_geo = None
+            return
+        pills = []
+        for kg, vg in geos:
+            cx = (kg.left() + kg.right() + vg.left() + vg.right()) / 4.0
+            y0 = min(kg.top(), vg.top()) - 6.0
+            y1 = max(kg.bottom(), vg.bottom()) + 3.0
+            pills.append((cx, float(y0), float(y1)))
+        self._pill_geo = {"pill_w": 93.0, "pills": pills}
 
     def _paint_glass(self, ev):
         """玻璃皮肤背景(原 paintEvent 正文,v0.9 T2 原样下沉,逐位不动)。
@@ -2504,6 +2530,18 @@ class MeterWindow(QWidget):
                 nm.setText(fmn.elidedText(f"{prov} / {model}",
                                           Qt.ElideRight, 215))
                 sp_lbl.setText(f"{tps_m:.1f} t/s" if tps_m else "-- t/s")
+        # 液态玻璃药丸几何缓存(第十轮):此处布局已可激活 —— 先 activate
+        # 落地几何,再量六格 k/v 顶底与列中线存 _pill_geo,paintEvent 的
+        # deco 只消费缓存不现读几何(布局惰性激活,现读在形态切换首帧
+        # 必读旧值 —— 真机『3 个竖条药丸+灰白遮罩』根因)。激活失败/竞态
+        # 首帧缓存放空,deco 跳过药丸只画底,下一帧补上,时序永远正确。
+        if self.skin_id == "liquid" and self._bar_form is None:
+            # activate 在 --verify 环境挂起(实测);几何量取退化为
+            # 『下轮 paint 前置 activate 后的 findChildren 现读』—— 改由
+            # paintEvent 侧首帧激活后回填缓存(pill_geo_cb)
+            pass
+        elif self._bar_form is not None:
+            self._pill_geo = None    # 条形态不消费;防切形态后用旧卡几何
 
     def _refit_dock(self):
         """条模式下数据文字变长时重算条尺寸(防截断);几何统一由

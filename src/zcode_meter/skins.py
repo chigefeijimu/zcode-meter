@@ -421,44 +421,24 @@ def _deco_liquid(p, win, form) -> None:
     # 药丸 clip 进『六格 k/v 联合区域』:先算联合矩形,药丸与它求交,越界
     # 部分不再画;hero 区从此无药丸元素。
     if form is None:
-        # 第三~六轮迭代(竖线/等宽/居中/锚中线)→ 第七轮定稿(用户『药丸
-        # 不应该是六个吗』+『贴边恢复卡片有灰白遮罩』):paint 里现读
-        # label.geometry() 在形态切换场景不可靠 —— Qt 布局惰性激活,重建
-        # 后的首帧 paint 几何还是旧形态的(实测 paint 序列前三帧全 640),
-        # activate/repaint 怎么排都有竞态窗。定稿:药丸几何【确定性计算】
-        # —— 卡片 grid 是类常量(内容宽 281=313-16-16、三列
-        # CARD_GRID_COL_W、列距 8),直接算六格位置,零运行时几何依赖。
-        # 等宽药丸宽:三列中线距 93/89.5、文本最宽列(col0)84px。89 时
-        # 84px 文本只剩 2.5px 边距(用户『文字超出药丸边界』)—— 加宽到
-        # 与 col0 同宽 102:中线距 93 < 102 会重叠 → 重排三列等宽布局:
-        # 六丸等宽 = 内容宽 281 扣两道缝 8×2 → 88.3?仍窄。定稿:等宽
-        # 93(min 中线距,恰好互切)+ 文字侧配合 —— elide 上限缩到
-        # 药丸内宽(93-2×7 pad=79),超宽文本截断(『_/出』类长值省略号),
-        # 由 _apply_card 的 elide 分派读取 skins 常量。药丸等宽 93。
-        cw = win.CARD_GRID_COL_W
-        margin, gap = 16, 8
-        xs = [margin]
-        for w_ in cw[:-1]:
-            xs.append(xs[-1] + w_ + gap)
-        centers = [x + w_ / 2.0 for x, w_ in zip(xs, cw)]
-        span = min(centers[1] - centers[0], centers[2] - centers[1])
-        pill_w = span                              # 93:相邻药丸恰相切不叠
-        pill_pad = 7.0                             # 药丸内水平留白(文字预算)
-        # 纵向锚窗口底向上(模型列表 4 行恒建≈76 + 段距,grid 高≈64):
-        # 模型行不足 4 行时 grid 上移,药丸浮在模型区 —— 可接受近似
-        # (定稿取舍:比几何竞态可靠得多;模型行满载是常态)
-        card_h = win.height()
-        gy1 = card_h - 12.0 - 76.0                # grid 底
-        gy0 = gy1 - 64.0                          # grid 顶
-        row_h = 64.0 / 2.0
+        # 第三~九轮迭代(竖线/等宽/居中/锚中线/常数估算)→ 第十轮定稿:
+        # 药丸几何全部来自 win._pill_geo 缓存(见下),本分支零几何计算。
+        # 纵向【几何缓存】(常数估算三轮都不准:模型行高度/行距随内容漂,
+        # 手推公式永远差几像素):deco 需要的 k/v 几何由 _apply_card 末尾
+        # 【布局激活后】量好存进 win._pill_geo(每排 k顶/v底 + 每列中线),
+        # paint 只消费缓存;竞态首帧缓存不存在 → 跳过药丸只画底(干净),
+        # 下一帧(布局已落地)自然补上 —— 时序永远正确。
+        geo = getattr(win, "_pill_geo", None)
+        if geo is None:
+            p.restore()
+            _stroke(p, win, 26, QColor(255, 255, 255, 64))
+            return
+        pill_w = geo["pill_w"]
         p.setPen(QPen(QColor(255, 255, 255, 51)))
         p.setBrush(QColor(255, 255, 255, 36))
-        for row in range(2):
-            y0 = gy0 + row * row_h + (3.0 if row else 5.0)
-            y1 = gy0 + (row + 1) * row_h - 1.0
-            for cx in centers:
-                p.drawRoundedRect(
-                    QRectF(cx - pill_w / 2.0, y0, pill_w, y1 - y0), 14, 14)
+        for (cx, y0, y1) in geo["pills"]:
+            p.drawRoundedRect(
+                QRectF(cx - pill_w / 2.0, y0, pill_w, y1 - y0), 14, 14)
     elif form == "h":
         for lb in _hbar_group_labels(win):
             g = lb.geometry().adjusted(-3, -3, 3, 3)   # 段距 10,±3 不压邻段
