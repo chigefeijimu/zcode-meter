@@ -1386,10 +1386,17 @@ class MeterWindow(QWidget):
         for c, cw in enumerate(self.CARD_GRID_COL_W):
             grid.setColumnMinimumWidth(c, cw)
 
+        # 液态玻璃皮肤例外:六药丸等宽网格,文字全部居中(用户 2026-09-29
+        # 『六药丸等宽、文字居中』)—— v 值在此处定对齐,玻璃与其它皮肤
+        # 左对齐不变;末列右对齐的分支随后按 _center_grid 分派
+        _center_grid = (sk.id == "liquid")
+
         def cell(txt, cls=""):
             lb = self._mk_lbl("--", cls, C_MONO, 13, families=mono)
             lb.setFont(mk_mono(13, QFont.DemiBold, families=mono))
             lb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            if _center_grid:
+                lb.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
             return lb
 
         self.in_out_lbl = cell("--")
@@ -1402,9 +1409,12 @@ class MeterWindow(QWidget):
         # 多源/预算余量,均 297)共线 —— 用户反馈『下半右侧往右放一点,卡片
         # 上下左右视觉对齐』(2026-09-28);k 行同步右对齐(用户反馈『标题和
         # 数值开头对齐』:值右对齐后其开头浮动,列头仍贴左则错位 —— 两行同
-        # 右缘即天然对齐)
+        # 右缘即天然对齐)。液态玻璃皮肤例外:六药丸等宽网格,文字全部居中
+        # (用户 2026-09-29『六药丸等宽、文字居中』)—— 玻璃与其它皮肤维持
+        # 上面的对齐语言
         for lb in (self.timing_lbl, self.avg_lbl):
-            lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            lb.setAlignment((Qt.AlignHCenter if _center_grid
+                             else Qt.AlignRight) | Qt.AlignVCenter)
         for col, (k, v) in enumerate((
                 ("入 / 出", self.in_out_lbl), ("缓存命中", self.rate_lbl),
                 ("⏱ 首 / 总", self.timing_lbl), ("燃速", self.burn_lbl),
@@ -1415,7 +1425,9 @@ class MeterWindow(QWidget):
             # 的真因(2026-09-28 用户截图+findChildren 几何转储定位:燃速
             # g=(16,207) 与 in_out 值全等),此前误诊为列宽/elide 问题。
             k_lb = self._mk_lbl(k, "faint", "Microsoft YaHei UI", 9)
-            if v in (self.timing_lbl, self.avg_lbl):
+            if _center_grid:
+                k_lb.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+            elif v in (self.timing_lbl, self.avg_lbl):
                 k_lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             grid.addWidget(k_lb, (col // 3) * 2, col % 3)
             grid.addWidget(v, (col // 3) * 2 + 1, col % 3)

@@ -51,6 +51,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
+from PySide6.QtCore import QRectF
 from PySide6.QtGui import (
     QColor, QFont, QLinearGradient, QPainterPath, QPen, QRadialGradient,
 )
@@ -415,18 +416,36 @@ def _deco_liquid(p, win, form) -> None:
     # 药丸 clip 进『六格 k/v 联合区域』:先算联合矩形,药丸与它求交,越界
     # 部分不再画;hero 区从此无药丸元素。
     if form is None:
+        # 第三轮(用户『药丸旁边还是有竖线』+『六丸等宽、文字居中』):
+        # 逐 label 外扩的药丸在上下排衔接处留下边框缝(放大约 2px 竖线),
+        # 且各列宽随内容漂移 —— 改按『三列等宽×两排等高』的网格片绘制:
+        # 六格联合区横向三等分、纵向两等分,圆角矩形片间留 6px 缝,文字
+        # 对齐交给布局(grid k/v 本就左对齐,片居中性由等宽保证)。
         lbs = _card_grid_vs(win)
-        rects = [lb.geometry() for lb in lbs]
-        union = _union(rects)
-        p.save()
-        p.setClipRect(union.adjusted(-1, -16, 1, 2))
-        for lb in lbs:
-            g = _pill_rect(lb, 1, 16, 2).intersected(
-                union.adjusted(-1, -16, 1, 2))
-            p.setPen(QPen(QColor(255, 255, 255, 51)))
-            p.setBrush(QColor(255, 255, 255, 36))
-            p.drawRoundedRect(g, 14, 14)
-        p.restore()
+        if len(lbs) == 6:
+            rects = [lb.geometry() for lb in lbs]
+            union = _union(rects)
+            ux0, uy0, ux1, uy1 = (union.left(), union.top(),
+                                  union.right(), union.bottom())
+            cw = (ux1 - ux0) / 3.0
+            rh = (uy1 - uy0) / 2.0
+            gap = 3.0
+            for row in range(2):
+                for col in range(3):
+                    x0 = ux0 + col * cw + gap
+                    x1 = ux0 + (col + 1) * cw - gap
+                    y0 = uy0 + row * rh + (gap if row else gap + 2)
+                    y1 = uy0 + (row + 1) * rh - gap
+                    p.setPen(QPen(QColor(255, 255, 255, 51)))
+                    p.setBrush(QColor(255, 255, 255, 36))
+                    p.drawRoundedRect(QRectF(x0, y0, x1 - x0, y1 - y0),
+                                      14, 14)
+        else:
+            for lb in lbs:
+                g = _pill_rect(lb, 1, 16, 2)
+                p.setPen(QPen(QColor(255, 255, 255, 51)))
+                p.setBrush(QColor(255, 255, 255, 36))
+                p.drawRoundedRect(g, 14, 14)
     elif form == "h":
         for lb in _hbar_group_labels(win):
             g = lb.geometry().adjusted(-3, -3, 3, 3)   # 段距 10,±3 不压邻段
