@@ -943,12 +943,14 @@ class MeterWindow(QWidget):
         # 宽 = min 中线距 89.5 − 缝 6 = 83.5 → 三缝全部 ≥6 且一致;
         # 高 36(k 顶−2 到 v 底+2),排间缝 = 5−4 = 1px 不重叠。
         # 六丸 83×37 全等。
+        # 高度不外扩(k 顶到 v 底原值):两排文字间只有 5px 空隙,±2 呼吸
+        # 会让药丸贴死/重叠(用户红圈 2026-09-29);紧凑丸排间净空 5px
         pills = []
         for kg, vg in geos:
             cx = (kg.left() + kg.right() + vg.left() + vg.right()) / 4.0
-            y0 = min(kg.top(), vg.top()) - 2.0
-            y1 = max(kg.bottom(), vg.bottom()) + 2.0
-            pills.append((cx, float(y0), float(y1)))
+            y0 = float(min(kg.top(), vg.top()))
+            y1 = float(max(kg.bottom(), vg.bottom()))
+            pills.append((cx, y0, y1))
         # 宽在循环外按中线距定:全部同宽
         mids = [c for c, _, _ in pills]
         gaps = [mids[1] - mids[0], mids[2] - mids[1]]
