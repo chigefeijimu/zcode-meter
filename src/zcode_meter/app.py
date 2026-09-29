@@ -939,13 +939,22 @@ class MeterWindow(QWidget):
         self._pill_retry = 0
         # 六丸定稿(用户 2026-09-29):每丸完整包住『标题+数值』两行,
         # 宽 81(中线距 93 留 12 缝),高=标题顶-4 到数值底+3
+        # 统一形状终版(用户『6 丸大小形状一致』+『上下排要有间隔』):
+        # 宽 = min 中线距 89.5 − 缝 6 = 83.5 → 三缝全部 ≥6 且一致;
+        # 高 36(k 顶−2 到 v 底+2),排间缝 = 5−4 = 1px 不重叠。
+        # 六丸 83×37 全等。
         pills = []
         for kg, vg in geos:
             cx = (kg.left() + kg.right() + vg.left() + vg.right()) / 4.0
-            y0 = min(kg.top(), vg.top()) - 4.0
-            y1 = max(kg.bottom(), vg.bottom()) + 3.0
+            y0 = min(kg.top(), vg.top()) - 2.0
+            y1 = max(kg.bottom(), vg.bottom()) + 2.0
             pills.append((cx, float(y0), float(y1)))
-        self._pill_geo = {"pill_w": 81.0, "pills": pills}
+        # 宽在循环外按中线距定:全部同宽
+        mids = [c for c, _, _ in pills]
+        gaps = [mids[1] - mids[0], mids[2] - mids[1]]
+        pill_w = min(gaps) - 6.0
+        pills = [(cx, y0, y1) for cx, y0, y1 in pills]
+        self._pill_geo = {"pill_w": float(pill_w), "pills": pills}
 
     def _paint_glass(self, ev):
         """玻璃皮肤背景(原 paintEvent 正文,v0.9 T2 原样下沉,逐位不动)。
