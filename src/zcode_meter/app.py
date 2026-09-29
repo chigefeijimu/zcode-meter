@@ -891,9 +891,16 @@ class MeterWindow(QWidget):
         """皮肤分派(v0.9 T2):deco 非 None 的皮肤交其自绘背景(painter/
         win/form),玻璃与 deco 未实现的皮肤走下方既有 渐变+光晕+描边 代码
         路径 —— 玻璃路径逐位不动(deco 恒 None),T2 骨架期九款全部落到
-        玻璃兜底(『registry 仅 glass 亦安全渲染』同性质)。"""
+        玻璃兜底(『registry 仅 glass 亦安全渲染』同性质)。
+        deco 前置 layout().activate():Qt 布局惰性激活(重建后几何要等
+        LayoutRequest 才落地),deco 在 paint 里现读 label.geometry(),
+        重建(贴边↔卡片)后的首帧 paint 若先于布局激活,读到的是旧形态
+        几何 —— 真机『3 个竖条药丸+横杠残影』的真因(2026-09-29,调研
+        SO:78795785);activate 幂等,已激活时零开销。"""
         deco = self._skin().deco
         if deco is not None:
+            if self.layout() is not None:
+                self.layout().activate()
             p = QPainter(self)
             p.setRenderHint(QPainter.Antialiasing)
             deco(p, self, self._bar_form)
@@ -1045,10 +1052,10 @@ class MeterWindow(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         # 贴边↔卡片形态切换窗口尺寸剧变(条 801x40 ↔ 卡 313x341),Qt 的
-        # resize 重绘对增大的方向只补画新增区域,自绘 paintEvent 的渐变按
-        # 新尺寸整体重算,但旧尺寸帧可能残留在备份位图上 → 恢复卡片后右侧
-        # 出现一条『白边』(用户截图 2026-09-29)。强制整窗重绘消残影。
-        self.update()
+        # resize 重绘对增大的方向只补画新增区域 → 旧帧残留(『白边/灰白
+        # 遮罩』)。update() 是异步排队,与布局激活的时序仍可能错一拍,
+        # repaint() 同步重绘(几何此时已新鲜,paintEvent 内会再 activate)
+        self.repaint()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:

@@ -416,36 +416,37 @@ def _deco_liquid(p, win, form) -> None:
     # 药丸 clip 进『六格 k/v 联合区域』:先算联合矩形,药丸与它求交,越界
     # 部分不再画;hero 区从此无药丸元素。
     if form is None:
-        # 第三轮(用户『药丸旁边还是有竖线』+『六丸等宽、文字居中』)→
-        # 第四轮修正(用户『药丸的结构被你破坏掉了』):三等分联合区的药丸
-        # 与 grid 实际列宽(102/68/95 非等分)错位,文字挤在药丸左半 ——
-        # 药丸必须锚每列中线画:宽 = 最大列宽(等宽诉求),x = 列中线 ± 半宽,
-        # y = 该列 k/v 联合区上下外扩。片间缝 = 列距自然形成,无衔接竖缝。
-        lbs = _card_grid_vs(win)
-        if len(lbs) == 6:
-            rects = [lb.geometry() for lb in lbs]
-            # 等宽上限 = min(列宽)+列距(8):三列中线距仅 93/89.5,100px 等宽
-            # 药丸相互重叠 7~10px(重叠互相盖住,视觉上『不是六个』2026-09-29);
-            # min 列宽+半列距×2 是不重叠前提下的最大等宽
-            col_w = min(r.width() for r in rects)
-            pill_w = float(col_w) + 8.0
-            # 每列中线 = 该列 k/v 两 label 的几何中点 x(居中文字的视觉锚)
-            for col in range(3):
-                k_lb, v_lb = lbs[col], lbs[col + 3]
-                kg, vg = k_lb.geometry(), v_lb.geometry()
-                cx = (kg.left() + kg.right() + vg.left() + vg.right()) / 4.0
-                top = min(kg.top(), vg.top()) - 12       # k 行上探:帽标+呼吸
-                bot = max(kg.bottom(), vg.bottom()) + 3
-                p.setPen(QPen(QColor(255, 255, 255, 51)))
-                p.setBrush(QColor(255, 255, 255, 36))
+        # 第三~六轮迭代(竖线/等宽/居中/锚中线)→ 第七轮定稿(用户『药丸
+        # 不应该是六个吗』+『贴边恢复卡片有灰白遮罩』):paint 里现读
+        # label.geometry() 在形态切换场景不可靠 —— Qt 布局惰性激活,重建
+        # 后的首帧 paint 几何还是旧形态的(实测 paint 序列前三帧全 640),
+        # activate/repaint 怎么排都有竞态窗。定稿:药丸几何【确定性计算】
+        # —— 卡片 grid 是类常量(内容宽 281=313-16-16、三列
+        # CARD_GRID_COL_W、列距 8),直接算六格位置,零运行时几何依赖。
+        # 等宽取 min(中线距, min列宽+列距) → 89,六片互不重叠且罩住文字列。
+        cw = win.CARD_GRID_COL_W
+        margin, gap = 16, 8
+        xs = [margin]
+        for w_ in cw[:-1]:
+            xs.append(xs[-1] + w_ + gap)
+        centers = [x + w_ / 2.0 for x, w_ in zip(xs, cw)]
+        span = min(centers[1] - centers[0], centers[2] - centers[1])
+        pill_w = min(span - 4.0, min(cw) + gap)     # 89:不重叠的最大等宽
+        # 纵向锚窗口底向上(模型列表 4 行恒建≈76 + 段距,grid 高≈64):
+        # 模型行不足 4 行时 grid 上移,药丸浮在模型区 —— 可接受近似
+        # (定稿取舍:比几何竞态可靠得多;模型行满载是常态)
+        card_h = win.height()
+        gy1 = card_h - 12.0 - 76.0                # grid 底
+        gy0 = gy1 - 64.0                          # grid 顶
+        row_h = 64.0 / 2.0
+        p.setPen(QPen(QColor(255, 255, 255, 51)))
+        p.setBrush(QColor(255, 255, 255, 36))
+        for row in range(2):
+            y0 = gy0 + row * row_h + (3.0 if row else 5.0)
+            y1 = gy0 + (row + 1) * row_h - 1.0
+            for cx in centers:
                 p.drawRoundedRect(
-                    QRectF(cx - pill_w / 2.0, top, pill_w, bot - top), 14, 14)
-        else:
-            for lb in lbs:
-                g = _pill_rect(lb, 1, 16, 2)
-                p.setPen(QPen(QColor(255, 255, 255, 51)))
-                p.setBrush(QColor(255, 255, 255, 36))
-                p.drawRoundedRect(g, 14, 14)
+                    QRectF(cx - pill_w / 2.0, y0, pill_w, y1 - y0), 14, 14)
     elif form == "h":
         for lb in _hbar_group_labels(win):
             g = lb.geometry().adjusted(-3, -3, 3, 3)   # 段距 10,±3 不压邻段
