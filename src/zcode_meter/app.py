@@ -1045,9 +1045,11 @@ class MeterWindow(QWidget):
 
         try:
             hwnd = int(self.winId())
-            # ACCENT_ENABLE_ACRYLICBLURBEHIND=4;tint #39415a @ a0 →
-            # ABGR = 0xA05A4139(alpha a0, B 5a, G 41, R 39)
-            accent = ACCENT_POLICY(4, 2, 0xA05A4139, 0)
+            # ACCENT_ENABLE_ACRYLICBLURBEHIND=4。tint 全透明(alpha 0):
+            # tint 是 DWM 画的整窗矩形(不含自绘圆角),非透明 tint 会在四
+            # 角露出直角色块(用户截图 2026-09-29);透明 tint 只保留模糊,
+            # 底色完全由自绘圆角 path 决定
+            accent = ACCENT_POLICY(4, 2, 0x00000000, 0)
             data = WINCOMPATTRDATA(
                 19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
                 ctypes.sizeof(accent))

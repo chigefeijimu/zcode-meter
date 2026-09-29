@@ -424,13 +424,8 @@ def _lens_edge(p, win, r: int, form: str) -> None:
     p.setPen(QPen(QColor(0, 0, 0, 20), 7.0))
     p.setBrush(QColor(0, 0, 0, 0))
     p.drawPath(path)
-    # ③ 镜面高光:左上弧(10 点钟→1 点钟方向)与右下弧(4→7 点钟)
-    rect = QRectF(3.0, 3.0, win.width() - 6.0, win.height() - 6.0)
-    p.setPen(QPen(QColor(255, 255, 255, 51), 2.5))
-    p.setBrush(QColor(0, 0, 0, 0))
-    p.drawArc(rect, 100 * 16, 80 * 16)     # 左上段
-    p.setPen(QPen(QColor(255, 255, 255, 31), 2.5))
-    p.drawArc(rect, -80 * 16, 80 * 16)     # 右下段(更弱)
+    # ③ 镜面高光弧已去除(用户 2026-09-29『背景里面这两个曲线去掉』——
+    #    drawArc 弧线横穿卡片被读成多余曲线;折射亮线+暗带已足够)
 
 
 def _deco_liquid(p, win, form) -> None:
