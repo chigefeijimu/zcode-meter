@@ -905,11 +905,12 @@ class MeterWindow(QWidget):
             # measure 全程异常保护:_build_card 重建后旧的 C++ 对象可能已
             # 删,geometry() 抛 RuntimeError 会反复打断 paint → 窗口画不出
             # 来(用户『重启一下小插件』起不来即此);任何异常=该帧无药丸。
-            if self.isVisible() and self.layout() is not None:
+            if (self.isVisible() and self.layout() is not None
+                    and self._bar_form is None):
                 self.layout().activate()
                 try:
                     self._measure_pill_geo()
-                except RuntimeError:
+                except (RuntimeError, IndexError):
                     self._pill_geo = None
             p = QPainter(self)
             p.setRenderHint(QPainter.Antialiasing)
@@ -921,6 +922,11 @@ class MeterWindow(QWidget):
         """量六格 k/v 几何写 _pill_geo 缓存(deco 消费;布局激活后量,精确)。
         量不到(竞态/未布局/label 已销毁)置 None,deco 该帧跳过药丸只画底。"""
         lbs = skins._card_grid_vs(self)
+        if len(lbs) != 6:
+            # 条形态/重建中(延迟重建半程):无六格可量,该帧无药丸。
+            # paintEvent 每帧都调,守卫必须在任何索引之前
+            self._pill_geo = None
+            return
         pairs = [(lbs[0], lbs[3]), (lbs[1], lbs[4]), (lbs[2], lbs[5])]
         try:
             geos = [(kg.geometry(), vg.geometry()) for kg, vg in pairs]
@@ -1100,12 +1106,21 @@ class MeterWindow(QWidget):
         x = max(min(pos.x() - w // 2, sg.right() - w - 2), sg.left() + 2)
         y = max(min(pos.y() - 12, sg.bottom() - h - 2), sg.top() + 2)
         self.dock = None
+        # 销毁重建延后到事件栈外:此处由 mousePressEvent 调用,栈上还有
+        # 刚返回的 paint/输入事件对旧控件的引用;同步 _build_card 删全部
+        # 旧 C++ 对象 → access violation(真机『一取消贴边就崩』crash log
+        # 栈顶 _build_card→SparklineWidget.__init__,2026-09-29)。
+        # singleShot(0) 让本栈先完全返回再重建。
+        QTimer.singleShot(0, lambda: self._rebuild_card_at(x, y, w, h))
+        self._save_state()               # 拖离贴边也是形态变化,同样即时落盘
+
+    def _rebuild_card_at(self, x, y, w, h):
+        """卡片重建(事件栈外):_detach_to_pointer 的延迟半程。"""
         self._build_card()
         self.setStyleSheet(self._skin_qss())   # 皮肤化(T2):卡形态 → qss
-        self.layout().activate()   # 同 _unset_dock:刷新窗口最小宽,防钳宽
+        self.layout().activate()   # 刷新窗口最小宽,防钳宽(旧最小宽钳 313)
         self.setGeometry(x, y, w, h)
         self._apply_snapshot(self.snap)
-        self._save_state()               # 拖离贴边也是形态变化,同样即时落盘
 
     # ---- 贴边判定(全 Qt 逻辑坐标,无 DPI 手算) ----
     def _pointer_pos(self):
@@ -1255,17 +1270,13 @@ class MeterWindow(QWidget):
         sg = self.screen().availableGeometry()
         g = self.geometry()
         self.dock = None
-        self._build_card()
-        self.setStyleSheet(self._skin_qss())   # 皮肤化(T2):卡形态 → qss
-        # 先激活新布局:顶层布局激活时会把布局最小宽写入窗口
-        # minimumWidth —— 横条时代的最小宽(~470)若未刷新,setGeometry
-        # (313) 被钳成 490 宽,之后没人再缩回(用户『取消贴边卡片变宽』
-        # 病根,2026-09-28)
-        self.layout().activate()
+        # 同 _detach_to_pointer:重建延后到事件栈外(可能由 settle/菜单
+        # 触发,栈上同样有 paint/输入事件对旧控件的引用)
         x = max(min(g.left(), sg.right() - self.CARD_W - 8), sg.left() + 8)
         y = max(min(g.top(), sg.bottom() - self.CARD_H - 8), sg.top() + 8)
-        self.setGeometry(x, y, self.CARD_W, self.CARD_H)
-        self._apply_snapshot(self.snap)
+        QTimer.singleShot(0, lambda: self._rebuild_card_at(x, y,
+                                                           self.CARD_W,
+                                                           self.CARD_H))
         self._save_state()               # 形态变化即时落盘,兜强杀/崩溃路径
 
     # ---- 布局 ----
