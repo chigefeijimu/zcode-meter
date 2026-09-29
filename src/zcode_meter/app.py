@@ -53,7 +53,7 @@ from zcode_meter.data_engine import (
 )
 # 皮肤注册表(v0.9 T2):skins 单向被本模块 import(它只拉 QtGui,严禁反向
 # import app/data_engine,循环导入红线见 skins.py 模块头)
-from zcode_meter import skins
+from zcode_meter import glass_effect, skins
 
 user32 = ctypes.windll.user32   # 模块级(snap 校正用;_win_polish 内的局部变量不动)
 
@@ -758,6 +758,7 @@ class MeterWindow(QWidget):
     CARD_GRID_COL_W = (102, 68, 95)
     _bar_form = None              # 类级默认:paintEvent 可能早于首次 _build_card
     _pill_geo = None              # 液态玻璃药丸几何缓存(事件循环下一拍量取)
+    acrylic_native = False        # Win11 原生 backdrop 生效中(deco 减透)
     _pill_measure_pending = False # 防重复排程的量取闸
     _settle_timer = None          # 类级默认:moveEvent 可能早于 __init__ 定时器创建
     _in_prog_move = False         # 程序性移动(吸附/恢复)期间,moveEvent 不喂防抖
@@ -843,6 +844,14 @@ class MeterWindow(QWidget):
         # 在四角露成『延伸边角』(用户截图 2026-09-29;玻璃底色深所以此前
         # 不可见,液态玻璃亮幕对比下暴露)。Translucent 后窗口形状完全由
         # paintEvent 的圆角 path 决定,四角真正透明
+        # 半透明窗口:自绘圆角外透明(所有皮肤)。DXcam 真背景管线不依赖
+        # DWM backdrop(自己抓屏自己渲染),translucent 与它无冲突;此前
+        # 『原生 backdrop 不渲染』的实验结论保留(那个路线已弃用)
+        # WA_OpaquePaintEvent 已撤销(2026-09-29):它虽挡住 label 局部重绘
+        # 的系统擦除黑块,但让 Qt 不再重绘 label 背后内容 → backingstore
+        # 旧帧上浮现【白块/灰块残影】(用户截图)。改为数据更新后全窗重绘
+        # (见 _apply_snapshot 尾部 self.update())—— 背景与文字永远一致,
+        # 无局部擦除路径,两类块一并消除。
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         self._build_card()
@@ -863,7 +872,8 @@ class MeterWindow(QWidget):
         # Liquid Glass A:启动皮肤若是液态玻璃,窗口 map 后开亚克力
         # (winId 需要原生句柄,延到 80ms 润色同拍)
         if self.skin_id == "liquid":
-            QTimer.singleShot(80, self._enable_acrylic)
+            # 同上:DXcam 管线自绘背景,不启用系统 backdrop(灰色整窗层)
+            QTimer.singleShot(80, self._ensure_glass_timer)
 
         # 兜菜单退出/事件循环正常退出路径的位置保存
         QApplication.instance().aboutToQuit.connect(self._save_state)
@@ -1023,6 +1033,28 @@ class MeterWindow(QWidget):
         p.drawPath(path)
 
     # ---- Liquid Glass 方案 A:Windows 亚克力(真实背景模糊) ----
+    def _ensure_glass_timer(self):
+        """Liquid Glass 真背景管线节拍(66ms≈15fps):DXcam 抓窗口矩形
+        身后画面存 glass_effect.latest(),paint 只消费 —— 抓屏不能在
+        paintEvent 里同步做(paint 抓到的是合成中的上一帧,拖动时背景
+        冻结;后台节拍让拖动中背景实时流动)。"""
+        if getattr(self, "_glass_timer", None) is None:
+            self._glass_timer = QTimer(self)
+            self._glass_timer.timeout.connect(self._glass_tick)
+            self._glass_timer.start(66)   # 只更新区域坐标(轻)
+        glass_effect.set_hide_cb(self.setWindowOpacity)   # 自剔除回调
+        glass_effect.start_background_thread()
+        self._glass_tick()
+
+    def _glass_tick(self):
+        # 同步抓取区域为窗口当前【屏幕绝对矩形】(geometry 的 left/top 是
+        # 屏幕坐标;首版误写 (0,0,w,h) → DXcam 永远抓屏幕左上角,玻璃里
+        # 永远是同一块深色 —— 用户『拖动背景不变』的最终真因 2026-09-29)
+        from zcode_meter import glass_effect
+        g = self.geometry()
+        glass_effect.set_region(g.left(), g.top(), self.width(),
+                                self.height(), self.devicePixelRatioF())
+
     def _enable_acrylic(self):
         """SetWindowCompositionAttribute 亚克力(未公开 API,调研 2026-09-29):
         DWM 把窗口身后内容实时模糊后垫底 —— 『玻璃压住的底层光线』由系统
@@ -1045,17 +1077,40 @@ class MeterWindow(QWidget):
 
         try:
             hwnd = int(self.winId())
-            # ACCENT_ENABLE_ACRYLICBLURBEHIND=4。tint 全透明(alpha 0):
-            # tint 是 DWM 画的整窗矩形(不含自绘圆角),非透明 tint 会在四
-            # 角露出直角色块(用户截图 2026-09-29);透明 tint 只保留模糊,
-            # 底色完全由自绘圆角 path 决定
+            # 首选 Win11 原生路径:DWMWA_SYSTEMBACKDROP_TYPE(38)=3(ACRYLIC)。
+            # 原 backdrop 遵守窗口圆角(老 API SetWindowCompositionAttribute
+            # 的模糊层是整窗矩形、SetWindowRgn 裁不住 → 四角黑块,对照实验
+            # 实锤 2026-09-29)。需先 DwmExtendFrameIntoMargins
+            dwmapi = ctypes.windll.dwmapi
+            margins = ctypes.c_int(-1)   # -1 = 整个 client 区延伸进 frame
+            dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+            backdrop = ctypes.c_int(3)   # DWMSBT_TRANSIENTWINDOW(亚克力)
+            ok = dwmapi.DwmSetWindowAttribute(
+                hwnd, 38, ctypes.byref(backdrop), 4) == 0
+            if ok:
+                self._acrylic_native = True
+                self.acrylic_native = True   # deco 消费(幕布减透)
+                return True
+            # 老系统兜底:老 API + region 裁剪(region 裁不住模糊层,
+            # 但老系统没有新 API,黑角换模糊是净值)
+            self._acrylic_native = False
+            self.acrylic_native = False
+            import math
+            r = 26
+            scale = self.devicePixelRatioF()
+            w = round(self.width() * scale)
+            h = round(self.height() * scale)
+            rr = round(r * scale)
+            region = ctypes.windll.gdi32.CreateRoundRectRgn(
+                0, 0, w + 1, h + 1, rr, rr)
+            ctypes.windll.user32.SetWindowRgn(hwnd, region, True)
             accent = ACCENT_POLICY(4, 2, 0x00000000, 0)
             data = WINCOMPATTRDATA(
                 19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
                 ctypes.sizeof(accent))
-            ok = ctypes.windll.user32.SetWindowCompositionAttribute(
+            ok2 = ctypes.windll.user32.SetWindowCompositionAttribute(
                 hwnd, ctypes.byref(data))
-            return bool(ok)
+            return bool(ok2)
         except Exception:
             return False
 
@@ -1077,6 +1132,12 @@ class MeterWindow(QWidget):
 
         try:
             hwnd = int(self.winId())
+            if getattr(self, "_acrylic_native", False):
+                backdrop = ctypes.c_int(1)   # DWMSBT_NONE
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 38, ctypes.byref(backdrop), 4)
+                self._acrylic_native = False
+                self.acrylic_native = False
             accent = ACCENT_POLICY(0, 0, 0, 0)
             data = WINCOMPATTRDATA(
                 19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
@@ -1177,6 +1238,13 @@ class MeterWindow(QWidget):
 
     def moveEvent(self, event):
         super().moveEvent(event)
+        # Liquid Glass:拖动中实时更新抓取区域(原子写,不依赖 Qt timer ——
+        # startSystemMove 模态循环里 timer 停摆,不写则 region 冻结在旧位
+        # 置 → 玻璃里一直是旧背景,用户 2026-09-29)
+        from zcode_meter import glass_effect
+        g = self.geometry()
+        glass_effect.set_region(g.left(), g.top(), self.width(),
+                                self.height(), self.devicePixelRatioF())
         if self._in_prog_move or self._settle_timer is None:
             return   # 程序性移动(吸附自身)不触发判定链
         # 用户拖动:重置防抖,停止移动 150ms 后做贴边判定
@@ -1189,6 +1257,21 @@ class MeterWindow(QWidget):
         # 遮罩』)。update() 是异步排队,与布局激活的时序仍可能错一拍,
         # repaint() 同步重绘(几何此时已新鲜,paintEvent 内会再 activate)
         self.repaint()
+        # 亚克力圆角 region 跟随新尺寸(物理像素;仅 liquid 已开亚克力时)
+        if self.skin_id == "liquid" and self.isVisible():
+            try:
+                import math
+                scale = self.devicePixelRatioF()
+                r = 26
+                w = round(self.width() * scale)
+                h = round(self.height() * scale)
+                rr = round(r * scale)
+                region = ctypes.windll.gdi32.CreateRoundRectRgn(
+                    0, 0, w + 1, h + 1, rr, rr)
+                ctypes.windll.user32.SetWindowRgn(
+                    int(self.winId()), region, True)
+            except Exception:
+                pass
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1509,13 +1592,16 @@ class MeterWindow(QWidget):
         # 红档。k/v 两行右对齐,与左 info 的 k/v 结构呼应。
         plan_right = QVBoxLayout()
         plan_right.setSpacing(0)
+        # k/v 左对齐(用户 2026-09-29『燃速标题和数值左侧没有对齐』——
+        # 旧右对齐下两行右缘共线、左缘随内容宽漂移)。整块仍锚套餐行右端:
+        # VBox 宽=两行最宽者,k 左对齐自然内缩
         self.plan_left_k = self._mk_lbl("还可撑", "faint",
                                         "Microsoft YaHei UI", 9)
-        self.plan_left_k.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.plan_left_k.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         plan_right.addWidget(self.plan_left_k)
         self.plan_left_v = self._mk_lbl("", "soft", C_MONO, 13, families=mono)
         self.plan_left_v.setFont(mk_mono(13, QFont.DemiBold, families=mono))
-        self.plan_left_v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.plan_left_v.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         plan_right.addWidget(self.plan_left_v)
         prow.addLayout(plan_right)
         pv.addLayout(prow)
@@ -1539,17 +1625,10 @@ class MeterWindow(QWidget):
         for c, cw in enumerate(self.CARD_GRID_COL_W):
             grid.setColumnMinimumWidth(c, cw)
 
-        # 液态玻璃皮肤例外:六药丸等宽网格,文字全部居中(用户 2026-09-29
-        # 『六药丸等宽、文字居中』)—— v 值在此处定对齐,玻璃与其它皮肤
-        # 左对齐不变;末列右对齐的分支随后按 _center_grid 分派
-        _center_grid = (sk.id == "liquid")
-
         def cell(txt, cls=""):
             lb = self._mk_lbl("--", cls, C_MONO, 13, families=mono)
             lb.setFont(mk_mono(13, QFont.DemiBold, families=mono))
             lb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            if _center_grid:
-                lb.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
             return lb
 
         self.in_out_lbl = cell("--")
@@ -1558,38 +1637,41 @@ class MeterWindow(QWidget):
         self.burn_lbl = cell("--")
         self.avg_burn_lbl = cell("--")
         self.avg_lbl = cell("--")
-        # 末列(⏱首/总、均速)值右对齐:下半部右缘与上半部(sparkline 右端/
-        # 多源/预算余量,均 297)共线 —— 用户反馈『下半右侧往右放一点,卡片
-        # 上下左右视觉对齐』(2026-09-28);k 行同步右对齐(用户反馈『标题和
-        # 数值开头对齐』:值右对齐后其开头浮动,列头仍贴左则错位 —— 两行同
-        # 右缘即天然对齐)。液态玻璃皮肤例外:六药丸等宽网格,文字全部居中
-        # (用户 2026-09-29『六药丸等宽、文字居中』)—— 玻璃与其它皮肤维持
-        # 上面的对齐语言
-        for lb in (self.timing_lbl, self.avg_lbl):
-            lb.setAlignment((Qt.AlignHCenter if _center_grid
-                             else Qt.AlignRight) | Qt.AlignVCenter)
-        for col, (k, v) in enumerate((
-                ("入 / 出", self.in_out_lbl), ("缓存命中", self.rate_lbl),
-                ("首 / 总", self.timing_lbl), ("燃速", self.burn_lbl),
-                ("均燃", self.avg_burn_lbl), ("均速", self.avg_lbl))):
+        pairs = (("入 / 出", self.in_out_lbl), ("缓存命中", self.rate_lbl),
+                 ("首 / 总", self.timing_lbl), ("燃速", self.burn_lbl),
+                 ("均燃", self.avg_burn_lbl), ("均速", self.avg_lbl))
+        self._grid_k_labels = []
+        if sk.id == "liquid":
+            # 液态玻璃:固定三等列(用户 2026-09-29 终版口径『每行数值间距
+            # 一样+上下两排左侧对齐+适当加宽防截断』)—— 列宽 88(容最宽
+            # 值 "446.4M / 541K"=84)+ 列距 8,合计 88×3+8×2=280≈内容宽
+            # 281;上下两排同列严格共线。k 恒与 v 同格左缘共线。
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(8)
+            for c in range(3):
+                grid.setColumnMinimumWidth(c, 88)
+            for col, (k, v) in enumerate(pairs):
+                k_lb = self._mk_lbl(k, "faint", "Microsoft YaHei UI", 9)
+                grid.addWidget(k_lb, (col // 3) * 2, col % 3)
+                grid.addWidget(v, (col // 3) * 2 + 1, col % 3)
+                self._grid_k_labels.append(k_lb)
+            root.addLayout(grid)
+        else:
+            # 玻璃/其它皮肤:固定三列 grid;末列(首/总、均速)值右对齐,
+            # k 行同步右对齐(2026-09-28 两项用户裁决原样)
+            for lb in (self.timing_lbl, self.avg_lbl):
+                lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             # k/v 行号必须按『第几对』展开成 4 行(0=k1,1=v1,2=k2,3=v2)。
-            # v0.8.0 首版误写 col//3(+1):第二组键(燃速/均燃/均速)与第一组
-            # 值(入出/命中/首总)同落 row1 同格叠印 —— 真机『文字重叠』
-            # 的真因(2026-09-28 用户截图+findChildren 几何转储定位:燃速
-            # g=(16,207) 与 in_out 值全等),此前误诊为列宽/elide 问题。
-            k_lb = self._mk_lbl(k, "faint", "Microsoft YaHei UI", 9)
-            if _center_grid:
-                k_lb.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-            elif v in (self.timing_lbl, self.avg_lbl):
-                k_lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            grid.addWidget(k_lb, (col // 3) * 2, col % 3)
-            grid.addWidget(v, (col // 3) * 2 + 1, col % 3)
-            # k label 引用入列表(liquid 药丸需要罩住标题 —— 第十轮真因:
-            # 标题 label 从未存引用,药丸几何无从包含它)
-            if col == 0:
-                self._grid_k_labels = []
-            self._grid_k_labels.append(k_lb)
-        root.addLayout(grid)
+            # v0.8.0 首版误写 col//3(+1):第二组键与第一组值同格叠印
+            # (真机『文字重叠』真因,2026-09-28)。
+            for col, (k, v) in enumerate(pairs):
+                k_lb = self._mk_lbl(k, "faint", "Microsoft YaHei UI", 9)
+                if v in (self.timing_lbl, self.avg_lbl):
+                    k_lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                grid.addWidget(k_lb, (col // 3) * 2, col % 3)
+                grid.addWidget(v, (col // 3) * 2 + 1, col % 3)
+                self._grid_k_labels.append(k_lb)
+            root.addLayout(grid)
 
         # ⑥ 模型列表 rows[:4](预览 :187-190):容器+每行 HBox(名左 10pt
         # faint 89 档/速度右 10pt half 128 档),替换 v0.7 单 QLabel 多行
@@ -2012,9 +2094,12 @@ class MeterWindow(QWidget):
         # 离开该皮肤关掉恢复普通不透明窗口。失败静默(deco 自绘亮幕兜底)
         if self.isVisible():
             if skin_id == "liquid" and prev != "liquid":
-                self._enable_acrylic()
+                # DXcam 自绘管线不需要系统 backdrop:亚克力层是 DWM 画的
+                # 【整窗矩形】灰色底(不受自绘圆角约束)—— 用户『卡片底部
+                # 一层东西+四角直角』就是它,2026-09-29 移除调用
+                self._ensure_glass_timer()
             elif prev == "liquid" and skin_id != "liquid":
-                self._disable_acrylic()
+                self._disable_acrylic()   # 保底:清掉历史残留的 backdrop
         if self.dock:
             self._build_bar(vertical=self.dock in ("left", "right"))
             self.setStyleSheet(self._skin_qss())
@@ -2377,6 +2462,10 @@ class MeterWindow(QWidget):
     def _apply_snapshot(self, s: Snapshot):
         generating = s.state == "generating"
         self._set_dot_active(generating)     # 三形态均脉冲环(T3 后无 QLabel 分支)
+        # 数据更新后全窗重绘(2026-09-29):label setText 只触发局部重绘,
+        # translucent 窗口上局部擦除/残影是各类色块的共同根因;全窗重绘
+        # 让背景帧与文字永远一致(5fps,成本无感)
+        self.update()
         # 主数字 = 全局瞬时吞吐(2026-09-28 语义切换:机器全部会话的流式贡献
         # + 10s 完成重叠窗,不再跟随当前会话;tps_est/tps_exact 仍由引擎维护
         # 但仅供字符比校准等内部用途)。<0.05 视为空闲显 --

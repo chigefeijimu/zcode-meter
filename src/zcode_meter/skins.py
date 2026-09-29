@@ -51,15 +51,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QRect, QRectF
 from PySide6.QtGui import (
     QColor, QFont, QLinearGradient, QPainterPath, QPen, QRadialGradient,
 )
 
-# 卡片六格药丸(liquid)内文字预算:药丸宽 81 − 两侧留白 5×2。
+# 卡片六格文字预算(liquid):等距三组布局的 v 最大宽。
 # _apply_card 对 liquid 皮肤的 grid v 文本按此值 elide —— 防文字溢出
 # 药丸边界(用户 2026-09-29『药丸内部文字超出边界』)。其它皮肤不受限。
-LIQUID_GRID_TEXT_W = 71
+LIQUID_GRID_TEXT_W = 88
 
 # 白名单与顺序钉死(T1 SKIN_IDS 同源;glass=缺省第 0 款)
 SKIN_IDS = ("glass", "swiss", "crt", "chalk", "liquid",
@@ -363,12 +363,23 @@ def _liquid_bg(p, win, form) -> QPainterPath:
     # 整卡,HTML 的透亮玻璃感全无 —— 卡片也换亮灰蓝幕(比条略深保文字对
     # 比),blob 半径/α 加大为视觉主体,『彩泡在浅玻璃后晕开』才成立
     base = QLinearGradient(0.0, 0.0, 0.0, float(h))
+    acrylic = getattr(win, "acrylic_native", False)
     if form in ("h", "v"):
-        base.setColorAt(0.0, QColor("#2a3140"))
-        base.setColorAt(1.0, QColor("#232a37"))
+        if acrylic:
+            base.setColorAt(0.0, QColor(42, 49, 64, 90))   # 半透:系统模糊层透出
+            base.setColorAt(1.0, QColor(35, 42, 55, 90))
+        else:
+            base.setColorAt(0.0, QColor("#2a3140"))
+            base.setColorAt(1.0, QColor("#232a37"))
     else:
-        base.setColorAt(0.0, QColor("#39415a"))
-        base.setColorAt(1.0, QColor("#2b3247"))
+        if acrylic:
+            # DXcam 管线:抓屏含自身 → 残影反复折射成竖条纹(用户截图
+            # 2026-09-29),veil 150 压残影至隐约;原生 backdrop 未采用
+            base.setColorAt(0.0, QColor(57, 65, 90, 150))
+            base.setColorAt(1.0, QColor(43, 50, 71, 150))
+        else:
+            base.setColorAt(0.0, QColor("#39415a"))
+            base.setColorAt(1.0, QColor("#2b3247"))
     p.fillPath(path, base)
     p.save()
     p.setClipPath(path)
@@ -410,70 +421,51 @@ def _liquid_bg(p, win, form) -> QPainterPath:
 
 def _lens_edge(p, win, r: int, form: str) -> None:
     """Liquid Glass 方案 B:边缘透镜(QPainter 自绘,零平台依赖)。
-    三层光学:①折射亮线(path 内缩 1px 白.30)——光线在玻璃边弯出的亮弧;
-    ②光密暗带(内缩 2-5px 黑.08→.0 渐隐)——透镜边缘光密偏折的阴影;
-    ③镜面高光(左上/右下两段弧,白.20 2.5px)——光源方向 specular。
-    配合方案 A 的亚克力真背景模糊,构成 Liquid Glass 的核心观感。"""
+    折射亮线 + 光密暗带,全部 clip 进圆角 path —— 笔宽中心在边线上时
+    圆角外溢出 3.5px 暗色,被 layered 窗口在四角放大成『直角块』
+    (用户 2026-09-29 四角直角最终真因)。"""
     path = _base_path(win, r)
-    # ① 折射亮线:细白圈(略内缩防抗锯齿溢出)
+    p.save()
+    p.setClipPath(path)                    # 一切边缘光效不得越出圆角
+    # ① 折射亮线:细白圈
     p.setPen(QPen(QColor(255, 255, 255, 76), 1.2))
     p.setBrush(QColor(0, 0, 0, 0))
     p.drawPath(path)
-    # ② 光密暗带:用粗黑线叠在 path 上再被后续内部绘制覆盖一部分,
-    #    形成"边缘略暗"的透镜感(粗 7px,中心在边线上,内外各 ~3.5)
+    # ② 光密暗带:粗黑线的一半被 clip 裁掉,只剩圆角内侧 3.5px
     p.setPen(QPen(QColor(0, 0, 0, 20), 7.0))
     p.setBrush(QColor(0, 0, 0, 0))
     p.drawPath(path)
+    p.restore()
     # ③ 镜面高光弧已去除(用户 2026-09-29『背景里面这两个曲线去掉』——
     #    drawArc 弧线横穿卡片被读成多余曲线;折射亮线+暗带已足够)
 
 
 def _deco_liquid(p, win, form) -> None:
     path = _liquid_bg(p, win, form)
-    p.save()
-    p.setClipPath(path)
-    # 药丸底(:119 白.14+边白.2,圆角 14;三处定稿微调之二:玻璃 grid 本就
-    # 3 列×2 带,药丸底锚六格几何即得 HTML 3×2 等大药丸观感)。k 行 9px
-    # ≈12h + 纵距 4 → up=19;横向外扩只 1px —— 列距 8,再宽即与邻列药丸
-    # 相互压线(首版 dx=9 实测压线,2026-09-29 渲染矩阵对版修正)。
-    # 第二轮修正(用户截图 2026-09-29『显示很多地方看不到』):up=19 上探
-    # 越过 k 行顶侵入 hero/今日行,真机文字在场时药丸边框压字 —— 改为把
-    # 药丸 clip 进『六格 k/v 联合区域』:先算联合矩形,药丸与它求交,越界
-    # 部分不再画;hero 区从此无药丸元素。
-    if form is None:
-        # 第三~九轮迭代(竖线/等宽/居中/锚中线/常数估算)→ 第十轮定稿:
-        # 药丸几何全部来自 win._pill_geo 缓存(见下),本分支零几何计算。
-        # 纵向【几何缓存】(常数估算三轮都不准:模型行高度/行距随内容漂,
-        # 手推公式永远差几像素):deco 需要的 k/v 几何由 _apply_card 末尾
-        # 【布局激活后】量好存进 win._pill_geo(每排 k顶/v底 + 每列中线),
-        # paint 只消费缓存;竞态首帧缓存不存在 → 跳过药丸只画底(干净),
-        # 下一帧(布局已落地)自然补上 —— 时序永远正确。
-        geo = getattr(win, "_pill_geo", None)
-        if geo is None:
-            p.restore()
-            _stroke(p, win, 26, QColor(255, 255, 255, 64))
-            return
-        pill_w = geo["pill_w"]
-        p.setPen(QPen(QColor(255, 255, 255, 51)))
-        p.setBrush(QColor(255, 255, 255, 36))
-        for (cx, y0, y1) in geo["pills"]:
-            p.drawRoundedRect(
-                QRectF(cx - pill_w / 2.0, y0, pill_w, y1 - y0), 14, 14)
-    elif form == "h":
-        for lb in _hbar_group_labels(win):
-            g = lb.geometry().adjusted(-3, -3, 3, 3)   # 段距 10,±3 不压邻段
-            p.setPen(QPen(QColor(255, 255, 255, 51)))
-            p.setBrush(QColor(255, 255, 255, 36))
-            p.drawRoundedRect(g, 10, 10)
-    else:
-        for lb in _vbar_group_labels(win):
-            g = lb.geometry().adjusted(-10, -3, 10, 4)
-            p.setPen(QPen(QColor(255, 255, 255, 51)))
-            p.setBrush(QColor(255, 255, 255, 36))
-            p.drawRoundedRect(g, 10, 10)
-    p.restore()
-    _lens_edge(p, win, {"card": 26, "h": 18, "v": 22}[form or "card"],
-              form)   # :108 border 白.25
+    r = {"card": 26, "h": 18, "v": 22}[form or "card"]
+
+    # Liquid Glass 真背景管线(2026-09-29 用户拍板;同日用户要求
+    # 『贴边条与卡片形态样式一致』→ 三形态统一):DXcam 抓窗口矩形身后
+    # 画面 → 模糊 → drawImage 覆盖自绘幕布;抓取失败/无帧 → 保留
+    # _liquid_bg 的 veil 亮幕(回退)。画完继续叠药丸(不再 early-return
+    # —— 卡片分支曾因 return 跳过药丸绘制)。
+    try:
+        from zcode_meter import glass_effect
+        if glass_effect.OK:
+            bg = glass_effect.latest()
+            if bg is not None:
+                img = glass_effect.to_qimage(bg)
+                p.save()
+                p.setClipPath(path)
+                p.drawImage(QRect(0, 0, win.width(), win.height()), img)
+                p.restore()
+    except Exception:
+        pass
+    # 药丸绘制已全部移除(用户 2026-09-29『横线、竖线和药丸全部都不要,
+    # 要像前一版的卡片一样干净纯粹』):卡片六格药丸/横条段底/竖条组底
+    # 一并去除 —— 模糊背景 + 文字直读,玻璃本身即层次(前十轮药丸迭代
+    # 的机制代码保留在 git 历史,_pill_geo 缓存链路不再被消费)。
+    _lens_edge(p, win, r, form)
 
 
 # ══════ ⑤ 工业机柜(HTML :141-173):金属渐变 + 螺丝/绿灯 + readout/铭牌 ══════
@@ -822,9 +814,9 @@ _SKIN_LIQUID = SkinDef(
     spark_line=_c(125, 216, 252), spark_dot=_c(255, 255, 255),
     pulse_idle=_c(255, 255, 255, 89), pulse_active=_c(56, 189, 248),
     pulse_core=_c(56, 189, 248, 230), ring_base=_c(255, 255, 255, 26),
-    sep="rgba(255,255,255,77)",
-    # 卡片分节线 transparent(用户 2026-09-29『既然用了玻璃药丸就不需要
-    # 再用竖线分隔』—— 药丸已是分组语言,叠线即拥挤);sep_card_weak 同理
+    # 分隔线全形态 transparent(用户 2026-09-29『横线、竖线和药丸全部
+    # 都不要,要干净纯粹』):玻璃本身即分组语言,条内竖线/横线一并去除
+    sep="transparent",
     sep_card="transparent", sep_card_weak="transparent",
     # contrast_bg=白.14 药丸与玻璃底合成色的近似(评审 D 口径:药丸合成底,
     # 非 blob 无字装饰带)。#343b4d=亮灰蓝幕(#39415a→#2b3247 渐变中点)与
