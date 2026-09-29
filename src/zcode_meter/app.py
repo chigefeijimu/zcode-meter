@@ -1488,7 +1488,7 @@ class MeterWindow(QWidget):
                              else Qt.AlignRight) | Qt.AlignVCenter)
         for col, (k, v) in enumerate((
                 ("入 / 出", self.in_out_lbl), ("缓存命中", self.rate_lbl),
-                ("⏱ 首 / 总", self.timing_lbl), ("燃速", self.burn_lbl),
+                ("首 / 总", self.timing_lbl), ("燃速", self.burn_lbl),
                 ("均燃", self.avg_burn_lbl), ("均速", self.avg_lbl))):
             # k/v 行号必须按『第几对』展开成 4 行(0=k1,1=v1,2=k2,3=v2)。
             # v0.8.0 首版误写 col//3(+1):第二组键(燃速/均燃/均速)与第一组
