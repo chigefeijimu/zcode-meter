@@ -408,6 +408,31 @@ def _liquid_bg(p, win, form) -> QPainterPath:
     return path
 
 
+def _lens_edge(p, win, r: int, form: str) -> None:
+    """Liquid Glass 方案 B:边缘透镜(QPainter 自绘,零平台依赖)。
+    三层光学:①折射亮线(path 内缩 1px 白.30)——光线在玻璃边弯出的亮弧;
+    ②光密暗带(内缩 2-5px 黑.08→.0 渐隐)——透镜边缘光密偏折的阴影;
+    ③镜面高光(左上/右下两段弧,白.20 2.5px)——光源方向 specular。
+    配合方案 A 的亚克力真背景模糊,构成 Liquid Glass 的核心观感。"""
+    path = _base_path(win, r)
+    # ① 折射亮线:细白圈(略内缩防抗锯齿溢出)
+    p.setPen(QPen(QColor(255, 255, 255, 76), 1.2))
+    p.setBrush(QColor(0, 0, 0, 0))
+    p.drawPath(path)
+    # ② 光密暗带:用粗黑线叠在 path 上再被后续内部绘制覆盖一部分,
+    #    形成"边缘略暗"的透镜感(粗 7px,中心在边线上,内外各 ~3.5)
+    p.setPen(QPen(QColor(0, 0, 0, 20), 7.0))
+    p.setBrush(QColor(0, 0, 0, 0))
+    p.drawPath(path)
+    # ③ 镜面高光:左上弧(10 点钟→1 点钟方向)与右下弧(4→7 点钟)
+    rect = QRectF(3.0, 3.0, win.width() - 6.0, win.height() - 6.0)
+    p.setPen(QPen(QColor(255, 255, 255, 51), 2.5))
+    p.setBrush(QColor(0, 0, 0, 0))
+    p.drawArc(rect, 100 * 16, 80 * 16)     # 左上段
+    p.setPen(QPen(QColor(255, 255, 255, 31), 2.5))
+    p.drawArc(rect, -80 * 16, 80 * 16)     # 右下段(更弱)
+
+
 def _deco_liquid(p, win, form) -> None:
     path = _liquid_bg(p, win, form)
     p.save()
@@ -452,12 +477,8 @@ def _deco_liquid(p, win, form) -> None:
             p.setBrush(QColor(255, 255, 255, 36))
             p.drawRoundedRect(g, 10, 10)
     p.restore()
-    if form in ("h", "v"):
-        # 条形态描边:白.25/1px 在提亮底上仍显框线,降白.16(用户『去掉
-        # 黑色底框』—— 暗幕已提亮,描边只留玻璃缝感)
-        _stroke(p, win, {"h": 18, "v": 22}[form], QColor(255, 255, 255, 41))
-    else:
-        _stroke(p, win, 26, QColor(255, 255, 255, 64))   # :108 border 白.25
+    _lens_edge(p, win, {"card": 26, "h": 18, "v": 22}[form or "card"],
+              form)   # :108 border 白.25
 
 
 # ══════ ⑤ 工业机柜(HTML :141-173):金属渐变 + 螺丝/绿灯 + readout/铭牌 ══════

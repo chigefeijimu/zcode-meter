@@ -860,6 +860,10 @@ class MeterWindow(QWidget):
         # 只有窗口 map 后才反映真实所在屏(多显示器下不能锚错屏)。
         # show 到首帧绘制之间隔着 exec(),此处置零闪烁。
         self._restore_state()
+        # Liquid Glass A:启动皮肤若是液态玻璃,窗口 map 后开亚克力
+        # (winId 需要原生句柄,延到 80ms 润色同拍)
+        if self.skin_id == "liquid":
+            QTimer.singleShot(80, self._enable_acrylic)
 
         # 兜菜单退出/事件循环正常退出路径的位置保存
         QApplication.instance().aboutToQuit.connect(self._save_state)
@@ -1017,6 +1021,68 @@ class MeterWindow(QWidget):
         p.setPen(QPen(QColor(255, 255, 255, 20), 1.0))    # 白.08 ≈ 20/255
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
+
+    # ---- Liquid Glass 方案 A:Windows 亚克力(真实背景模糊) ----
+    def _enable_acrylic(self):
+        """SetWindowCompositionAttribute 亚克力(未公开 API,调研 2026-09-29):
+        DWM 把窗口身后内容实时模糊后垫底 —— 『玻璃压住的底层光线』由系统
+        供给。tint 走液态玻璃亮灰蓝(ABGR:alpha 高字节)。失败/Win11 兼容
+        性问题 → 静默回退自绘亮幕(deco 的 base 渐变原样在),观感降级不
+        崩溃。仅液态玻璃皮肤调用。"""
+        import ctypes
+        from ctypes import wintypes
+
+        class ACCENT_POLICY(ctypes.Structure):
+            _fields_ = [("AccentState", ctypes.c_int),
+                        ("AccentFlags", ctypes.c_int),
+                        ("GradientColor", wintypes.DWORD),
+                        ("AnimationId", ctypes.c_int)]
+
+        class WINCOMPATTRDATA(ctypes.Structure):
+            _fields_ = [("Attribute", ctypes.c_int),
+                        ("Data", ctypes.c_void_p),
+                        ("SizeOfData", ctypes.c_size_t)]
+
+        try:
+            hwnd = int(self.winId())
+            # ACCENT_ENABLE_ACRYLICBLURBEHIND=4;tint #39415a @ a0 →
+            # ABGR = 0xA05A4139(alpha a0, B 5a, G 41, R 39)
+            accent = ACCENT_POLICY(4, 2, 0xA05A4139, 0)
+            data = WINCOMPATTRDATA(
+                19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
+                ctypes.sizeof(accent))
+            ok = ctypes.windll.user32.SetWindowCompositionAttribute(
+                hwnd, ctypes.byref(data))
+            return bool(ok)
+        except Exception:
+            return False
+
+    def _disable_acrylic(self):
+        """关亚克力(ACCENT_ENABLE_BLURBEHIND=0 即恢复普通窗口)。"""
+        import ctypes
+        from ctypes import wintypes
+
+        class ACCENT_POLICY(ctypes.Structure):
+            _fields_ = [("AccentState", ctypes.c_int),
+                        ("AccentFlags", ctypes.c_int),
+                        ("GradientColor", wintypes.DWORD),
+                        ("AnimationId", ctypes.c_int)]
+
+        class WINCOMPATTRDATA(ctypes.Structure):
+            _fields_ = [("Attribute", ctypes.c_int),
+                        ("Data", ctypes.c_void_p),
+                        ("SizeOfData", ctypes.c_size_t)]
+
+        try:
+            hwnd = int(self.winId())
+            accent = ACCENT_POLICY(0, 0, 0, 0)
+            data = WINCOMPATTRDATA(
+                19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
+                ctypes.sizeof(accent))
+            ctypes.windll.user32.SetWindowCompositionAttribute(
+                hwnd, ctypes.byref(data))
+        except Exception:
+            pass
 
     # ---- Win32 润色(唯一保留的互操作,均为一次性安全调用) ----
     def _win_polish(self):
@@ -1938,7 +2004,15 @@ class MeterWindow(QWidget):
         形态本身不变:切皮肤不改变贴边状态,只重建当前形态的件与样式。"""
         if skin_id not in skins.SKIN_IDS:
             return
+        prev = self.skin_id
         self.skin_id = skin_id
+        # Liquid Glass 方案 A:液态玻璃皮肤开 Windows 亚克力(真背景模糊),
+        # 离开该皮肤关掉恢复普通不透明窗口。失败静默(deco 自绘亮幕兜底)
+        if self.isVisible():
+            if skin_id == "liquid" and prev != "liquid":
+                self._enable_acrylic()
+            elif prev == "liquid" and skin_id != "liquid":
+                self._disable_acrylic()
         if self.dock:
             self._build_bar(vertical=self.dock in ("left", "right"))
             self.setStyleSheet(self._skin_qss())
