@@ -839,6 +839,11 @@ class MeterWindow(QWidget):
         self.setObjectName("root")
         self.setStyleSheet(self._skin_qss())   # 皮肤化(v0.9 T2);玻璃=qss 逐位同旧
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        # 半透明窗口:自绘圆角(26px)外是直角窗口底,系统默认不透明底色
+        # 在四角露成『延伸边角』(用户截图 2026-09-29;玻璃底色深所以此前
+        # 不可见,液态玻璃亮幕对比下暴露)。Translucent 后窗口形状完全由
+        # paintEvent 的圆角 path 决定,四角真正透明
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         self._build_card()
         self.adjustSize()
@@ -1028,8 +1033,11 @@ class MeterWindow(QWidget):
             user32.SetWindowLongW(hwnd, -16, style & ~(0x00040000 | 0x00010000))
             v = ctypes.c_int(1)
             dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(v), 4)     # dark
-            v2 = ctypes.c_int(2)
-            dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(v2), 4)    # Win11 round
+            # DWM 圆角策略 DONOTROUND:系统小圆角(~8px)小于自绘圆角
+            # (26px),系统角外的直角窗口底露成四角『延伸边角』(用户截图
+            # 2026-09-29);关掉系统圆角,四角完全交自绘
+            v2 = ctypes.c_int(1)
+            dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(v2), 4)    # DONOTROUND
         except Exception:
             pass
 
