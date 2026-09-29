@@ -945,11 +945,17 @@ class MeterWindow(QWidget):
         # 六丸 83×37 全等。
         # 高度不外扩(k 顶到 v 底原值):两排文字间只有 5px 空隙,±2 呼吸
         # 会让药丸贴死/重叠(用户红圈 2026-09-29);紧凑丸排间净空 5px
+        # 第二排整体下移 3px(用户 2026-09-29『第二行的药丸整行往下移一点』
+        # —— 下排药丸底距模型分节线过近,下移拉开与上排的层次;丸高不变)
+        ROW2_SHIFT = 3.0
         pills = []
-        for kg, vg in geos:
+        for i, (kg, vg) in enumerate(geos):
             cx = (kg.left() + kg.right() + vg.left() + vg.right()) / 4.0
             y0 = float(min(kg.top(), vg.top()))
             y1 = float(max(kg.bottom(), vg.bottom()))
+            if i >= 3:
+                y0 += ROW2_SHIFT
+                y1 += ROW2_SHIFT
             pills.append((cx, y0, y1))
         # 宽在循环外按中线距定:全部同宽
         mids = [c for c, _, _ in pills]
