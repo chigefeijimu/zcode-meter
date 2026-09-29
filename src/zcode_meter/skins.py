@@ -351,9 +351,15 @@ def _liquid_bg(p, win, form) -> QPainterPath:
     r = {"card": 26, "h": 18, "v": 22}[form or "card"]  # :106/:122/:131
     w, h = win.width(), win.height()
     path = _base_path(win, r)
-    base = QLinearGradient(0.0, 0.0, 0.0, float(h))     # 暗幕(stage.dark 透过)
-    base.setColorAt(0.0, QColor("#0e1118"))
-    base.setColorAt(1.0, QColor("#171c26"))
+    # 暗幕(stage.dark 透过)。条形态(高30px)整体提亮一档:全黑幕+粗描边
+    # 在细条上读作『黑色外框』(用户反馈 2026-09-29),改亮灰蓝幕+细描边
+    base = QLinearGradient(0.0, 0.0, 0.0, float(h))
+    if form in ("h", "v"):
+        base.setColorAt(0.0, QColor("#2a3140"))
+        base.setColorAt(1.0, QColor("#232a37"))
+    else:
+        base.setColorAt(0.0, QColor("#0e1118"))
+        base.setColorAt(1.0, QColor("#171c26"))
     p.fillPath(path, base)
     p.save()
     p.setClipPath(path)
@@ -371,9 +377,10 @@ def _liquid_bg(p, win, form) -> QPainterPath:
         g.setColorAt(0.0, QColor(cr, cg, cb, ba))
         g.setColorAt(1.0, QColor(cr, cg, cb, 0))
         p.fillRect(0, 0, w, h, g)
-    # 白玻璃面板(:107 150deg 白.16→白.05 的对角近似)
+    # 白玻璃面板(:107 150deg 白.16→白.05 的对角近似)。card 的中段 alpha
+    # 在 hero 区横穿出一条亮带(用户截图『很多地方看不到/横线』),41→24
     ov = QLinearGradient(0.0, 0.0, w * 0.6, float(h))
-    ov.setColorAt(0.0, QColor(255, 255, 255, 41))
+    ov.setColorAt(0.0, QColor(255, 255, 255, 41 if form is None else 34))
     ov.setColorAt(1.0, QColor(255, 255, 255, 13))
     p.fillRect(0, 0, w, h, ov)
     p.restore()
@@ -387,13 +394,24 @@ def _deco_liquid(p, win, form) -> None:
     # 药丸底(:119 白.14+边白.2,圆角 14;三处定稿微调之二:玻璃 grid 本就
     # 3 列×2 带,药丸底锚六格几何即得 HTML 3×2 等大药丸观感)。k 行 9px
     # ≈12h + 纵距 4 → up=19;横向外扩只 1px —— 列距 8,再宽即与邻列药丸
-    # 相互压线(首版 dx=9 实测压线,2026-09-29 渲染矩阵对版修正)
+    # 相互压线(首版 dx=9 实测压线,2026-09-29 渲染矩阵对版修正)。
+    # 第二轮修正(用户截图 2026-09-29『显示很多地方看不到』):up=19 上探
+    # 越过 k 行顶侵入 hero/今日行,真机文字在场时药丸边框压字 —— 改为把
+    # 药丸 clip 进『六格 k/v 联合区域』:先算联合矩形,药丸与它求交,越界
+    # 部分不再画;hero 区从此无药丸元素。
     if form is None:
-        for lb in _card_grid_vs(win):
-            g = _pill_rect(lb, 1, 19, 4)
+        lbs = _card_grid_vs(win)
+        rects = [lb.geometry() for lb in lbs]
+        union = _union(rects)
+        p.save()
+        p.setClipRect(union.adjusted(-1, -16, 1, 2))
+        for lb in lbs:
+            g = _pill_rect(lb, 1, 16, 2).intersected(
+                union.adjusted(-1, -16, 1, 2))
             p.setPen(QPen(QColor(255, 255, 255, 51)))
             p.setBrush(QColor(255, 255, 255, 36))
             p.drawRoundedRect(g, 14, 14)
+        p.restore()
     elif form == "h":
         for lb in _hbar_group_labels(win):
             g = lb.geometry().adjusted(-3, -3, 3, 3)   # 段距 10,±3 不压邻段
@@ -407,8 +425,12 @@ def _deco_liquid(p, win, form) -> None:
             p.setBrush(QColor(255, 255, 255, 36))
             p.drawRoundedRect(g, 10, 10)
     p.restore()
-    _stroke(p, win, {"card": 26, "h": 18, "v": 22}[form or "card"],
-            QColor(255, 255, 255, 64))                  # :108 border 白.25
+    if form in ("h", "v"):
+        # 条形态描边:白.25/1px 在提亮底上仍显框线,降白.16(用户『去掉
+        # 黑色底框』—— 暗幕已提亮,描边只留玻璃缝感)
+        _stroke(p, win, {"h": 18, "v": 22}[form], QColor(255, 255, 255, 41))
+    else:
+        _stroke(p, win, 26, QColor(255, 255, 255, 64))   # :108 border 白.25
 
 
 # ══════ ⑤ 工业机柜(HTML :141-173):金属渐变 + 螺丝/绿灯 + readout/铭牌 ══════
