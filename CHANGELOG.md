@@ -1,5 +1,145 @@
 # Changelog
 
+## v0.9.0 (未发布) — Live 实时刷新(Claude 增量解析+watcher)/ 三条热点 SQL 根治 / ZCode db 文件闸门(空闲 0 SQL)
+
+- **Live 实时刷新 + 引擎性能根治(2026-09-30,spec=v0.9 两需求:①Claude jsonl
+  增量解析+引擎侧 watcher;②三条每秒热点 SQL P2 根治)**。全部统计口径
+  (今日/金额/燃速/全局吞吐加权/THROUGHPUT_WINDOW_S=10s/chars_per_token
+  校准/12 点 1s sparkline 采样)一字不动;唯一例外是口径表『会话跟随』行
+  补齐 `sess_dwf-` 事实描述(README,非口径变更)。只读红线全程保持
+  (connect_ro mode=ro / jsonl 只读,不写 ZCode/Claude 任何文件):
+- **T1 `_global_part_tps` 根治:4000 行窗口 → 水位走读+rowid IN 定点探针**
+  (registry open#28:改前该 SQL 每秒一跑、全程持 snap_lock,评审两轮
+  80.70/45.95ms,终版复测 87.31ms——`GROUP BY session_id` 把窗口击穿成
+  part 全索引扫描)。常态三步:①水位 `COALESCE(MAX(rowid),0)`(实测
+  0.003ms)——MAX<存量水位=删顶行/VACUUM 回退,转 `_rebuild_part_
+  baselines` 双基线全量重建(`_gpart` 窗口基线 + `_session_last_rowid`
+  全量 GROUP BY,两者都是本职责,T3 依赖);②走读 `rowid>? ORDER BY
+  rowid` 只读新行(实测 20 行 0.033ms,成本随新行数线性)喂 T3 缓存;
+  ③`rowid IN(…)` 定点探针重读每会话最新 text 行长度(INTEGER PRIMARY
+  KEY 点查,实测 0.043ms)。**为什么必须探针**:真实库 213,694/434,238
+  part 行 `time_updated>time_created` —— 流式输出在既有 rowid 内追加
+  文本,纯『只看新行』会让流式贡献静默归零(口径级回归),in-place 增长
+  只有定点重读可见。**N4(v0.8.0 字面冲突消解)**:『近 4000 行窗口』
+  实现细节升级为水位+定点重读,**窗口外行的 in-place 增长恢复可见**
+  (旧 4000 行窗口外静默增长的会话从此被跟踪,对齐 README『瞬时速度=所有
+  会话 part 流式增长』的全局吞吐字面语义;v0.8.0 条目的『近 4000 行窗口
+  GROUP BY』字样是当时的实现描述,语义未变)。差分逻辑逐字保留;B5'
+  裁剪策略钉死:`_sid_text_rowid` 与 `_gpart_last` 同一裁剪点同步按
+  seen+64 裁剪(仅喂探针,会话静默即无贡献,防 IN 变量数随历史会话无界
+  涨),`_session_last_rowid` 刻意全量不裁剪(T3 菜单正确性依赖全历史,
+  量级=会话数千级×几十字节≈几十 KB,类注释写明);B3:水位/走读/探针
+  三条 SQL 各自函数内自吞 sqlite3.Error(fixture 无 data 列的回归环境
+  _gtps_hist 照常 append 0.0),绝不穿透 _poll_stats
+- **T2 `_global_completed_tps` 根治:completed_at 全表扫 → started_at
+  索引前置 + 行缓存衰减**(registry open#29:改前每秒全表 SCAN
+  model_usage,评审两轮 39.70/33.71ms,终版复测 35.44ms)。取数与加权
+  拆分:行集缓存 `_completed_rows` 由 `_refresh_completed_rows` 整批换行,
+  **主查询与缓存刷新同用 `started_at>=cut-2h AND completed_at>=cut`
+  前置形态**(EXPLAIN=SEARCH model_usage_started_model_idx,终版实测
+  0.20ms,行集与旧形态等价 366==366;**B2' 已否决的字面缓存刷新形态**:
+  completed_at-only 单前置,评审实测 41.37ms/次、终版复测 36.20ms、
+  EXPLAIN=SCAN model_usage —— 活跃期闸门每拍开时等于每秒一条全表扫,
+  比改前还慢,留作反面教材)。每秒 tick 用缓存+当前 now 重算重叠加权
+  (加权循环逐字同式)—— 供闸门关闭期衰减仍推进;`COMPLETED_LOOKBACK_MS
+  =2*3600_000` 的依据:本库 MAX(completed_at-started_at)=MAX(duration_ms)
+  =3,852,050ms=64.2min,>2h 行数=0,2h 为约 2 倍裕量。设计边界(B3',
+  常量注释声明):`started_at<cut-2h 且 completed_at>=cut` 的行(单次
+  请求持续>2h)被排除 —— 本库实测 0 行超 2h,属有意收窄而非回归,
+  单测构造该行断言其被排除
+- **T3 `recent_sessions` 缓存化:UI 线程菜单暖读 ≤1ms**(registry
+  open#30:改前右键菜单构建在 UI 线程对 part 全覆盖索引扫描+TEMP B-tree
+  排序,评审两轮 67.80/54.88ms,终版复测 61.37ms,随 part 只增不减无界
+  恶化;DESC LIMIT 窗口对深埋 90,184 行的第 8 会话无解,窗口 GROUP BY 版
+  亦 40.6-58.9ms 不根治)。数据源=T1 维护的 `_session_last_rowid`(启动
+  基线=run() 序幕 `_poll_stats` 首拍的全量重建);菜单=独立 `_session_lock`
+  下 dict 快照拷贝 → Python 过滤 `sess_subagent*`/`sess_dwf-*`(与旧 SQL
+  同红线)→ rowid 倒序取前 limit → `session.id IN(…)` 批查 title(实测
+  0.019ms)→ `[:16]` 截断不变;缓存冷回退跑一次旧 SQL(逐字保留)并回填。
+  签名/返回形状不变,app.py 调用点零改动。锁序纪律(N3):唯一合法顺序
+  snap_lock→_session_lock,菜单读侧只取 _session_lock、严禁反向;单测
+  N3 断言菜单/回填/走读三路径 snap_lock acquire==0
+- **T4 ZCode db 文件闸门 + today0 时间闸 + `_wake` 事件唤醒:空闲 0 SQL/
+  0 持锁**。`_poll_stats` 拆两段 —— **闸门管辖段**(B4' 清单=_db_loop
+  tick 内经 _connect 的全部 ZCode DB SQL:会话 sums/speed 分组/rlast/
+  today/cost/burn + T2 换行 + T1 水位走读探针 + ZCodeSource.today_usage
+  分量 + `_check_activity` 水位 + `_poll_new_completed` 基线;db 未变 ⇔
+  水位/基线必不变,跳过无损,quota 活动信号无损)与**尾段**
+  (today_by_source 非 DB 分量、T2 缓存衰减重算、_gtps_hist 采样、push
+  判定)每 tick 照跑。闸门=db.sqlite 与 db.sqlite-wal 各一次 os.stat 的
+  (st_mtime_ns,st_size) 比较,两文件均未变才关;-shm 不进闸门(读者
+  假阳性);stat OSError(文件不存在:DELETE 模式/首启)视为维持原状。
+  **闸门只管 ZCode DB SQL 段** —— 事件路径(_switch_session/
+  _refresh_session/_on_request_done/图表 fetch_*)全量执行不受闸门
+  管辖,`_refresh_session→_latest_session` 每 0.5s 一条既存查询同样
+  豁免(实测 0.011ms)。**B1' 两语义**:①today0_ms() 时间闸 ——
+  today0 较上次开闸值变化(跨午夜)强制开闸一拍,today_tokens/
+  today_cost/ZCode 源分量随之刷新,**午夜清零口径保持**(顺带修复现状
+  『空闲期跨午夜 UI 今日数不刷新』的潜伏缺口);②燃速 60min 滑窗
+  **空闲冻结容忍+活动自愈** —— 关门期 burn_* 保持上次开闸值,活动恢复
+  (闸门开)即自愈;与现状 UI 表现一致(空闲期无 push,UI 本就显示旧值),
+  属声明语义而非回归。**note1(粒度级声明)**:闸门重开首拍 part 差分
+  的 Δt 含空闲期,过渡拍 tps 被稀释低估一拍、下拍恢复 —— 与 1s 采样
+  同粒度级的差异,不特殊处理。_wake=threading.Event(watcher 置位):
+  `_db_loop` 的 `stop_flag.wait(POLL_DB)` 改 `_wake.wait(POLL_DB)`,
+  唤醒轮立即执行(SQL 段仍由闸门+时间闸独立判定);stop() 双 set,
+  停机不等满周期。push 收紧为『变化即 push』:事件唤醒轮或开闸轮易变
+  字段(_volatile_fp 指纹)较上拍有变才 push,值未变不 push,关门轮
+  永不 push
+- **T5 ClaudeSource 增量偏移解析(registry open#19 关闭,O(新增字节))**:
+  `_file_cache` 条目扩为 {mtime_ns,size,offset,entries,seen_mid,
+  date_agg},追加只 seek(offset) 解析新增字节(未终止残行不解析、
+  offset 不越过它,防同一行计两次);全局 mid→owner 所有权映射(N1
+  裁决):tail 追加首 claim 者胜;整文件重解析事件(size 收缩=截断/
+  轮转、size 不变 mtime 变=原地重写)→ 作废旧贡献,按 sorted(path)
+  确定性序重建归属与 date_agg(os.walk 序从不确定,换 sorted 序属有意
+  变更);today/daily 聚合=各文件 date_agg 求和 O(文件数);15s SCAN_TTL
+  保留作 watcher 缺位时的正确性兜底;类级锁保护全部缓存。note2(注释
+  声明):纯追加事件序与重解析 sorted 序在同 mid 跨文件且 usage 不同时
+  归属可能不同 —— 继承现实现 os.walk 序非确定的等价风险,极端 fork
+  场景,不改。解析/跳过/补齐口径与去重顺序一字未动
+  (test_claude_source_synthetic 钉死)。本机基线:6 jsonl/4343 行/
+  11.4MB,冷 71/101.9ms → warm 0.08/0.16ms;设计按 O(新增字节) 保证
+- **T6 引擎侧 Claude watcher 线程(watchdog 可选依赖,缺它=慢不死)**:
+  data_engine 拥有 daemon watcher(红线:sources 不 import data_engine),
+  与 _tail/_db/_part 三循环同批启动;递归监听 ~/.claude/projects,
+  .jsonl 事件入队(handler 只入队绝不解析)→ 0.1s 防抖合并 →
+  `ClaudeSource.note_changes` 增量摄取 → `_wake.set()` 提前出数。
+  **降级语义(声明)**:watchdog 不随 exe 默认打包,`pip install
+  watchdog` 后打包才带;watcher 任何死亡/缺位(缺依赖、目录不存在、
+  启动失败、循环体异常落 zm_debug.log 后退出)都只回退 15s TTL ——
+  **数据永不错只是慢**,引擎三循环与 quota 调度照跑(watcher 是加速器
+  不是承重结构,P1 家族结构性防御);--verify/ZM_NO_STATE 守卫环境
+  不启动。单测注入式(不依赖 watchdog 安装、不发真实 FS 事件)
+- **T0/T7 性能探针 `findings/perf_probe.py` 与终版复测对照**(只读真实库,
+  best-of-5,2026-09-30 终版跑,part 436,967 行/model_usage 56,873 行):
+  - SQL1 流式贡献:改前 80.70/45.95ms(均值 63.3,终版复测 87.31)→
+    **现形态方法整链 0.87ms**(裸 SQL:水位 0.003 + 走读 0.08 + IN 探针
+    0.02;整链含 3 次只读连接建立,连接开销 ~0.25ms×3 已是主导项)
+  - SQL2 完成贡献:改前 39.70/33.71ms(均值 36.7,终版复测 35.44)→
+    **现形态方法整链 0.00ms**(暖读走 T2 行缓存零 SQL;缓存换行裸 SQL
+    0.20ms,EXPLAIN=SEARCH model_usage_started_model_idx)
+  - SQL3 会话菜单:改前 67.80/54.88ms(均值 61.3,终版复测 61.37)→
+    **现形态方法整链 0.84ms**(title 批查裸 SQL 0.01ms)≤1ms 验收线
+  - _poll_stats 整链(开闸拍,snap_lock 内):改前 224-261ms →
+    **67.33ms**(剩余 55.24ms 为会话聚合段 sums+speed,见下条 open 项,
+    本批 nonGoals 不修)
+  - 空闲窗口(60 拍):本机 ZCode CLI 以 ~1Hz 心跳写 db.sqlite-wal,
+    『db 静止的空闲窗』在本观测环境不存在 —— 60 拍全部正确判『开』
+    (每拍 wal 确实变化,12.6 条 SQL/拍合法),0 错误关批;『关批 0
+    SQL』行为由闸门结构保证(db 未变⇔水位/基线必不变,跳过无损)
+    并以单测冻结库场景验证。例外口径(探针头部恒声明):
+    `_refresh_session→_latest_session` 每 0.5s 一条既存查询(实测
+    0.011ms)与 today0 时间闸强制开闸拍不计入『空闲 0』
+- **测试**:T1 水位/走读/探针新旧全等+手算对账+删顶行回退双重建+
+  IN 探针 miss 裁剪+B5' 同步收缩断言;T2 合成库手算对账+边界(跨窗
+  长请求/NULL/零输出)+B3' 设计边界断言(>2h 行被排除)+冻结缓存
+  连续 tick 0 SQL 且逐拍==旧形态+坏库吞错;T3 新旧输出全等(顺序+
+  [:16])+锁序 N3 三路径 snap_lock acquire==0;T5 增量==从零重解析
+  全等+同 mid 首行+N1 跨文件交互+截断/原地重写不双计+跨午夜;T6
+  注入式 watcher(合成事件触发 _wake、import 失败降级、异常退出引擎
+  照跑)
+
 ## v0.8.0 (未发布)
 
 - **皮肤系统:九款换肤即时切换+持久化(2026-09-28,spec=`design/skins-8x3.html`

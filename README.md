@@ -98,7 +98,7 @@ python src/zcode_meter/__main__.py cost --days 7   # 脚本直跑形态（仓库
 | 计费块（5h 页签） | 按 5 小时窗聚合 `completed` 的 **query_source 全部** in+out（同今日 token 口径）。块界对齐：已配置 quota 时按 `nextResetTime−k×5h`（平台真实计费窗，黄色高亮=当前活动块）；未配置时回退锚点=最早 completed 请求时刻，**此时块界为示意、非平台真实计费窗** |
 | 套餐剩余（quota 轨） | GET `open.bigmodel.cn/api/monitor/usage/quota/limit`（只读，**事件驱动+节流**：ZCode 有新请求完成即视为「有消耗」触发刷新，活跃期（过去 1h 内有请求）常态最长 3 分钟一次，静默期（>1h 无任何请求）暂停查询，最小间隔 60s 硬闸；启动/设置界面改 key 后立即查一次；可在设置窗改为**固定间隔轮询**，改档后静默期不再暂停，见配置节 `quota_refresh`）：`percentage` 为**已用**百分比，剩余 = 100−percentage，取 TOKENS_LIMIT 中 `number==5` 的条目即 5h 计费窗。只有剩余% 需要网络刷新；重置倒计时纯本地每分钟递减、不发任何请求。旁注查询时间（如「· 3分钟前」），静默期数据冻结属预期、以新鲜度标注为准（固定间隔档按设置间隔刷新、无静默冻结）。接口为社区逆向的非公开文档接口，结构变化时该行不显示（首跑失败会把响应片段落 `zm_debug.log` 便于修） |
 | 预算告警（双轨） | quota 轨 = 套餐 5h 窗剩余%；按量轨 = (日预算−今日花费 ZCode 口径) ÷ 日预算。默认阈值剩余 20% / 10% 各提醒一次，**同级别同日只提醒一次**、跨日自动重置（状态存 `zm_alerts.json`），经托盘气泡派发 |
-| 会话跟随 | 按 `part` 表最新写入行判定（排除 `sess_subagent_*`）；自动（最近活跃）或手动固定 |
+| 会话跟随 | 按 `part` 表最新写入行判定（排除 `sess_subagent_*` 与 `sess_dwf-*`——子代理/工作流会话）；自动（最近活跃）或手动固定。菜单列出最近会话走引擎侧 `sid→rowid` 缓存（暖读 ≤1ms，冷时回退一次全量 SQL） |
 | 按天图表 | `completed` **全来源** in+out（同今日口径），本地午夜天界；柱身第二行为当日 ¥（按刊例价，同今日金额口径，含未知模型时为下限）。**历史聚合防御：仅统计最近 10 万行，超出上限的更早记录不计（当前约 78 天用量）**——历史图表查询（按天/计费块/按会话）同受此防线保护，以防未来"图表变小"被误报为 bug |
 | 按会话图表 | 该会话 `main_turn`、不含 subagent 会话（与卡片逐字对齐；**三图口径不同，合计对不上账属预期，勿当 bug**） |
 | 位置记忆 | 退出/形态变化时保存 x/y/贴边方向到 `zm_state.json`；恢复时按屏幕可视区夹取（分辨率变化/拔显示器后位置失效会被夹回，完全离屏则回主屏默认位） |
@@ -185,6 +185,7 @@ pyinstaller --onefile --noconsole --name zcode-meter --paths src --exclude-modul
 
 - `--paths src` 必须带上:PyInstaller 静态分析要能解析 `zcode_meter` 包,缺了会打包成功但 exe 一启动即 `ImportError`
 - 入口文件为 `src/zcode_meter/app.py`
+- **watchdog 为可选依赖**(v0.9 起引擎侧 Claude jsonl watcher 使用,`pip install watchdog` 后再打包才带入;缺它 exe 仍完全可用 —— watcher 在函数内 import,`ImportError` 时落一条 dbg 后优雅降级,Claude 行回退既有的 15s TTL 扫描节奏,**数据永不错只是慢**;不装它打包则省一个运行时依赖)
 
 产物：`dist/zcode-meter.exe`。体积量级 **约 40–70MB**（PySide6 运行时打包的正常水平，与"轻量"无关）。
 
@@ -209,6 +210,10 @@ zcode-meter/
 │   ├── data_engine.py   # 数据层(无 UI 依赖):日志tail + SQLite轮询 + 流式估算 + 会话跟随
 │   │                    #   + 价格表/金额 + quota 轮询线程 + 预算告警状态机
 │   │                    #   + 5h 计费块(QuotaMonitor 仅由 UI 实例化)
+│   │                    #   + ZCode db 文件闸门+today0 时间闸(db 未变跳过
+│   │                    #   空闲期 SQL 段,跨午夜强制开闸保清零口径;事件路径
+│   │                    #   不受管辖)+ _wake 事件唤醒与 Claude jsonl watcher
+│   │                    #   调度(watchdog 可选,缺它回退 15s TTL 扫描)
 │   ├── sources/         # 用量源包(Provider 配置化):base=UsageSource 接口
 │   │                    #   zcode=ZCode 源 + ZCODE_DIR/DB_PATH/connect_ro/today0_ms
 │   │                    #   唯一定义 / claude=Claude 源;__init__.discover_sources()

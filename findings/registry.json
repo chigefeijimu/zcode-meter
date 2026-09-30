@@ -77,10 +77,6 @@
       "date": "2026-09-29"
     },
     {
-      "title": "(mtime,size) 变化即整文件从字节 0 重解析,重扫成本 O(文件大小) 且在引擎线程 snap_lock 内执行;改增量 tail 解析可降为 O(新增字节)",
-      "date": "2026-09-29"
-    },
-    {
       "title": "today_usage 每秒与 _poll_stats 的今日用量 SQL 逐字同文双跑(同 tick 同 WHERE 两条聚合),且 UI 在仅一个源可用时根本不渲染该结果 —— 每秒一次纯冗余查询+连接开关",
       "date": "2026-09-29"
     },
@@ -110,18 +106,6 @@
     },
     {
       "title": "paintEvent docstring 宣称『deco 前置 layout().activate()』但函数体没有任何 activate() 调用 —— 注释描述的修复机制不存在,误导后来者调试其自称已修的『3 个竖条药丸+横杠残影』类首帧旧几何问题",
-      "date": "2026-09-30"
-    },
-    {
-      "title": "_global_part_tps 的 4000 行窗口被查询计划击穿:GROUP BY session_id 诱发 part 表全索引扫描(425,843 行),实测 70-96ms,每 POLL_DB=1s 跑一次且全程持 snap_lock —— 注释自述的『扫近 4000 行窗口防全表 GROUP BY』(1224 行)与真实计划相反",
-      "date": "2026-09-30"
-    },
-    {
-      "title": "_global_completed_tps 的 completed_at>=? 谓词无索引可用,每秒全表 SCAN model_usage(54,890 行,实测 50-60ms);整个 _poll_stats SQL 批每秒 224-261ms 全程持 snap_lock,引擎 ~25% 时间在锁内扫库,UI 线程会话切换(同一把锁)直接撞上",
-      "date": "2026-09-30"
-    },
-    {
-      "title": "recent_sessions 在 UI 线程(右键菜单构建,app.py:2157)对 part 表做全覆盖索引扫描 + 临时 B-tree 排序,无任何行数窗口,实测 76-150ms 且随 part 表(只增不减)无界增长 —— 同文件 _global_part_tps 尚知用 4000 行窗口防全表 GROUP BY,本查询同表同形态却无闸",
       "date": "2026-09-30"
     },
     {
@@ -182,6 +166,10 @@
     },
     {
       "title": "connect_ro 的 URI 编码修复(fixed 注册表项)未清扫同包内 legacy_tk 的同形代码:该文件自带 ZCODE_DIR/DB_PATH 重复定义 + 原生路径直拼 `file:{DB_PATH}?mode=ro`,刚修复的 '#'/'%' 静默清零 bug 原样存活于随包分发的可运行文件中",
+      "date": "2026-09-30"
+    },
+    {
+      "title": "session_sums/group_speed 两条会话聚合 SQL 走 model_usage_query_source_idx 全 main_turn 行过滤后聚合,评审两轮 48.05+46.63 / 58.70+62.90ms(2026-09-30 终版复测 28.09+27.15ms,段合计 55.2~121.6ms 随库波动),每秒一拍全程持 snap_lock —— 与 v0.9 批 T1/T2/T3 同源(索引前置/水位增量/缓存化),spec nonGoals 钉死本批不修,建议下轮同法治治",
       "date": "2026-09-30"
     }
   ],
@@ -253,6 +241,31 @@
       "title": "_claude_ts_local 只捕 ValueError,而 astimezone() 对 datetime 边界日期抛非 ValueError 异常(Windows 实测 OSError [Errno 22]):一行极端时间戳的 assistant 行让整个 jsonl 文件全部用量清零,且空结果按 (mtime,size) 写入类级 _file_cache 永久缓存 —— 静默数据错误,违背本函数自己『坏值返回 None、逐行跳过』的契约",
       "date": "2026-09-30",
       "fix": "except ValueError 扩为 except (ValueError, OSError, OverflowError)(claude.py:29,注释 30-37):Windows CRT localtime_s 对边界日期抛 OSError [Errno 22]、POSIX+东八区 fromutc 溢出抛 OverflowError,均非 ValueError 子类;坏时间戳行恢复『返回 None → 行级跳过』契约,不再穿透到 _parse_file 文件级 except OSError 把同文件好行一并清零并按 (mtime,size) 永久缓存空结果"
+    },
+    {
+      "title": "Live 实时刷新:监听本地会话文件变化增量解析并推送面板(fs watch)",
+      "date": "2026-09-30",
+      "fix": "v0.9 落地三件套:①ClaudeSource 增量偏移解析(O(新增字节),同批关 open#19);②引擎侧 daemon watcher 线程(watchdog 可选依赖、函数内 import,缺它/目录不存在/启动失败/循环体异常一律 dbg+降级回退 15s TTL——数据永不错只是慢,引擎三循环照跑;.jsonl 事件入队→0.1s 防抖合并→note_changes→_wake 置位);③ZCode db 文件闸门+today0 时间闸+_wake 事件唤醒(db.sqlite/-wal stat 指纹两文件均未变才跳过空闲期 SQL 段,跨午夜强制开闸保今日清零口径;变化即 push)"
+    },
+    {
+      "title": "(mtime,size) 变化即整文件从字节 0 重解析,重扫成本 O(文件大小) 且在引擎线程 snap_lock 内执行;改增量 tail 解析可降为 O(新增字节)",
+      "date": "2026-09-30",
+      "fix": "v0.9 T5 增量偏移解析:缓存条目扩为 {mtime_ns,size,offset,entries,seen_mid,date_agg},stat 未变 O(1) 短路、增长只 seek(offset) 尾读新增字节(未终止残行不越过,防双计);全局 mid→owner 所有权映射(N1)tail 首 claim 者胜;截断/原地重写才整文件重解析并按 sorted(path) 确定性序重建归属与 date_agg;today/daily=各文件 date_agg 求和 O(文件数);类级锁保护;15s SCAN_TTL 保留作 watcher 缺位兜底;解析/跳过/补齐口径与去重顺序一字未动(claude.py)"
+    },
+    {
+      "title": "_global_part_tps 的 4000 行窗口被查询计划击穿:GROUP BY session_id 诱发 part 表全索引扫描(425,843 行),实测 70-96ms,每 POLL_DB=1s 跑一次且全程持 snap_lock —— 注释自述的『扫近 4000 行窗口防全表 GROUP BY』(1224 行)与真实计划相反",
+      "date": "2026-09-30",
+      "fix": "v0.9 T1 水位走读+rowid IN 定点探针:水位 COALESCE(MAX(rowid),0)(实测0.003ms)守卫删顶行/VACUUM 回退(双基线全量重建);走读 rowid>? 只读新行喂 T3 缓存;rowid IN 点查重读每会话最新 text 行长度(in-place 增长可见,真实库 213,694/434,238 行 time_updated>time_created);真实库 80.70/45.95ms→方法整链 0.87ms(裸 SQL 合计 0.10ms:0.003+0.08+0.02);三 SQL 各自函数内自吞 sqlite3.Error;_sid_text_rowid 与 _gpart_last 同步 seen+64 裁剪、_session_last_rowid 全量保留(data_engine.py _global_part_tps)"
+    },
+    {
+      "title": "_global_completed_tps 的 completed_at>=? 谓词无索引可用,每秒全表 SCAN model_usage(54,890 行,实测 50-60ms);整个 _poll_stats SQL 批每秒 224-261ms 全程持 snap_lock,引擎 ~25% 时间在锁内扫库,UI 线程会话切换(同一把锁)直接撞上",
+      "date": "2026-09-30",
+      "fix": "v0.9 T2 started_at 前置+行缓存衰减:取数/加权拆分,_refresh_completed_rows 用 started_at>=cut-2h AND completed_at>=cut 前置(EXPLAIN=SEARCH model_usage_started_model_idx,实测 0.20ms;字面 completed_at-only 缓存刷新形态 41.37ms 已否决留作反面教材),每 tick 用缓存+当前 now 重算重叠加权供闸门关闭期衰减照推(冻结 db 下与旧每秒重查逐拍全等);加权/窗口语义一字不动;39.70/33.71ms→整链 0.00ms(暖读零 SQL);_poll_stats 整链 224-261→67.33ms(剩余为会话聚合段 open 项)"
+    },
+    {
+      "title": "recent_sessions 在 UI 线程(右键菜单构建,app.py:2157)对 part 表做全覆盖索引扫描 + 临时 B-tree 排序,无任何行数窗口,实测 76-150ms 且随 part 表(只增不减)无界增长 —— 同文件 _global_part_tps 尚知用 4000 行窗口防全表 GROUP BY,本查询同表同形态却无闸",
+      "date": "2026-09-30",
+      "fix": "v0.9 T3 缓存读:数据源=引擎维护的 _session_last_rowid(T1 水位走读每秒增量+首拍/回退全量重建),菜单=独立 _session_lock 快照拷贝+Python 过滤 sess_subagent*/sess_dwf-*+rowid 倒序+session.id IN 批查 title(0.019ms)+[:16] 不变;冷缓存回退旧 SQL 一次并回填;锁序单向 snap_lock→_session_lock(N3,单测断言三路径 snap_lock acquire==0);签名/返回形状不变 app.py 零改动;67.80/54.88ms→暖读 0.84ms≤1ms"
     }
   ],
   "proposed": [
@@ -326,10 +339,6 @@
     },
     {
       "title": "周报/月报 recap:活跃时段、烧钱分布与环比的叙事性摘要",
-      "date": "2026-09-30"
-    },
-    {
-      "title": "Live 实时刷新:监听本地会话文件变化增量解析并推送面板(fs watch)",
       "date": "2026-09-30"
     },
     {

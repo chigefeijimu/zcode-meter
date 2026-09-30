@@ -449,6 +449,285 @@ def test_claude_source_synthetic():
           and src2.today_usage() == 0 and src2.daily_usage(3) == [])
 
 
+def _claude_line_factory():
+    """T5 ClaudeSource 增量解析单测共用:本地时间→Claude jsonl ISO-UTC
+    时间戳与行构造器(与 test_claude_source_synthetic 同形态)。mid 前缀
+    由各测试自带(inc_/rep_/conc_)—— 类级缓存跨实例共享,跨测试复用
+    同名 mid 会跨临时目录串扰归属。"""
+    import datetime as dtmod
+    import json as jsonmod
+    t0 = dtmod.datetime.now().astimezone().replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    t_today = t0 + dtmod.timedelta(minutes=30)       # 本地刚过午夜
+    t_yday = t0 - dtmod.timedelta(milliseconds=1)    # 本地昨天最后一毫秒
+
+    def iso(local_dt):
+        return (local_dt.astimezone(dtmod.timezone.utc)
+                .strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z")
+
+    def line(ts, mid, i, cr, cc, o, bad_ts=False, side=False, typ="assistant"):
+        obj = {"type": typ, "timestamp": "not-a-timestamp" if bad_ts else iso(ts),
+               "message": {"id": mid, "usage": {
+                   "input_tokens": i, "cache_read_input_tokens": cr,
+                   "cache_creation_input_tokens": cc, "output_tokens": o}}}
+        if side:
+            obj["isSidechain"] = True
+        return jsonmod.dumps(obj, ensure_ascii=False)
+
+    return line, t_today, t_yday
+
+
+def test_claude_source_incremental_append():
+    """T5 ClaudeSource 增量偏移解析(关 registry#19):追加只解析新增字节
+    且与『从零重解析』全等;同 mid 多行只计首行(含跨追加批次);坏
+    JSON/坏时间戳追加行跳过;未终止残行不预计、补全换行后一次计入;
+    SCAN_TTL 兜底(watcher 死亡 → 纯 _scan 尾读也能吃到追加);
+    跨午夜按本地天界切换。"""
+    import datetime as dtmod
+    import os as osmod
+    import shutil
+    import tempfile
+    from zcode_meter.data_engine import ClaudeSource
+
+    line, t_today, t_yday = _claude_line_factory()
+    today_iso = dtmod.date.today().isoformat()
+    yday_iso = (dtmod.date.today() - dtmod.timedelta(days=1)).isoformat()
+
+    def write_all(path, rows, mode="w"):
+        with open(path, mode, encoding="utf-8") as f:
+            f.write("".join(r + "\n" for r in rows))
+
+    root = tempfile.mkdtemp(prefix="zm_claude_inc_")
+    root2 = None
+    try:
+        proj = osmod.path.join(root, "p1")
+        osmod.makedirs(proj)
+        f1 = osmod.path.join(proj, "s1.jsonl")
+        write_all(f1, [
+            line(t_today, "inc_a", 100, 10, 5, 50),   # in=115 out=50 → 165
+            line(t_today, "inc_a", 100, 10, 5, 50),   # 同 mid 复行 → 只计首行
+            line(t_yday, "inc_b", 200, 0, 0, 30),     # 本地昨天 230
+        ])
+        src = ClaudeSource(projects_dir=root)
+        src.SCAN_TTL = 0.05                           # 实例级覆盖,免 15s 等待
+        check("冷解析今日含 cache 补齐", src.today_usage() == 165,
+              str(src.today_usage()))
+        daily = dict(src.daily_usage(2))
+        check("冷解析昨日键", daily.get(yday_iso) == 230, str(daily))
+
+        # ---- 追加(watcher 路径):note_changes 增量尾读 ----
+        write_all(f1, [
+            line(t_today, "inc_c", 7, 0, 0, 3),       # +10
+            "{not json",                              # 坏 JSON 行跳过
+            line(t_today, "inc_c", 7, 0, 0, 3),       # 同 mid 跨批次再追加 → 不双计
+            line(t_today, "inc_badts", 9, 0, 0, 9, bad_ts=True),  # 坏时间戳跳过
+            line(t_yday, "inc_eve", 1, 0, 0, 1),      # 本地昨天午夜前 1ms → +2 归昨天
+            line(t_today, "inc_morn", 2, 0, 0, 2),    # 今天(午夜后)→ +4
+        ], mode="a")
+        src.note_changes([f1])
+        got = src.today_usage()
+        check("增量追加后今日值", got == 165 + 10 + 4, str(got))
+        daily = dict(src.daily_usage(2))
+        check("增量跨午夜天界",
+              daily.get(yday_iso) == 230 + 2 and daily.get(today_iso) == 179,
+              str(daily))
+
+        # ---- 与从零重解析全等:新目录放最终内容,冷实例聚合必须相等 ----
+        root2 = tempfile.mkdtemp(prefix="zm_claude_inc2_")
+        proj2 = osmod.path.join(root2, "p1")
+        osmod.makedirs(proj2)
+        with open(f1, "rb") as a, open(osmod.path.join(proj2, "s1.jsonl"), "wb") as b:
+            b.write(a.read())
+        src2 = ClaudeSource(projects_dir=root2)
+        check("增量==从零重解析(今日)",
+              src2.today_usage() == src.today_usage(),
+              f"{src2.today_usage()} vs {src.today_usage()}")
+        check("增量==从零重解析(按天)",
+              dict(src2.daily_usage(30)) == dict(src.daily_usage(30)))
+
+        # ---- 残行不预计:追加未终止的行 → 不计;补全换行 → 一次计入 ----
+        with open(f1, "a", encoding="utf-8") as f:
+            f.write(line(t_today, "inc_partial", 5, 0, 0, 5))   # 无换行残行
+        src.note_changes([f1])
+        check("未终止残行不预计", src.today_usage() == 179, str(src.today_usage()))
+        with open(f1, "a", encoding="utf-8") as f:
+            f.write("\n")                                       # 补全
+        src.note_changes([f1])
+        check("残行补全后一次计入", src.today_usage() == 189,
+              str(src.today_usage()))
+
+        # ---- SCAN_TTL 兜底:不经 note_changes,等 TTL 过期由 _scan 尾读 ----
+        before = src.today_usage()
+        write_all(f1, [line(t_today, "inc_ttl", 1, 0, 0, 1)], mode="a")
+        time.sleep(0.08)                                        # > SCAN_TTL=0.05
+        check("SCAN_TTL 兜底尾读", src.today_usage() == before + 2,
+              f"{src.today_usage()} expect {before + 2}")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        if root2:
+            shutil.rmtree(root2, ignore_errors=True)
+
+
+def test_claude_source_reparse_rebuild():
+    """T5 N1 裁决:全局 mid→owner 所有权 + 整文件重解析的确定性重建。
+    ①共享 mid 首 claim 者胜(摄取序=sorted(path),a.jsonl 先于 b.jsonl);
+    ②owner 文件截断重写后共享 mid 由幸存文件重新计入,结果==从零重建;
+    ③重写非共享行后归属稳定、只计新值;④原地重写(size 不变 mtime 变)
+    不双计;⑤文件删除(vanished)→ 幸存文件重新计入。每步都与
+    『从零重解析(同 sorted 序)』对账。"""
+    import os as osmod
+    import shutil
+    import tempfile
+    import time as timemod
+    from zcode_meter.data_engine import ClaudeSource
+
+    line, t_today, _t_yday = _claude_line_factory()
+
+    def write_all(path, rows):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("".join(r + "\n" for r in rows))
+
+    def cold(files):
+        """从零重解析对照:全新目录放同样内容,冷实例首扫(摄取序同为
+        sorted(path),与重建序一致)。"""
+        d = tempfile.mkdtemp(prefix="zm_claude_cold_")
+        try:
+            p = osmod.path.join(d, "p2")
+            osmod.makedirs(p)
+            for name, rows in files.items():
+                write_all(osmod.path.join(p, name), rows)
+            return ClaudeSource(projects_dir=d).today_usage()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    root = tempfile.mkdtemp(prefix="zm_claude_rep_")
+    try:
+        proj = osmod.path.join(root, "p2")
+        osmod.makedirs(proj)
+        fa = osmod.path.join(proj, "a.jsonl")
+        fb = osmod.path.join(proj, "b.jsonl")
+        rows_a = [line(t_today, "rep_m", 100, 0, 0, 10),    # 共享 mid(110)
+                  line(t_today, "rep_oa", 1, 0, 0, 1)]      # a 独占(2)
+        rows_b = [line(t_today, "rep_m", 500, 0, 0, 50),    # 同 mid → b 抑制
+                  line(t_today, "rep_ob", 2, 0, 0, 2)]      # b 独占(4)
+        write_all(fa, rows_a)
+        write_all(fb, rows_b)
+        src = ClaudeSource(projects_dir=root)
+        src.SCAN_TTL = 0.05
+        check("共享 mid 首 claim 归 a(sorted 序)",
+              src.today_usage() == 110 + 2 + 4, str(src.today_usage()))
+
+        # ②owner 文件 a 截断重写(更短,不再含 rep_m)→ b 的 rep_m 解禁
+        rows_a = [line(t_today, "rep_oa2", 5, 0, 0, 5)]     # 新 a 只有 10
+        write_all(fa, rows_a)
+        src.note_changes([fa])
+        check("owner 截断重写后 mid 归 b(N1)",
+              src.today_usage() == 10 + 550 + 4, str(src.today_usage()))
+        check("N1 重建==从零重建",
+              cold({"a.jsonl": rows_a, "b.jsonl": rows_b}) == src.today_usage())
+
+        # ③重写 b(rep_m 用量变):归属仍在 b、只计新值(双计则 564+330)
+        rows_b = [line(t_today, "rep_m", 300, 0, 0, 30),
+                  line(t_today, "rep_ob", 2, 0, 0, 2)]
+        write_all(fb, rows_b)
+        src.note_changes([fb])
+        check("重写后归属稳定只计新值",
+              src.today_usage() == 10 + 330 + 4, str(src.today_usage()))
+        check("重写对账==从零重建",
+              cold({"a.jsonl": rows_a, "b.jsonl": rows_b}) == src.today_usage())
+
+        # ④原地重写:size 不变(300→600、30→60 位数相同)、mtime 变 →
+        # 只计新内容;若按追加尾读则旧字节重解析 → 双计可判别
+        timemod.sleep(0.02)                                 # 保证 mtime_ns 前进
+        rows_b = [line(t_today, "rep_m", 600, 0, 0, 60),
+                  line(t_today, "rep_ob", 2, 0, 0, 2)]
+        write_all(fb, rows_b)
+        src.note_changes([fb])
+        check("原地重写不双计", src.today_usage() == 10 + 660 + 4,
+              str(src.today_usage()))
+        check("原地重写对账==从零重建",
+              cold({"a.jsonl": rows_a, "b.jsonl": rows_b}) == src.today_usage())
+
+        # ⑤删除 a(vanished 检测):a 的独占 mid 随之消失,b 不受影响
+        osmod.remove(fa)
+        timemod.sleep(0.08)                                 # > SCAN_TTL,纯 _scan 路径
+        check("删除文件后幸存者重计", src.today_usage() == 660 + 4,
+              str(src.today_usage()))
+        check("删除对账==从零重建",
+              cold({"b.jsonl": rows_b}) == src.today_usage())
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_claude_source_note_changes_concurrency():
+    """T5 并发与 TTL 交互:①note_changes 后 TTL 聚合立即失效(不等
+    SCAN_TTL)—— watch→wake→push Live 链路的取数前提;②watcher 线程
+    note_changes 与引擎线程 today_usage/daily_usage 并发压力,终值==
+    串行期望且全程无异常(类级锁零竞态)。"""
+    import os as osmod
+    import shutil
+    import tempfile
+    import threading
+    import time as timemod
+    from zcode_meter.data_engine import ClaudeSource
+
+    line, t_today, _t_yday = _claude_line_factory()
+
+    def write_all(path, rows, mode="w"):
+        with open(path, mode, encoding="utf-8") as f:
+            f.write("".join(r + "\n" for r in rows))
+
+    root = tempfile.mkdtemp(prefix="zm_claude_conc_")
+    try:
+        proj = osmod.path.join(root, "p3")
+        osmod.makedirs(proj)
+        f1 = osmod.path.join(proj, "s.jsonl")
+        write_all(f1, [line(t_today, "conc_0", 1, 0, 0, 1)])
+        src = ClaudeSource(projects_dir=root)
+        check("并发前冷值", src.today_usage() == 2, str(src.today_usage()))
+
+        # ①TTL 失效:默认 15s TTL 窗口内,note_changes 后必须立即可见
+        write_all(f1, [line(t_today, "conc_1", 2, 0, 0, 2)], mode="a")
+        src.note_changes([f1])
+        check("note_changes 后立即可见(不等 TTL)",
+              src.today_usage() == 2 + 4, str(src.today_usage()))
+
+        # ②并发压力:后台线程模拟 watcher(追加+note_changes),
+        # 主线程模拟引擎轮询(today_usage/daily_usage 各 TTL 读)
+        N = 60
+        errors = []
+
+        def watcher():
+            try:
+                for i in range(N):
+                    write_all(f1, [line(t_today, f"conc_w{i}", 1, 0, 0, 1)],
+                              mode="a")
+                    src.note_changes([f1])
+                    timemod.sleep(0.002)
+            except Exception as ex:      # noqa: BLE001 单测只需收集线程异常
+                errors.append(repr(ex))
+
+        th = threading.Thread(target=watcher, daemon=True)
+        th.start()
+        reads = 0
+        while th.is_alive():
+            try:
+                src.today_usage()
+                src.daily_usage(2)
+                reads += 1
+            except Exception as ex:      # noqa: BLE001
+                errors.append(repr(ex))
+            timemod.sleep(0.001)
+        th.join()
+        expect = 2 + 4 + N * 2
+        check("并发终值==串行期望", src.today_usage() == expect,
+              f"{src.today_usage()} expect {expect}")
+        check("并发全程无异常", not errors, "; ".join(errors[:3]))
+        check("并发期间确有读发生", reads > 10, str(reads))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_parse_quota_payload():
     """quota 载荷解析(社区逆向结构,文档样例):percentage=已用%、
     remaining=100-percentage、number 兼容字符串/数字、选 number==5 的 5h 窗、
@@ -1856,10 +2135,15 @@ def test_fetch_recent_speeds_synthetic():
         now_ms = int(time.time() * 1000)
         # r3(1350tok 全表唯一):ft=now−4s c=now−1s → 区间 [−4,−1]s 完整落
         # 在 10s 窗内,gen=3s,r=450 → 贡献 450×3/10=135.0(其余行 completed_at
-        # NULL 天然被滤)
-        con.execute("UPDATE model_usage SET first_token_at=?, completed_at=?"
-                    " WHERE output_tokens=1350 AND session_id='sess_main'",
-                    (now_ms - 4_000, now_ms - 1_000))
+        # NULL 天然被滤)。T2 起 started_at 一并钉到 now−5s:该行原本继承 mu()
+        # 的今日午夜,本地 02:00 后跑本测试它就成了『单请求>2h』行 —— 落进
+        # started_at 前置取数的设计边界(B3',被有意排除),135 断言会随一天
+        # 中的时刻忽绿忽红;钉成 5s 短请求后 24h 全绿,期望值不变(135 只
+        # 依赖 ft/c/out,与 started_at 无关)。
+        con.execute("UPDATE model_usage SET started_at=?, first_token_at=?,"
+                    " completed_at=? WHERE output_tokens=1350"
+                    " AND session_id='sess_main'",
+                    (now_ms - 5_000, now_ms - 4_000, now_ms - 1_000))
         con.commit(); con.close()
         e._poll_stats()
         expect_overlap = (1350.0 / 3.0) * 3.0 / de.DataEngine.THROUGHPUT_WINDOW_S
@@ -1881,6 +2165,1302 @@ def test_fetch_recent_speeds_synthetic():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ========== T2:_global_completed_tps started_at 前置换行 + 行缓存衰减 ==========
+
+def test_global_completed_tps_started_at_cache():
+    """_global_completed_tps 取数/加权拆分(T2)合成 temp 库对账:
+    ①手算对账 + 与旧 completed_at-only 形态全等(行集全在 2h 边界内时逐位
+    相等,参照实现=旧函数逐字拷贝独立连接执行);
+    ②边界:跨 cut 长请求部分重叠计入、completed_at<cut 排除、first_token_at
+    NULL 跳过、output=0 跳过、cancelled 跳过(缓存行集逐行可归因);
+    ③B3' 设计边界:started_at<cut-2h 且 completed_at>=cut(单请求>2h)的行
+    被新形态有意排除 —— 构造该行断言新值零变化,且旧形态参考值恰好多出
+    该行的手算贡献(证边界真实存在、排除是设计而非漏算);
+    ④衰减等价:冻结 db + 冻结缓存(计数 _connect 断言 0 SQL)下连续 tick,
+    缓存+当前 now 重算 == 旧形态每秒重查(T4 闸门关闭期衰减照推的等价性
+    依据),衰减序列前 4 拍手算对账;
+    ⑤直调兜底:新引擎缓存未灌时首次直调自动取数一次(脱离 _poll_stats
+    仍自洽);
+    ⑥坏库(缺列)吞错不穿透:refresh 自吞清缓存盖章、直调 0.0 不抛。
+    固定合成时钟(与墙钟零耦合);DB_PATH 双 patch 单点,finally 恢复,
+    绝不碰真实 ~/.zcode 库。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_gct_"))
+    orig = zsrc.DB_PATH
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        NOW = 1_800_000_000.0                      # 固定合成时钟
+        WIN = de.DataEngine.THROUGHPUT_WINDOW_S    # 10.0,与引擎同窗
+        cut = int((NOW - WIN) * 1000)              # 1_799_999_990_000
+        LB = de.DataEngine.COMPLETED_LOOKBACK_MS   # 2h,与常量同源不硬编码
+
+        def ins(status, started, ft, c, out):
+            con.execute(
+                "INSERT INTO model_usage (session_id, query_source, status,"
+                " started_at, first_token_at, completed_at, output_tokens)"
+                " VALUES ('sess_main','main_turn',?,?,?,?,?)",
+                (status, started, ft, c, out))
+
+        # r1 完整落窗:gen=3s r=450 → 450×3/10 = 135.0
+        ins("completed", cut + 500, cut + 1_000, cut + 4_000, 1_350)
+        # r2 跨 cut 长请求:gen=7s r=1000/7,重叠 = c−cut = 2s → 200/7
+        ins("completed", cut - 5_000, cut - 5_000, cut + 2_000, 1_000)
+        # r3 completed_at<cut:已滑出窗(计入即错)
+        ins("completed", cut - 9_000, cut - 8_000, cut - 1_000, 5_000)
+        # r4 first_token_at NULL:跳过(无生成起点,负∞ 区间无意义)
+        ins("completed", cut + 2_000, None, cut + 3_000, 800)
+        # r5 output=0:跳过(0 token 无贡献)
+        ins("completed", cut + 1_000, cut + 1_000, cut + 2_000, 0)
+        # r6 cancelled:status 不符
+        ins("cancelled", cut + 500, cut + 500, cut + 900, 700)
+        con.execute("INSERT INTO part (session_id) VALUES ('sess_main')")
+        con.commit(); con.close()
+
+        def old_form(now, window_s):
+            # 旧 _global_completed_tps 逐字参照(completed_at-only 谓词 + 同一
+            # 加权循环):全等对照与 B3' 差值归因都靠它;独立连接,不掺引擎状态
+            cut_ms = int((now - window_s) * 1000)
+            rc = sqlite3.connect(tdb)
+            rows = rc.execute(
+                "SELECT output_tokens, first_token_at, completed_at"
+                " FROM model_usage WHERE status='completed' AND completed_at>=?"
+                " AND output_tokens>0 AND first_token_at IS NOT NULL",
+                (cut_ms,)).fetchall()
+            rc.close()
+            win = max(window_s, 1e-3)
+            now_ms = now * 1000.0
+            tps = 0.0
+            for out_tok, ft, c in rows:
+                gen_s = max((c - ft) / 1000.0, 1e-3)
+                ov_ms = min(c, now_ms) - max(ft, cut_ms)
+                if ov_ms > 0:
+                    tps += (out_tok / gen_s) * (ov_ms / 1000.0) / win
+            return tps
+
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        e = de.DataEngine(queue.Queue(maxsize=1))   # 不 start,同步路径已完整
+        expect_rows = {(1_350, cut + 1_000, cut + 4_000),
+                       (1_000, cut - 5_000, cut + 2_000)}
+        expect = 135.0 + 200.0 / 7.0
+        check("T2:新引擎缓存未灌(cut None、行集空)",
+              e._completed_rows_cut_ms is None and e._completed_rows == [], "")
+        got = e._global_completed_tps(NOW, WIN)     # 首调:兜底取数一次
+        check("T2:直调兜底取数一次(值=手算 135+200/7、cut 已盖章)",
+              abs(got - expect) < 1e-9 and e._completed_rows_cut_ms == cut,
+              f"got {got} cut={e._completed_rows_cut_ms}")
+        check("T2:与旧 completed_at-only 形态全等(2h 边界内)",
+              abs(got - old_form(NOW, WIN)) < 1e-9,
+              f"old {old_form(NOW, WIN)}")
+        check("T2:缓存行集恰为 r1/r2(r3-r6 各因由排除)",
+              set(e._completed_rows) == expect_rows,
+              f"got {sorted(e._completed_rows)}")
+
+        # 衰减等价:冻结 db + 冻结缓存(不再刷新)下连续 tick,缓存+当前
+        # now 重算 == 旧形态每秒重查;计数 _connect 证 0 SQL(T4 闸门关闭期
+        # 的形态:衰减照推、不发查询)
+        e._refresh_completed_rows(cut)      # 以序列最早 cut 预灌(行集偏多为无害超集)
+        sql_calls = []
+        orig_connect = e._connect
+
+        def _counting_connect():
+            sql_calls.append(1)
+            return orig_connect()
+        e._connect = _counting_connect
+        try:
+            decay_new = [e._global_completed_tps(NOW + i, WIN) for i in range(13)]
+        finally:
+            e._connect = orig_connect
+        decay_old = [old_form(NOW + i, WIN) for i in range(13)]
+        # 手算:i=0 → 135+200/7;i=1 → r2 重叠缩到 1s → 135+100/7;
+        # i=2 → r2 出窗 → 90;i=3 → 45;i≥4 → 全出窗 0
+        hand_decay = [135.0 + 200.0 / 7.0, 135.0 + 100.0 / 7.0, 90.0, 45.0] \
+            + [0.0] * 9
+        check("T2:冻结缓存连续 tick 0 SQL 且逐拍==旧形态重查",
+              not sql_calls and all(abs(a - b) < 1e-9
+                                     for a, b in zip(decay_new, decay_old)),
+              f"sql={len(sql_calls)} new={decay_new[:5]} old={decay_old[:5]}")
+        check("T2:衰减序列手算对账(135+200/7→135+100/7→90→45→0…)",
+              all(abs(a - b) < 1e-9 for a, b in zip(decay_new, hand_decay)),
+              f"got {decay_new[:5]}")
+
+        # B3' 设计边界:单请求>2h(started_at<cut-LB 且 completed_at>=cut)
+        # 被新形态有意排除;旧形态会计入 —— 新值零变化、旧参考恰好多出该行
+        # 的手算贡献(gen=(LB+1)/1000,重叠恰 1s)
+        con = sqlite3.connect(tdb)
+        con.execute(
+            "INSERT INTO model_usage (session_id, query_source, status,"
+            " started_at, first_token_at, completed_at, output_tokens)"
+            " VALUES ('sess_main','main_turn','completed',?,?,?,?)",
+            (cut - LB - 1, cut - LB + 999, cut + 1_000, 10_000))
+        con.commit(); con.close()
+        e._refresh_completed_rows(cut)      # 显式换行:别让冻结缓存吞掉差异
+        check("T2:B3' >2h 行被排除(新值不变)",
+              abs(e._global_completed_tps(NOW, WIN) - expect) < 1e-9,
+              f"got {e._global_completed_tps(NOW, WIN)}")
+        check("T2:B3' 行不在缓存行集",
+              set(e._completed_rows) == expect_rows,
+              f"got {sorted(e._completed_rows)}")
+        b3_gen_s = (LB + 1) / 1000.0        # c−ft = (cut+1000)−(cut−LB+999)
+        b3_contrib = (10_000 / b3_gen_s) * (1_000 / 1000.0) / WIN
+        check("T2:B3' 旧形态恰计入该行(差值=其手算贡献)",
+              abs(old_form(NOW, WIN) - expect - b3_contrib) < 1e-9,
+              f"old {old_form(NOW, WIN)} contrib {b3_contrib}")
+
+        # 坏库(缺列):refresh 自吞不穿透、清缓存并盖章;直调 0.0 不抛
+        bad = str(tmp / "bad.sqlite")
+        bcon = sqlite3.connect(bad)
+        bcon.execute("CREATE TABLE model_usage (session_id TEXT)")  # 缺全部取数列
+        bcon.execute("CREATE TABLE part (session_id TEXT)")
+        bcon.commit(); bcon.close()
+        zsrc.DB_PATH = bad; de.DB_PATH = bad
+        e._refresh_completed_rows(cut)              # 不得抛
+        check("T2:坏库 refresh 自吞清缓存且盖章 cut",
+              e._completed_rows == [] and e._completed_rows_cut_ms == cut,
+              f"rows={e._completed_rows} cut={e._completed_rows_cut_ms}")
+        check("T2:坏库直调 → 0.0",
+              e._global_completed_tps(NOW, WIN) == 0.0, "")
+        e.stop()
+    finally:
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_global_part_tps_watermark_walk_probe():
+    """_global_part_tps 水位走读+rowid IN 定点探针重构(T1)合成 temp 库对账:
+    (a)手算:固定字符比下 text 行 in-place 增长两拍后 tps=Δlen/Δt/chars_per_token;
+    (b)新 text 行 append 重置基线不计负(更长新行仍按旧语义计正差,新旧一致);
+    (c)删顶行致 MAX(rowid) 回退 → _gpart 基线与 _session_last_rowid 双重建
+        (B2:注入 ghost 键证两 dict 都是从零重建而非增量修补);
+    (d)IN 探针 miss(text 行被删但表顶 rowid 未回落)→ 会话从探针集与基线
+        双裁剪;非 text 行只喂 _session_last_rowid 不进探针集(任何类型行
+        的 append 语义);
+    (e)同一合成窗口场景,新旧实现逐拍数值全等 + 基线 dict/_sid_text_rowid
+        全等(参照实现=旧 4000 行窗口 SQL+同款差分逐字拷贝,独立连接自持
+        状态,含 subagent 会话不筛的口径);
+    (f)B5':超 seen+64 阈值后 _sid_text_rowid 与 _gpart_last 同点同步收缩、
+        _session_last_rowid 不收缩(100 会话 → 10 活动裁到 10/10/100);
+    B3:坏库(part 无 data 列)水位探测可成功但重建 SQL 失败 → 水位保持
+    None 下拍重试、贡献恒 0.0 不穿透;库打不开 → 水位维持原值、贡献 0.0,
+    恢复后走读自愈。固定合成时钟(与墙钟零耦合);DB_PATH 双 patch 单点,
+    finally 恢复,绝不碰真实 ~/.zcode 库。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_gpt_"))
+    orig = zsrc.DB_PATH
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        # part 带 data 列:水位/走读/探针/旧窗口 SQL 的全部依赖列
+        con.execute("CREATE TABLE part (session_id TEXT, data TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        con.commit(); con.close()
+
+        def mk(n):                       # 长度可预测的 text part 行
+            return '{"type":"text","text":"' + "x" * n + '"}'
+
+        def tool():                      # 非 text 行(走读喂 session 缓存,不进探针集)
+            return '{"type":"tool_call","name":"bash"}'
+
+        L = lambda n: len(mk(n))         # 期望长度不手数字符
+        T0 = 1_800_000_000.0             # 固定合成时钟,与墙钟零耦合
+
+        def part_rows(sid, data):        # 直插合成行(显式拿回 rowid)
+            cur = sqlite3.connect(tdb)
+            cur.execute("INSERT INTO part (session_id, data) VALUES (?,?)",
+                        (sid, data))
+            rid = cur.execute("SELECT last_insert_rowid()").fetchone()[0]
+            cur.commit(); cur.close()
+            return rid
+
+        def part_exec(sql, params=()):
+            cur = sqlite3.connect(tdb)
+            cur.execute(sql, params)
+            cur.commit(); cur.close()
+
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        # ---- (a) 手算对账:in-place 增长两拍后 tps=Δlen/Δt/chars_per_token ----
+        part_rows("sess_a", mk(100))                     # rowid 1
+        e = de.DataEngine(queue.Queue(maxsize=1))        # 不 start,同步路径已完整
+        e._chars_per_token = 3.2                         # 固定字符比(手算口径)
+        check("T1:首拍建基线贡献 0.0",
+              e._global_part_tps(T0) == 0.0, "")
+        check("T1:首拍重建灌满三态",
+              e._part_watermark == 1
+              and e._gpart_last == {"sess_a": (L(100), T0)}
+              and e._sid_text_rowid == {"sess_a": 1}
+              and e._session_last_rowid == {"sess_a": 1},
+              f"wm={e._part_watermark} g={e._gpart_last}"
+              f" s={e._sid_text_rowid} sl={e._session_last_rowid}")
+        # in-place 增长:同 rowid 内追加文本(真实库 213,694/434,238 行如此,
+        # 只有定点重读可见 —— 本重构存在的理由)
+        part_exec("UPDATE part SET data=? WHERE rowid=1", (mk(132),))
+        got = e._global_part_tps(T0 + 1.0)
+        expect_a = (L(132) - L(100)) / 1.0 / 3.2
+        check("T1:(a) in-place 增长两拍手算对账",
+              abs(got - expect_a) < 1e-9, f"got {got} expect {expect_a}")
+
+        # ---- (b) 新 text 行 append:重置基线不计负;更长新行仍计正差 ----
+        part_rows("sess_a", mk(50))                      # rowid 2,更短的新一轮
+        check("T1:(b) 新行更短 → 重置基线不计负",
+              e._global_part_tps(T0 + 2.0) == 0.0
+              and e._gpart_last["sess_a"][0] == L(50)
+              and e._sid_text_rowid["sess_a"] == 2
+              and e._session_last_rowid["sess_a"] == 2,
+              f"g={e._gpart_last} s={e._sid_text_rowid}")
+        part_rows("sess_a", mk(200))                     # rowid 3,更长的新行
+        got = e._global_part_tps(T0 + 3.0)
+        expect_b = (L(200) - L(50)) / 1.0 / 3.2
+        check("T1:(b) 新行更长 → 按旧语义计正差(手算)",
+              abs(got - expect_b) < 1e-9, f"got {got} expect {expect_b}")
+
+        # ---- (c) 删顶行 → MAX(rowid) 回退 → 双基线全量重建 ----
+        part_rows("sess_b", mk(80))                      # rowid 4
+        e._global_part_tps(T0 + 3.5)                     # 走读喂入 sess_b
+        # 注入 ghost 键:重建必须从零覆盖两 dict,而非增量修补(半截重建会让
+        # _session_last_rowid 永久缺会话,走读只覆盖新行再无补救窗口)
+        e._gpart_last["ghost"] = (1.0, 0.0)
+        e._session_last_rowid["ghost2"] = 999
+        part_exec("DELETE FROM part WHERE rowid=4")      # 删顶行,MAX 4→3 回退
+        check("T1:(c) 回退拍贡献 0.0(基线刚重置)",
+              e._global_part_tps(T0 + 4.0) == 0.0, "")
+        check("T1:(c) 双基线从零重建(ghost 清除、GROUP BY 对账)",
+              e._part_watermark == 3
+              and "ghost" not in e._gpart_last and "ghost2" not in e._session_last_rowid
+              and e._session_last_rowid == {"sess_a": 3}
+              and e._gpart_last == {"sess_a": (L(200), T0 + 4.0)}
+              and e._sid_text_rowid == {"sess_a": 3},
+              f"wm={e._part_watermark} g={e._gpart_last}"
+              f" s={e._sid_text_rowid} sl={e._session_last_rowid}")
+
+        # ---- (d) 探针 miss 裁剪 + 非 text 行只喂 session 缓存 ----
+        r_tool1 = part_rows("sess_c", tool())            # rowid 4(顶行已删,复用)
+        r_text = part_rows("sess_d", mk(60))             # rowid 5
+        e._global_part_tps(T0 + 5.0)
+        check("T1:(d) 非 text 行喂 _session_last_rowid 不进探针集",
+              e._session_last_rowid["sess_c"] == r_tool1
+              and "sess_c" not in e._sid_text_rowid
+              and e._sid_text_rowid["sess_d"] == r_text,
+              f"sl={e._session_last_rowid} s={e._sid_text_rowid}")
+        r_tool2 = part_rows("sess_c", tool())            # rowid 6,顶行抬高
+        e._global_part_tps(T0 + 6.0)
+        check("T1:(d) 同会话再写非 text 行仍推进 session 缓存",
+              e._session_last_rowid["sess_c"] == r_tool2, "")
+        part_exec("DELETE FROM part WHERE rowid=?", (r_text,))   # 删 sess_d 的
+        # text 行:表顶(rowid 6)未回落 → 不触发回退重建,只走探针 miss 裁剪
+        check("T1:(d) 探针 miss → 会话从探针集与基线双裁剪",
+              e._global_part_tps(T0 + 7.0) == 0.0
+              and "sess_d" not in e._sid_text_rowid
+              and "sess_d" not in e._gpart_last
+              and e._part_watermark == r_tool2,
+              f"s={e._sid_text_rowid} wm={e._part_watermark}")
+        # 全量缓存的已知边界:行删而表顶未回落时保留旧 rowid(仅影响 T3 菜单
+        # 排序;表顶回落的整批删除由 (c) 的回退重建自愈)
+        check("T1:(d) _session_last_rowid 全量保留(设计边界)",
+              e._session_last_rowid.get("sess_d") == r_text,
+              str(e._session_last_rowid))
+        e.stop()
+
+        # ---- (e) 新旧全等:同一合成窗口场景逐拍对账 ----
+        def legacy_ref(now, gstate, sstate):
+            """旧 _global_part_tps(v0.9 T1 前)逐字参照:4000 行窗口 SQL +
+            同款差分/裁剪,自持状态独立连接执行。sstate 镜像 _sid_text_rowid
+            (窗口 SQL 的 MAX(rowid)),供探针集对照。"""
+            rc = sqlite3.connect(tdb)
+            rows = rc.execute(
+                "SELECT session_id, MAX(rowid), length(data) FROM part"
+                " WHERE data LIKE '{\"type\":\"text\"%'"
+                " AND rowid > (SELECT MAX(rowid) FROM part) - 4000"
+                " GROUP BY session_id").fetchall()
+            rc.close()
+            tps = 0.0
+            seen = set()
+            for sid, mx, ln in rows:
+                if not sid or not ln:
+                    continue
+                seen.add(sid)
+                prev = gstate.get(sid)
+                if prev is not None and ln > prev[0]:
+                    dt = max(now - prev[1], 1e-3)
+                    tps += (ln - prev[0]) / dt / 3.2
+                gstate[sid] = (ln, now)
+                sstate[sid] = mx
+            if len(gstate) > len(seen) + 64:
+                gstate = {k: v for k, v in gstate.items() if k in seen}
+                sstate = {k: v for k, v in sstate.items() if k in seen}
+            return tps, gstate, sstate
+
+        e2 = de.DataEngine(queue.Queue(maxsize=1))
+        e2._chars_per_token = 3.2
+        lg, ls = {}, {}                    # 参照实现自持状态
+        # 拍 1:双基线(sess_sub1 刻意用 subagent 名 —— 全局吞吐不筛会话口径)
+        got = e2._global_part_tps(2000.0)
+        ref, lg, ls = legacy_ref(2000.0, lg, ls)
+        check("T1:(e) 拍1 建基线新旧全等",
+              got == 0.0 and ref == 0.0 and e2._gpart_last == lg
+              and e2._sid_text_rowid == ls,
+              f"got {got} ref {ref}")
+        # 拍 2:sess_a in-place 增长 + 新 subagent 会话入窗
+        part_exec("UPDATE part SET data=? WHERE rowid=3", (mk(240),))
+        r_sub = part_rows("sess_sub1", mk(70))
+        got = e2._global_part_tps(2000.5)
+        ref, lg, ls = legacy_ref(2000.5, lg, ls)
+        expect_2 = (L(240) - L(200)) / 0.5 / 3.2
+        check("T1:(e) 拍2 in-place 增长新旧全等(含手算)",
+              abs(got - ref) < 1e-9 and abs(got - expect_2) < 1e-9
+              and e2._gpart_last == lg and e2._sid_text_rowid == ls,
+              f"got {got} ref {ref} expect {expect_2}")
+        # 拍 3:subagent 会话 in-place 增长(不筛会话口径)+ 新会话入窗
+        part_exec("UPDATE part SET data=? WHERE rowid=?", (mk(130), r_sub))
+        part_rows("sess_e", mk(90))
+        got = e2._global_part_tps(2001.0)
+        ref, lg, ls = legacy_ref(2001.0, lg, ls)
+        expect_3 = (L(130) - L(70)) / 0.5 / 3.2
+        check("T1:(e) 拍3 subagent 增长计贡献(新旧全等+手算)",
+              abs(got - ref) < 1e-9 and abs(got - expect_3) < 1e-9,
+              f"got {got} ref {ref} expect {expect_3}")
+        # 拍 4:sess_a 新行更短(行切换重置,双方都 0)
+        part_rows("sess_a", mk(10))
+        got = e2._global_part_tps(2001.5)
+        ref, lg, ls = legacy_ref(2001.5, lg, ls)
+        check("T1:(e) 拍4 行切换重置新旧全等(双方 0)",
+              got == 0.0 and ref == 0.0
+              and e2._gpart_last == lg and e2._sid_text_rowid == ls,
+              f"got {got} ref {ref}")
+        # 拍 5:sess_e 新行更长(旧行基线差分,双方都计正差)
+        part_rows("sess_e", mk(300))
+        got = e2._global_part_tps(2002.0)
+        ref, lg, ls = legacy_ref(2002.0, lg, ls)
+        expect_5 = (L(300) - L(90)) / 0.5 / 3.2
+        check("T1:(e) 拍5 更长新行计正差新旧全等(含手算)",
+              abs(got - ref) < 1e-9 and abs(got - expect_5) < 1e-9,
+              f"got {got} ref {ref} expect {expect_5}")
+        # walk 的 append 语义对账:引擎侧 _session_last_rowid == 全量 GROUP BY
+        gcon = sqlite3.connect(tdb)
+        expect_slr = dict(gcon.execute(
+            "SELECT session_id, MAX(rowid) FROM part GROUP BY session_id"
+        ).fetchall())
+        gcon.close()
+        check("T1:(e) _session_last_rowid == 全量 GROUP BY(append 语义)",
+              e2._session_last_rowid == expect_slr,
+              f"got {e2._session_last_rowid} expect {expect_slr}")
+
+        # ---- B3:库打不开 → 水位维持、贡献 0.0;恢复后走读自愈 ----
+        wm_before = e2._part_watermark
+        zsrc.DB_PATH = str(tmp / "nope.sqlite"); de.DB_PATH = zsrc.DB_PATH
+        check("T1:B3 库打不开 → 0.0 且水位维持",
+              e2._global_part_tps(2010.0) == 0.0
+              and e2._part_watermark == wm_before,
+              f"wm={e2._part_watermark}")
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        r_z = part_rows("sess_z", mk(40))
+        check("T1:B3 恢复后走读自愈(新会话重新入表)",
+              e2._global_part_tps(2011.0) == 0.0
+              and e2._sid_text_rowid.get("sess_z") == r_z
+              and e2._part_watermark == r_z,
+              f"s={e2._sid_text_rowid} wm={e2._part_watermark}")
+        e2.stop()
+
+        # ---- (f) B5':超 seen+64 → 两 dict 同点同步收缩,session 缓存不缩 ----
+        fdb = str(tmp / "f.sqlite")
+        fc = sqlite3.connect(fdb)
+        fc.execute("CREATE TABLE part (session_id TEXT, data TEXT)")
+        fc.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        for i in range(1, 101):          # 100 会话各 1 text 行,全在窗口内
+            fc.execute("INSERT INTO part (session_id, data) VALUES (?,?)",
+                       (f"sess_f{i:03d}", mk(100)))
+        fc.commit(); fc.close()
+        zsrc.DB_PATH = fdb; de.DB_PATH = fdb
+        ef = de.DataEngine(queue.Queue(maxsize=1))
+        ef._chars_per_token = 3.2
+        ef._global_part_tps(3000.0)      # 建基线:首拍不裁剪(100 全跟踪)
+        check("T1:(f) 建基线拍不裁剪(100 会话全跟踪)",
+              len(ef._gpart_last) == 100 and len(ef._sid_text_rowid) == 100
+              and len(ef._session_last_rowid) == 100,
+              f"{len(ef._gpart_last)}/{len(ef._sid_text_rowid)}"
+              f"/{len(ef._session_last_rowid)}")
+        fcur = sqlite3.connect(fdb)
+        for i in range(1, 11):           # 10 会话 in-place 增长 = 唯一活动集
+            fcur.execute("UPDATE part SET data=? WHERE session_id=?",
+                         (mk(150), f"sess_f{i:03d}"))
+        fcur.commit(); fcur.close()
+        got = ef._global_part_tps(3001.0)
+        grown = {f"sess_f{i:03d}" for i in range(1, 11)}
+        expect_f = 10 * (L(150) - L(100)) / 1.0 / 3.2
+        check("T1:(f) 裁剪拍活动会话贡献照计(手算)",
+              abs(got - expect_f) < 1e-9, f"got {got} expect {expect_f}")
+        check("T1:(f) _sid_text_rowid 与 _gpart_last 同点同步收缩到 seen",
+              set(ef._sid_text_rowid) == grown and set(ef._gpart_last) == grown,
+              f"s={sorted(ef._sid_text_rowid)[:3]}…{len(ef._sid_text_rowid)}"
+              f" g={len(ef._gpart_last)}")
+        check("T1:(f) _session_last_rowid 全量不收缩",
+              len(ef._session_last_rowid) == 100, str(len(ef._session_last_rowid)))
+        ef.stop()
+
+        # ---- B3:part 无 data 列(回归 fixture 形态)→ 水位探测可成功但重建
+        # SQL 失败 → 水位保持 None 下拍重试、贡献恒 0.0,绝不穿透 ----
+        bad = str(tmp / "bad.sqlite")
+        bc = sqlite3.connect(bad)
+        bc.execute("CREATE TABLE part (session_id TEXT)")
+        bc.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        bc.execute("INSERT INTO part (session_id) VALUES ('sess_main')")
+        bc.commit(); bc.close()
+        zsrc.DB_PATH = bad; de.DB_PATH = bad
+        e3 = de.DataEngine(queue.Queue(maxsize=1))
+        check("T1:B3 无 data 列 → 贡献 0.0 且水位不推进(重试语义)",
+              e3._global_part_tps(4000.0) == 0.0
+              and e3._global_part_tps(4001.0) == 0.0
+              and e3._part_watermark is None,
+              f"wm={e3._part_watermark}")
+        e3.stop()
+    finally:
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_claude_watcher_injected():
+    """Claude watcher 线程(T6)注入式单测 —— 不依赖 watchdog 安装、不发真实
+    FS 事件:合成 ZCode 库 + 合成 Claude projects 目录 + sys.modules 注入假
+    watchdog,绝不碰真实 ~/.zcode 与 ~/.claude:
+    ①handler 只入队:.jsonl 之外(目录/别的扩展/缺 src_path)全丢;
+    ②pump 分发:防抖窗合并 + 同路径去重 → note_changes + _wake 置位
+      (_wake 是 T4 的 seam:测试自带事件,getattr 消费路径一并覆盖 ——
+      T4 落地前后本测试都绿);
+    ③watchdog import 失败(sys.modules 注入 None)→ dbg 优雅降级不抛;
+    ④循环体抛异常 → watcher 线程退出 + dbg 落盘;_db_loop 存活(采样仍
+      推进)且 TTL 路径仍出数(15s SCAN_TTL 兜底 =『死亡自愈=回退 TTL』);
+    ⑤projects 目录不存在 → 直接 return(不装监听);
+    ⑥守卫环境:run() 不启动 watcher 线程;直接调循环也被内部守卫拦下。
+    """
+    import datetime as dtmod
+    import json as jsonmod
+    import os as osmod
+    import shutil
+    import tempfile
+    import threading as thmod
+    import types as typesmod
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.data_engine import ClaudeSource
+    from zcode_meter.sources import zcode as zsrc
+
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_watch_"))
+    orig_db = zsrc.DB_PATH
+    orig_persist, orig_dbgpath, orig_debug = de._no_persist, de.DBG_PATH, de.DEBUG
+    wd_mods = ("watchdog", "watchdog.observers", "watchdog.events")
+    saved_mods = {k: sys.modules.get(k) for k in wd_mods}
+    engines = []
+    try:
+        # ---- 合成 ZCode 库:引擎构造/轮询全程不碰真实 ~/.zcode ----
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        con.execute("INSERT INTO part (session_id) VALUES ('sess_main')")
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+
+        # ---- 合成 Claude projects 目录:1 条今日 assistant 行(in=100
+        # out=40 → today=140);jpath2 只当队列里的路径字符串用,不落盘 ----
+        proj_root = osmod.path.join(str(tmp), "claude")
+        proj = osmod.path.join(proj_root, "p1")
+        osmod.makedirs(proj)
+        t0 = dtmod.datetime.now().astimezone().replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        iso = ((t0 + dtmod.timedelta(minutes=30)).astimezone(dtmod.timezone.utc)
+               .strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z")
+        jpath = osmod.path.join(proj, "s.jsonl")
+        jpath2 = osmod.path.join(proj, "later.jsonl")
+        with open(jpath, "w", encoding="utf-8") as f:
+            f.write(jsonmod.dumps({"type": "assistant", "timestamp": iso,
+                                   "message": {"id": "msg_w1", "usage": {
+                                       "input_tokens": 100,
+                                       "cache_read_input_tokens": 0,
+                                       "cache_creation_input_tokens": 0,
+                                       "output_tokens": 40}}}) + "\n")
+        src = ClaudeSource(projects_dir=proj_root)
+        expect_today = 140
+
+        # dbg 断言要真实落盘:DEBUG 开 + DBG_PATH 指向临时文件
+        de.DEBUG = True
+        de.DBG_PATH = str(tmp / "dbg.log")
+        de._no_persist = lambda: False     # 进 watcher(守卫语义在 ⑥ 单独断言)
+
+        e = de.DataEngine(queue.Queue(maxsize=1))   # 先不 start,直接驱动内部路径
+        engines.append(e)
+        e.sources = [src]                 # 引擎只见合成源,不碰真实 ~/.claude
+        e._wake = thmod.Event()           # T4 的唤醒事件 seam(落地后 __init__ 自带)
+
+        # ① handler 只入队:.jsonl 之外全丢(目录事件/别的扩展/缺 src_path)
+        e._claude_watch_offer(jpath)
+        e._claude_watch_offer(jpath2)
+        e._claude_watch_offer(osmod.path.join(proj, "note.txt"))
+        e._claude_watch_offer(proj)                    # 目录事件
+        e._claude_watch_offer(None)                    # 缺 src_path 的怪事件
+        check("watcher:offer 只入队 .jsonl(2 条)",
+              e._claude_watch_q.qsize() == 2,
+              f"qsize={e._claude_watch_q.qsize()}")
+
+        # ② pump:防抖窗内合并成一批 → note_changes + _wake 置位
+        seen = []
+        src.note_changes = lambda paths: seen.append(list(paths))
+        ok = e._claude_watch_pump()
+        check("watcher:pump 分发防抖合并批",
+              ok is True and seen == [[jpath, jpath2]], f"ok={ok} seen={seen}")
+        check("watcher:分发后 _wake 置位", e._wake.is_set(), "")
+        e._claude_watch_offer(jpath)       # watchdog 一次 append 常连发多条
+        e._claude_watch_offer(jpath)
+        e._wake.clear()
+        e._claude_watch_pump()
+        check("watcher:同路径去重(一次 append 多事件)",
+              seen[-1] == [jpath], f"seen={seen[-1]}")
+        check("watcher:再次分发仍置位 _wake", e._wake.is_set(), "")
+        e._wake.clear()
+        ok2 = e._claude_watch_pump()       # 队列空:空转
+        check("watcher:空队列空转 False 且不置位",
+              ok2 is False and not e._wake.is_set(), f"ok={ok2}")
+
+        # ③ watchdog import 失败(None 注入 → ImportError)→ dbg 降级不抛
+        for k in wd_mods:
+            sys.modules[k] = None
+        raised = None
+        try:
+            e._claude_watch_loop()          # 直接调:守卫已放行,必须安静返回
+        except Exception as exc:
+            raised = exc
+        check("watcher:import 失败优雅降级不抛", raised is None, repr(raised))
+        with open(de.DBG_PATH, encoding="utf-8") as f:
+            dbg_txt = f.read()
+        check("watcher:import 失败 dbg 声明回退 15s TTL",
+              "claude watcher unavailable, fallback to 15s TTL" in dbg_txt, "")
+
+        # ④ 循环体抛异常 → 线程退出 + dbg;_db_loop 存活、TTL 路径仍出数。
+        #    假 watchdog:Observer=哑对象(不发真实 FS 事件),handler 基类=object
+        scheduled = []
+        obs_mod = typesmod.ModuleType("watchdog.observers")
+
+        class _StubObserver:
+            def schedule(self, handler, path, recursive=False):
+                scheduled.append((path, recursive))
+                return "watch"
+            def start(self): pass
+            def stop(self): pass
+            def join(self, timeout=None): pass
+        obs_mod.Observer = _StubObserver
+        ev_mod = typesmod.ModuleType("watchdog.events")
+        ev_mod.FileSystemEventHandler = object
+        wd_mod = typesmod.ModuleType("watchdog")
+        for k, v in (("watchdog", wd_mod), ("watchdog.observers", obs_mod),
+                     ("watchdog.events", ev_mod)):
+            sys.modules[k] = v
+
+        def boom(paths):
+            raise ValueError("note_changes boom")
+        src.note_changes = boom
+        e.start()                          # 守卫已放行 → run() 启动 watcher 线程
+        deadline = time.time() + 2.0
+        while not scheduled and time.time() < deadline:
+            time.sleep(0.05)
+        check("watcher:observer 递归挂载 projects 目录",
+              scheduled == [(proj_root, True)], str(scheduled))
+        e._claude_watch_offer(jpath)       # 合成事件 → pump → note_changes 抛
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if not any(t.name == "zm-claude-watch" and t.is_alive()
+                       for t in thmod.enumerate()):
+                break
+            time.sleep(0.05)
+        check("watcher:循环体异常 → 线程退出(不拖死引擎)",
+              not any(t.name == "zm-claude-watch" and t.is_alive()
+                      for t in thmod.enumerate()), "")
+        with open(de.DBG_PATH, encoding="utf-8") as f:
+            dbg_txt = f.read()
+        check("watcher:异常 dbg 落盘(回退 15s TTL)",
+              "claude watcher died" in dbg_txt, "")
+        # 死后 _db_loop 照跑:1s tick 的全局吞吐采样持续推进 + TTL 出数。
+        # _scanned_at=0 模拟 TTL 到期:watcher 已死,只有 walk+stat 兜底路径
+        n_at_death = len(e.snap.recent_speeds or [])
+        src._scanned_at = 0.0
+        time.sleep(2.2)
+        n_after = len(e.snap.recent_speeds or [])
+        check("watcher:死亡后 TTL 路径仍出数(TTL 到期重扫)",
+              src.today_usage() == expect_today, f"got {src.today_usage()}")
+        srcs = dict(e.snap.today_by_source or [])
+        check("watcher:死亡后 _db_loop 存活(采样推进)且出 Claude 分量",
+              n_after > n_at_death and srcs.get("Claude") == expect_today,
+              f"hist {n_at_death}->{n_after} srcs={srcs}")
+        e.stop()
+
+        # ⑤ projects 目录不存在 → 直接 return(不装监听:哑 observer 不多挂)
+        n_sched = len(scheduled)
+        src_dead = ClaudeSource(projects_dir=osmod.path.join(str(tmp), "nope"))
+        src_dead.note_changes = lambda paths: None   # 排除 note_changes 缺位干扰
+        e2 = de.DataEngine(queue.Queue(maxsize=1))
+        engines.append(e2)
+        e2.sources = [src_dead]
+        t2 = thmod.Thread(target=e2._claude_watch_loop, daemon=True)
+        t2.start(); t2.join(2.0)
+        check("watcher:无 projects 目录 → 直接 return(线程退出)",
+              not t2.is_alive() and len(scheduled) == n_sched,
+              f"alive={t2.is_alive()} sched={len(scheduled)}")
+
+        # ⑥ 守卫环境:run() 不启动 watcher;直接调循环被内部守卫拦下
+        de._no_persist = lambda: True
+        e3 = de.DataEngine(queue.Queue(maxsize=1))
+        engines.append(e3)
+        e3.sources = [src]
+        e3._wake = thmod.Event()
+        e3.start(); time.sleep(0.8); e3.stop()
+        check("watcher:守卫环境 run() 不启动 watcher 线程",
+              not any(t.name == "zm-claude-watch" for t in thmod.enumerate()), "")
+        t3 = thmod.Thread(target=e3._claude_watch_loop, daemon=True)
+        t3.start(); t3.join(2.0)
+        check("watcher:守卫环境直接调循环 → 内部守卫拦下",
+              not t3.is_alive(), "")
+    finally:
+        for eng in engines:
+            try:
+                eng.stop()
+            except Exception:
+                pass
+        de._no_persist = orig_persist
+        de.DBG_PATH = orig_dbgpath
+        de.DEBUG = orig_debug
+        zsrc.DB_PATH = orig_db; de.DB_PATH = orig_db
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ========== T3:recent_sessions 缓存读(引擎维护 sid→rowid,菜单暖读 ≤1ms) ==========
+
+def test_recent_sessions_cache_read():
+    """recent_sessions 缓存读(T3)合成 temp 库对账:
+    ①新旧实现输出全等(顺序+[:16]):混 subagent/dwf(含最新行,验顶部
+    过滤)、NULL 标题、缺 session 行(验 LEFT JOIN 空标题语义)、>16 字符
+    标题截断;参照实现=改前 recent_sessions 逐字拷贝独立连接执行(不调
+    _recent_sessions_sql 防自证);limit 8/2/100/0/-1 逐个对账 + 手算期望
+    表(截断字面硬编码);
+    ②冷缓存回退:未 start 引擎首调走旧 SQL 恰一次(计数补丁)且回填后
+    第二拍起零回退;dict 全量含 subagent/dwf(过滤在读侧,与 T1 走读
+    『任何新行都喂』同不变式);
+    ③T1 供数:真实 _global_part_tps 走读新行喂点 → 菜单暖读即得新会话
+    居首;run() 序幕(stop_flag 预置后同步走完,三子线程起步即退)经
+    _poll_stats 首拍重建 → 菜单未 open 过也暖;
+    ④删行裁剪:DELETE FROM part 后经 T1 回退重建(MAX(rowid) 回落)菜单
+    不再列出;部分幸存重建后恰列幸存会话;
+    ⑤LIMIT 语义镜像:None/不可绑定 → [](旧路径 execute 即抛 sqlite3.Error
+    被吞的同判)、数值字符串 '3' 与 SQLite 同强转、负 int=不设上限;
+    ⑥N3 锁序:菜单读/冷回填/T1 走读喂点三路径 snap_lock acquire==0、
+    _session_lock≥3(探针显式实现 __enter__ —— 特殊方法经 type 查找,
+    实例 __getattr__ 兜不住 with 语句);
+    ⑦库缺失:回退失败 → [](与改前同判),缓存仍冷不炸、重复调用同判。
+    DB_PATH 双 patch 单点(test_fetch_total_usage 同款),finally 恢复,
+    绝不碰真实 ~/.zcode 库。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_rsc_"))
+    orig = zsrc.DB_PATH
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        # part 带 data 列:T1 走读/重建 SQL 需要(值全 NULL 即可,length/
+        # substr 对 NULL 安全);model_usage 全列:run() 序幕子测试要完整
+        # 跑一轮 _poll_stats(缺列会让整段 try 吞错早退,走不到
+        # _global_part_tps 首拍重建);session 最小两列(菜单只碰 id/title)
+        con.execute("CREATE TABLE part (session_id TEXT, data TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        con.execute("CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT)")
+        # rowid 1..8 按插入序:两行 sess_old(验 MAX(rowid) 分组)、被排除
+        # 的 subagent/dwf(含最新行 8,验顶部过滤)、NULL 标题(sess_mid)、
+        # 缺 session 行(sess_ghost,验批查缺行→空标题)、17 字符标题(验
+        # [:16] 截断)
+        con.executemany(
+            "INSERT INTO part (session_id, data) VALUES (?,?)",
+            [("sess_old", None), ("sess_old", None), ("sess_subagent-1", None),
+             ("sess_mid", None), ("sess_dwf-dwfrun-9", None),
+             ("sess_ghost", None), ("sess_main", None),
+             ("sess_subagent-2", None)])
+        con.executemany(
+            "INSERT INTO session (id, title) VALUES (?,?)",
+            [("sess_old", "这是一个超过十六个字符的老会话标题"),
+             ("sess_mid", None), ("sess_main", "当前会话")])
+        con.commit(); con.close()
+
+        def oracle(k):
+            # 改前 recent_sessions 逐字参照(独立连接):新旧全等的 oracle,
+            # 刻意不调引擎的 _recent_sessions_sql(那是被测代码的一部分)
+            c = sqlite3.connect(tdb)
+            rows = c.execute(
+                "SELECT p.session_id, s.title FROM"
+                " (SELECT session_id, MAX(rowid) AS mr FROM part"
+                "  WHERE session_id NOT LIKE 'sess_subagent%'"
+                "    AND session_id NOT LIKE 'sess_dwf-%' GROUP BY session_id) p"
+                " LEFT JOIN session s ON s.id = p.session_id"
+                " ORDER BY p.mr DESC LIMIT ?", (k,)).fetchall()
+            c.close()
+            return [(sid, (title or "").strip()[:16]) for sid, title in rows]
+
+        # 手算期望表:mr 倒序 = main(7)/ghost(6)/mid(4)/old(2);ghost 缺
+        # session 行与 mid NULL 标题都列空标题;old 标题 17 字符截 16
+        expect_hand = [("sess_main", "当前会话"), ("sess_ghost", ""),
+                       ("sess_mid", ""),
+                       ("sess_old", "这是一个超过十六个字符的老会话标")]
+
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        e = de.DataEngine(queue.Queue(maxsize=1))     # 不 start:冷缓存路径
+
+        # ---- ① 冷回退恰一次 + ② 回填后零回退;① 全等 + 手算期望 ----
+        calls = []
+        orig_sql = e._recent_sessions_sql
+
+        def _spy(k=8):
+            calls.append(k)
+            return orig_sql(k)
+
+        e._recent_sessions_sql = _spy
+        cold = e.recent_sessions(8)                   # 冷:回退恰一次
+        check("T3:冷缓存首调走旧 SQL 回退恰一次", calls == [8], str(calls))
+        warm = e.recent_sessions(8)                   # 暖:零回退
+        check("T3:回填后第二拍起零回退(纯缓存读)", calls == [8], str(calls))
+        check("T3:冷/暖两拍结果全等", cold == warm, f"{cold} vs {warm}")
+        for k in (2, 100, 0, -1):
+            got = e.recent_sessions(k)
+            check(f"T3:暖读 limit={k} 与旧 SQL 全等(0=空/负=不设上限,同 SQLite)",
+                  got == oracle(k), f"got {got}")
+        check("T3:全程回退仅冷首拍一次", calls == [8], str(calls))
+        e._recent_sessions_sql = orig_sql
+        check("T3:冷回退=旧 SQL 结果(全等)", cold == oracle(8), f"got {cold}")
+        check("T3:顺序+过滤+空标题+[:16] 截断=手算期望表",
+              cold == expect_hand, f"got {cold}")
+        check("T3:回填后 dict 全量含 subagent/dwf(过滤在读侧)",
+              set(e._session_last_rowid) ==
+              {"sess_old", "sess_subagent-1", "sess_mid", "sess_dwf-dwfrun-9",
+               "sess_ghost", "sess_main", "sess_subagent-2"},
+              str(sorted(e._session_last_rowid)))
+
+        # ---- ③ T1 走读喂点:首拍建水位,插新行后走读批量喂入 ----
+        e._global_part_tps(1_800_000.0)     # 首拍:水位 None → 全量重建,水位=8
+        con = sqlite3.connect(tdb)
+        con.execute("INSERT INTO part (session_id, data)"
+                    " VALUES ('sess_new', NULL)")
+        con.execute("INSERT INTO session (id, title)"
+                    " VALUES ('sess_new', '新会话')")
+        con.commit(); con.close()
+        e._global_part_tps(1_800_001.0)     # 走读 rowid 9 → 锁内批量 update
+        got_new = e.recent_sessions(8)
+        check("T3:T1 走读喂点 → 菜单暖读即得新会话居首",
+              got_new == oracle(8) and got_new[0] == ("sess_new", "新会话"),
+              f"got {got_new[:2]}")
+
+        # ---- ③' run() 序幕基线接线:stop_flag 预置后同步走完序幕,首拍
+        # 重建让菜单从未 open 过也暖(与『run() 起步 GROUP BY』条款的落地
+        # 形态:重建由 T1 首拍承担,早于三子线程启动)----
+        e2 = de.DataEngine(queue.Queue(maxsize=1))
+        e2.stop_flag.set()
+        e2.run()   # 序幕同步:_session_title/_poll_stats(内含首拍重建)/
+        # _init_tps/_push;三子线程与 watcher 见 stop_flag 即退
+        calls2 = []
+        orig_sql2 = e2._recent_sessions_sql
+
+        def _spy2(k=8):
+            calls2.append(k)
+            return orig_sql2(k)
+
+        e2._recent_sessions_sql = _spy2
+        got2 = e2.recent_sessions(8)
+        e2._recent_sessions_sql = orig_sql2
+        check("T3:run() 序幕基线 → 菜单首读即暖(零回退)且全等",
+              got2 == oracle(8) and calls2 == []
+              and bool(e2._session_last_rowid),
+              f"got {got2[:2]} calls={calls2}")
+        e2.stop()
+
+        # ---- ④ 删行裁剪(依赖 T1 回退重建):全删 → MAX(rowid) 回落 →
+        # 全量重建清 dict → 菜单冷回退亦空(旧 SQL 同判)----
+        con = sqlite3.connect(tdb)
+        con.execute("DELETE FROM part")
+        con.commit(); con.close()
+        e._global_part_tps(1_800_002.0)     # mx=0 < 水位 9 → 回退重建 → dict={}
+        check("T3:会话行全删+T1 回退重建 → 菜单不再列出",
+              e._session_last_rowid == {} and e.recent_sessions(8) == []
+              and oracle(8) == [],
+              f"sl={e._session_last_rowid}")
+        con = sqlite3.connect(tdb)          # 部分幸存:只回 sess_old 一行
+        con.execute("INSERT INTO part (session_id, data)"
+                    " VALUES ('sess_old', NULL)")
+        con.commit(); con.close()
+        e._global_part_tps(1_800_003.0)     # 走读新行 → dict={'sess_old':…}
+        got_part = e.recent_sessions(8)
+        check("T3:部分幸存会话重建后恰列一个(截断不变)",
+              got_part == oracle(8)
+              and got_part == [("sess_old", "这是一个超过十六个字符的老会话标")],
+              f"got {got_part}")
+
+        # ---- ⑤ LIMIT 语义镜像(暖路径,dict={'sess_old':…})----
+        check("T3:limit=None → [](旧路径 LIMIT NULL 即 sqlite3.Error 同判)",
+              e.recent_sessions(None) == [], "")
+        check("T3:limit='3' 数值字符串与 SQLite 同强转",
+              e.recent_sessions("3") == oracle(3),
+              f"got {e.recent_sessions('3')}")
+        check("T3:limit 不可绑定 → [](旧路径 ProgrammingError 同判)",
+              e.recent_sessions("abc") == [] and e.recent_sessions({}) == [],
+              "")
+
+        # ---- ⑥ N3 锁序:菜单读/冷回填/T1 走读喂点三路径零 snap_lock、
+        # _session_lock 每路径至少一次(此处再插一行让走读真发生)----
+        con = sqlite3.connect(tdb)
+        con.execute("INSERT INTO part (session_id, data)"
+                    " VALUES ('sess_late', NULL)")
+        con.commit(); con.close()
+
+        class _LockProbe:
+            """锁计数探针:with 语句与显式 acquire 都计入 —— 特殊方法经
+            type 查找,实例 __getattr__ 兜不住 with,必须显式实现 __enter__。"""
+
+            def __init__(self, inner):
+                self.inner = inner
+                self.acquires = 0
+
+            def acquire(self, *a, **k):
+                self.acquires += 1
+                return self.inner.acquire(*a, **k)
+
+            def release(self):
+                return self.inner.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                self.release()
+                return False
+
+        snap_probe = _LockProbe(e.snap_lock)
+        sess_probe = _LockProbe(e._session_lock)
+        e.snap_lock = snap_probe
+        e._session_lock = sess_probe
+        try:
+            e.recent_sessions(8)                    # 读侧快照:1 次 _session_lock
+            e._rebuild_session_last_rowid()         # 冷回填:1 次
+            e._global_part_tps(1_800_004.0)         # 走读 sess_late:锁内喂点 1 次
+            check("T3:N3 菜单/回填/走读三路径 snap_lock acquire==0",
+                  snap_probe.acquires == 0, str(snap_probe.acquires))
+            check("T3:N3 三路径各取 _session_lock(≥3)",
+                  sess_probe.acquires >= 3, str(sess_probe.acquires))
+        finally:
+            e.snap_lock = snap_probe.inner
+            e._session_lock = sess_probe.inner
+        e.stop()
+
+        # ---- ⑦ 库缺失:回退失败 → [](改前同判),缓存仍冷不炸 ----
+        zsrc.DB_PATH = str(tmp / "nope.sqlite"); de.DB_PATH = zsrc.DB_PATH
+        e4 = de.DataEngine(queue.Queue(maxsize=1))
+        check("T3:库缺失 → [](改前同判)且缓存仍冷",
+              e4.recent_sessions(8) == [] and e4.recent_sessions(8) == []
+              and e4._session_last_rowid == {}, "")
+        e4.stop()
+    finally:
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ========== T4:ZCode db 文件闸门 + today0 时间闸 + _wake 事件唤醒 + 变化即 push ==========
+
+def test_t4_db_gate_time_gate_and_wake():
+    """T4 闸门三件套合成 temp 库验收(①-⑥⑧直接驱动 _db_tick = _db_loop
+    循环体,5 拍 = 5s 节拍的确定性等价;真实线程路径由 ⑦ 单独覆盖):
+    ①空闲 0-SQL:基线拍后冻结 db + 时钟钉死(de.today0_ms 固定值,时间闸
+    静默)连续 5 拍闸门管辖 SQL 计数==0 —— monkeypatch _connect 计数,B4'
+    清单口径含 _check_activity(on_activity 已接线,未跳过必发水位 SQL)与
+    _poll_new_completed;且 N6 计数代理包 eng.snap_lock 断言 acquire==0
+    (尾段无锁推进,空闲 0 持锁);
+    ②衰减采样仍推进:_gtps_hist 随 tick 增长(基线+5=6 点)、值按 T2 缓存
+    逐拍严格衰减(吞吐窗内完成行,关门拍不重查、ov 随 cut 前移收缩);
+    ③Claude 分量每 tick 现调(假源计数),ZCode 分量关门拍取缓存不现调,
+    today_by_source 两源均在列、ZCode 派生字段(today_tokens)保持开闸值;
+    ④-wal 不存在不炸:合成库 DELETE journal 全程无 -wal(stat OSError →
+    视为维持原状 N2),闸门照常关/开;
+    ⑤文件 append(内容变)与 touch(仅 mtime 变)后下一拍 SQL 均恢复;
+    append 拍 quota 活动信号照发(_check_activity 未被闸门饿死);
+    ⑥值未变不 push:吞吐窗空(完成分量恒 0.0)的引擎上,touch 开闸拍全
+    字段与上拍相同 → 不 push;关门拍永不 push;
+    ⑦_wake 置位 → 真实 _db_loop 线程 ≤POLL_DB 内执行一轮且 push(started
+    引擎;_no_persist 钉 True:T6 watcher 不启动,免真实 ~/.claude FS 事件
+    串场;启动 push 落定后的静默窗口本身就是空闲无 push 的验证);
+    ⑧跨午夜时间闸(B1'):假时钟 today0 前跳一天 → 强制开闸恰一次,
+    today_tokens 随新天界清零、ZCode 源分量缓存随之刷新、易变字段有变
+    → push,之后恢复关门(再一拍 SQL==0)。
+    DB_PATH 双 patch 单点(既有同款),finally 恢复,绝不碰真实 ~/.zcode 库。"""
+    import os
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    from zcode_meter.sources.base import UsageSource
+
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_t4gate_"))
+    orig = zsrc.DB_PATH
+    orig_today0 = de.today0_ms
+    orig_nopersist = de._no_persist
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        # part 无 data 列:与既有 sparkline fixture 同款 —— _global_part_tps
+        # 的重建/走读/探针按 B3 各自吞 sqlite3.Error,part 分量恒 0.0,本测试
+        # 专注闸门与完成分量衰减,不被 part 侧行为牵扯
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        t0 = de.today0_ms()
+        now_ms = int(time.time() * 1000)
+        # 唯一 completed 行:今日且横跨 10s 吞吐窗沿(ft<cut<c)—— 关门拍
+        # 衰减可见:ov=c−cut 随 cut 前移严格收缩(gen=19s r=1350/19)。
+        # started_at 必须钉在 now 附近而非 t0(午夜):T2 取数是 started_at
+        # 前置形态(B3' 设计边界 = 单请求>2h 的行被有意排除),上午跑测试时
+        # t0 起点的行会整个被排除、完成分量恒 0;max(t0,…) 兜住午夜后
+        # ~21s 内跑测试的极端时刻(仍保『今日』口径)
+        s1 = max(t0 + 1000, now_ms - 21_000)
+        con.execute(
+            "INSERT INTO model_usage (session_id, query_source, status,"
+            " started_at, model_id, provider_id, input_tokens,"
+            " cache_read_input_tokens, output_tokens, duration_ms,"
+            " time_to_first_token_ms, first_token_at, completed_at)"
+            " VALUES ('sess_main','main_turn','completed',?,"
+            " 'GLM-5.3','bigmodel',1000,0,1350,19000,1000,?,?)",
+            (s1, now_ms - 20_000, now_ms - 1_000))
+        con.execute("INSERT INTO part (session_id) VALUES ('sess_main')")
+        con.commit(); con.close()
+        check("T4④:合成库无 -wal 文件(DELETE journal,stat OSError 路径)",
+              not os.path.exists(tdb + "-wal"))
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        # 时钟钉死:today0_ms 恒定 → 时间闸全程静默(⑧再改值触发);真实
+        # 午夜瞬间跑本测试也不会误开闸(固定值永不变化)
+        de.today0_ms = lambda: t0
+
+        class _GateZCode(zsrc.ZCodeSource):
+            """计数假 ZCode 源:isinstance 保留(尾段按 ZCodeSource 判缓存/
+            现调),today_usage 不发 SQL、返回可变值 —— 只验证调用面与缓存
+            语义;真源的 SQL 骑同一闸门(开拍刷新/关拍取缓存)。"""
+            def __init__(self):
+                self.calls = 0
+                self.val = 111
+
+            def is_available(self):
+                return True
+
+            def today_usage(self):
+                self.calls += 1
+                return self.val
+
+        class _GateClaude(UsageSource):
+            """计数假非 DB 源:闸门不管非 DB 分量,每 tick 都该被现调。"""
+            name = "FakeClaude"
+
+            def __init__(self):
+                self.calls = 0
+
+            def is_available(self):
+                return True
+
+            def today_usage(self):
+                self.calls += 1
+                return 7
+
+        class _LockProbe:
+            """snap_lock 计数代理(N6):with 与显式 acquire 都计入;特殊
+            方法经 type 查找,必须显式实现 __enter__(T3 同款)。"""
+
+            def __init__(self, inner):
+                self.inner = inner
+                self.acquires = 0
+
+            def acquire(self, *a, **k):
+                self.acquires += 1
+                return self.inner.acquire(*a, **k)
+
+            def release(self):
+                return self.inner.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                self.release()
+                return False
+
+        fz, fc = _GateZCode(), _GateClaude()
+        e = de.DataEngine(queue.Queue(maxsize=50))
+        e.sources = [fz, fc]
+        sql = []
+        orig_connect = e._connect
+
+        def _counting_connect():
+            sql.append(1)
+            return orig_connect()
+        e._connect = _counting_connect
+        act = []
+        e.on_activity = lambda: act.append(1)   # 接线:_check_activity 不再短路
+
+        # —— 基线拍:无基线必开闸(SQL 已跑、源缓存已灌、首拍 push)——
+        e._db_tick(False)
+        check("T4①:首拍无基线必开闸(SQL 已跑+基线已立+源缓存已灌)",
+              len(sql) > 0 and e._gate_ready and fz.calls == 1
+              and e._src_today_cache.get("ZCode") == 111,
+              f"sql={len(sql)} fz={fz.calls} cache={e._src_today_cache}")
+        check("T4①:首拍 push(fp 无基线必不同)", e.out.qsize() == 1,
+              str(e.out.qsize()))
+        v0 = e.snap.global_tps
+        expect0 = (1350.0 / 19.0) * 9.0 / de.DataEngine.THROUGHPUT_WINDOW_S
+        # 上界精确(ov=c−cut≤9s,构造延迟只会缩小 ov)、下界放宽(50.0 兜
+        # 住构造耗时抖动):>50 证明行确在窗内被取到 —— started_at 钉 now 的
+        # 注释就是防它落进 B3' 2h 边界被排除(初版曾因此恒 0.0)
+        check("T4②:完成分量手算量级(ft=−20s c=−1s,ov≈9s)",
+              50.0 < v0 <= expect0 + 0.1, f"got {v0} expect≈{expect0}")
+        today_base = e.snap.today_tokens
+
+        # —— ①②③④ 空闲 5 拍:冻结 db + 时钟钉死 → 0 SQL / 0 持锁 / 衰减照推 ——
+        n_base = len(sql)
+        probe = _LockProbe(e.snap_lock)
+        e.snap_lock = probe
+        try:
+            for _ in range(5):
+                # 拍间隔先行(sleep 在 tick 前):基线拍→首拍也隔 ≥20ms ——
+                # 衰减侧 cut_ms 是 int 毫秒,同毫秒两拍会得到完全相等的值,
+                # 严格递减断言就被同毫秒抖动吞掉(实测踩过);20ms 保证每对
+                # 相邻拍必跨毫秒,5 拍合计 ~0.1s 测试开销可忽略
+                time.sleep(0.02)
+                e._db_tick(False)
+        finally:
+            e.snap_lock = probe.inner
+        hist = list(e._gtps_hist)
+        check("T4①:空闲 5 拍闸门管辖 SQL==0(B4' 清单口径)",
+              len(sql) == n_base, f"sql={len(sql)}")
+        check("T4①:空闲 5 拍 snap_lock acquire==0(N6 尾段无锁)",
+              probe.acquires == 0, f"acquires={probe.acquires}")
+        check("T4②:_gtps_hist 随 tick 增长(基线+5=6 点)",
+              len(hist) == 6, f"len={len(hist)}")
+        check("T4②:值按 T2 缓存衰减(逐拍严格递减)",
+              all(a > b for a, b in zip(hist, hist[1:])),
+              f"hist={[round(v, 3) for v in hist]}")
+        check("T4③:Claude 分量每 tick 现调(6 拍 6 调)",
+              fc.calls == 6, f"calls={fc.calls}")
+        check("T4③:ZCode 分量关门拍取缓存(仅开闸拍现调 1 次)",
+              fz.calls == 1, f"calls={fz.calls}")
+        check("T4③:today_by_source 两源在列(ZCode=缓存值)",
+              dict(e.snap.today_by_source) == {"ZCode": 111, "FakeClaude": 7},
+              str(e.snap.today_by_source))
+        check("T4③:ZCode 派生字段保持开闸值(today_tokens 不动)",
+              e.snap.today_tokens == today_base,
+              f"{e.snap.today_tokens} vs {today_base}")
+        check("T4⑥:关门拍不 push(空闲期无 push = 现状 UI 语义)",
+              e.out.qsize() == 1, f"qsize={e.out.qsize()}")
+
+        # —— ⑤ 文件 append(内容变)→ 下一拍 SQL 恢复 + 活动信号 + push ——
+        n2 = len(sql)
+        con = sqlite3.connect(tdb)
+        con.execute(
+            "INSERT INTO model_usage (session_id, query_source, status,"
+            " started_at, model_id, provider_id, input_tokens,"
+            " cache_read_input_tokens, output_tokens, duration_ms,"
+            " time_to_first_token_ms, first_token_at, completed_at)"
+            " VALUES ('sess_main','main_turn','completed',?,"
+            " 'GLM-5.3','bigmodel',100,0,500,9000,1000,?,?)",
+            (max(t0 + 2000, now_ms - 19_000), now_ms - 18_000, now_ms - 2_000))
+        con.commit(); con.close()
+        e._db_tick(False)
+        check("T4⑤:append 后下一拍 SQL 恢复(闸门开)",
+              len(sql) > n2, f"sql={len(sql)}")
+        check("T4⑤:ZCode 源分量随开闸刷新(现调 +1)",
+              fz.calls == 2, f"calls={fz.calls}")
+        check("T4⑤:quota 活动信号照发(_check_activity 未被闸门饿死)",
+              len(act) == 1, f"act={len(act)}")
+        check("T4⑤:易变字段有变(today_tokens +600)→ push",
+              e.out.qsize() == 2 and e.snap.today_tokens == today_base + 600,
+              f"qsize={e.out.qsize()} today={e.snap.today_tokens}")
+
+        # —— ⑥ touch(仅 mtime 变,行集不变)→ 开闸但值未必变:本引擎完成
+        # 分量在窗内会衰减(值有变必 push),『值未变不 push』用独立库 ⑥ 补 ——
+        n3 = len(sql)
+        os.utime(tdb, None)
+        e._db_tick(False)
+        check("T4⑤:touch(仅 mtime 变)后下一拍 SQL 恢复",
+              len(sql) > n3, f"sql={len(sql)}")
+        e.stop()
+
+        # —— ⑥⑧ 独立库:完成行滑出吞吐窗(global_tps 恒 0.0,fp 只会因
+        # 真实字段变化而变)—— 值未变不 push + 跨午夜时间闸 ——
+        tdb2 = str(tmp / "t2.sqlite")
+        con = sqlite3.connect(tdb2)
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        # 今日行但 completed_at=−60s(滑出 10s 窗):today_tokens 有值、
+        # 完成分量恒 0.0 —— touch 开闸拍全字段不变 → 不 push 的干净形态
+        # (started_at 同样钉 now 附近,见上:B3' 2h 前置边界)
+        con.execute(
+            "INSERT INTO model_usage (session_id, query_source, status,"
+            " started_at, model_id, provider_id, input_tokens,"
+            " cache_read_input_tokens, output_tokens, duration_ms,"
+            " time_to_first_token_ms, first_token_at, completed_at)"
+            " VALUES ('sess_main','main_turn','completed',?,"
+            " 'GLM-5.3','bigmodel',1000,0,1350,19000,1000,?,?)",
+            (max(t0 + 1000, now_ms - 80_000), now_ms - 79_000, now_ms - 60_000))
+        con.execute("INSERT INTO part (session_id) VALUES ('sess_main')")
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb2; de.DB_PATH = tdb2
+        fz2, fc2 = _GateZCode(), _GateClaude()
+        e2 = de.DataEngine(queue.Queue(maxsize=50))
+        e2.sources = [fz2, fc2]
+        sql2 = []
+        orig_connect2 = e2._connect
+
+        def _counting_connect2():
+            sql2.append(1)
+            return orig_connect2()
+        e2._connect = _counting_connect2
+        e2._db_tick(False)                       # 基线拍:开闸 + 首拍 push
+        check("T4⑥:基线拍 push(fp 无基线)", e2.out.qsize() == 1,
+              str(e2.out.qsize()))
+        today2 = e2.snap.today_tokens
+        check("T4⑥:基线拍今日有值(2350)", today2 == 2350, str(today2))
+        n4 = len(sql2)
+        os.utime(tdb2, None)                     # 仅 mtime 变,内容不变
+        e2._db_tick(False)
+        check("T4⑥:touch 后 SQL 恢复(指纹含 mtime)",
+              len(sql2) > n4, f"sql={len(sql2)}")
+        check("T4⑥:全字段与上拍相同 → 不 push(值未变不 push)",
+              e2.out.qsize() == 1 and e2.snap.today_tokens == today2,
+              f"qsize={e2.out.qsize()}")
+        n5 = len(sql2)
+        e2._db_tick(False)
+        check("T4⑥:关门拍不 push 且 0 SQL",
+              len(sql2) == n5 and e2.out.qsize() == 1,
+              f"sql={len(sql2)} qsize={e2.out.qsize()}")
+        # ⑧ 跨午夜:假时钟 today0 前跳一天 → 时间闸强制开闸一次
+        fz2.val = 222                            # 值也变:验证缓存随之刷新
+        de.today0_ms = lambda: t0 + 86_400_000
+        n6 = len(sql2)
+        e2._db_tick(False)
+        check("T4⑧:时间闸强制开闸一次(SQL 恢复)",
+              len(sql2) > n6, f"sql={len(sql2)}")
+        check("T4⑧:today_tokens 随新天界清零",
+              e2.snap.today_tokens == 0, str(e2.snap.today_tokens))
+        check("T4⑧:ZCode 源分量缓存随之刷新",
+              e2._src_today_cache.get("ZCode") == 222
+              and dict(e2.snap.today_by_source)["ZCode"] == 222,
+              f"cache={e2._src_today_cache} tbs={e2.snap.today_by_source}")
+        check("T4⑧:易变字段有变(今日清零)→ push",
+              e2.out.qsize() == 2, f"qsize={e2.out.qsize()}")
+        n7 = len(sql2)
+        e2._db_tick(False)
+        check("T4⑧:时间闸消费后恢复关门(强制开闸恰一次)",
+              len(sql2) == n7, f"sql={len(sql2)}")
+        e2.stop()
+
+        # —— ⑦ _wake:真实 _db_loop 线程,置位 → ≤POLL_DB 内执行一轮且 push ——
+        de._no_persist = lambda: True            # T6 watcher 不启动,免真实
+        # ~/.claude FS 事件串场(注入式;run_all 的 ZM_NO_STATE=1 下本就 True)
+        try:
+            fz3, fc3 = _GateZCode(), _GateClaude()
+            e3 = de.DataEngine(queue.Queue(maxsize=50))
+            e3.sources = [fz3, fc3]
+            e3.start()
+            # 静置 1.4s:启动 push(run 初值/state 首变/首拍开闸)全部落定,
+            # 随后是关门拍(冻结 db)—— 空闲期无 push 本身就是要验证的语义
+            time.sleep(1.4)
+            while not e3.out.empty():
+                e3.out.get_nowait()
+            e3._wake.set()                       # T6 watcher 的提前出数信号
+            t_set = time.time()
+            got = None
+            while time.time() - t_set < 2.0:
+                if e3.out.qsize() > 0:
+                    got = time.time() - t_set
+                    break
+                time.sleep(0.02)
+            check("T4⑦:_wake 置位 → ≤POLL_DB 内执行一轮且 push",
+                  got is not None
+                  and got <= de.DataEngine.POLL_DB + 0.5,
+                  f"elapsed={got}")
+            e3.stop()
+            e3.join(timeout=2.0)
+        finally:
+            de._no_persist = orig_nopersist
+    finally:
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        de.today0_ms = orig_today0
+        de._no_persist = orig_nopersist
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     print("== test_fetch_total_usage =="); test_fetch_total_usage()
     print("== test_active_session_not_subagent =="); test_active_session_not_subagent()
@@ -1897,6 +3477,10 @@ if __name__ == "__main__":
     print("== test_burn_window_and_est_hours ==");       test_burn_window_and_est_hours()
     print("== test_billing_blocks_buckets ==");          test_billing_blocks_buckets()
     print("== test_claude_source_synthetic ==");         test_claude_source_synthetic()
+    # ---- v1 T5 新增:ClaudeSource 增量偏移解析(关 registry#19,合成临时目录) ----
+    print("== test_claude_source_incremental_append =="); test_claude_source_incremental_append()
+    print("== test_claude_source_reparse_rebuild ==");    test_claude_source_reparse_rebuild()
+    print("== test_claude_source_note_changes_concurrency =="); test_claude_source_note_changes_concurrency()
     print("== test_parse_quota_payload ==");             test_parse_quota_payload()
     print("== test_budget_alerts_dedup_and_reset ==");   test_budget_alerts_dedup_and_reset()
     print("== test_today_by_source ==");                 test_today_by_source()
@@ -1931,6 +3515,21 @@ if __name__ == "__main__":
     print("== test_trend_forecast_hand_computed ==");     test_trend_forecast_hand_computed()
     # ---- 速度趋势 sparkline 数据源(v0.8.0 T4:合成库手算对账,值/序/截断/排除/异常) ----
     print("== test_fetch_recent_speeds_synthetic ==");    test_fetch_recent_speeds_synthetic()
+    # ---- T2:全局吞吐完成分量 started_at 前置换行 + 行缓存衰减(取数/加权拆分) ----
+    print("== test_global_completed_tps_started_at_cache ==")
+    test_global_completed_tps_started_at_cache()
+    # ---- T1:全局吞吐流式分量 水位走读+rowid IN 定点探针(80.7/45.95ms→~0.1ms) ----
+    print("== test_global_part_tps_watermark_walk_probe ==")
+    test_global_part_tps_watermark_walk_probe()
+    # ---- T6:Claude watcher 线程(watchdog 可选,注入式 —— 无 watchdog 也绿) ----
+    print("== test_claude_watcher_injected ==")
+    test_claude_watcher_injected()
+    # ---- T3:recent_sessions 缓存读(引擎维护 sid→rowid,菜单暖读 ≤1ms;新旧全等/冷回退/删行裁剪/锁序) ----
+    print("== test_recent_sessions_cache_read ==")
+    test_recent_sessions_cache_read()
+    # ---- T4:ZCode db 文件闸门+today0 时间闸+_wake+变化即 push(空闲 0 SQL/0 持锁) ----
+    print("== test_t4_db_gate_time_gate_and_wake ==")
+    test_t4_db_gate_time_gate_and_wake()
     if FAILED:
         print(f"\nFAILED: {FAILED}")
         sys.exit(1)

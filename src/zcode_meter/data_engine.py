@@ -878,6 +878,21 @@ class DataEngine(threading.Thread):
     CHAR_PER_TOKEN_INIT = 3.2
     THROUGHPUT_WINDOW_S = 10.0   # 全局吞吐的完成重叠窗(用户拍板 10s;越小越
                                  # "瞬时"越抖,越大越平滑越迟钝)
+    # T2:completed 行取数(_refresh_completed_rows)的 started_at 前置回看窗。
+    # 取数必须走 `started_at>=cut-本值 AND completed_at>=cut` 前置形态才能命中
+    # model_usage_started_model_idx(started_at 前缀)—— 纯 completed_at>=? 谓词
+    # 无索引可用,每秒全表 SCAN model_usage(两轮实测 39.7/33.71ms;把旧 SQL
+    # 字面照搬当缓存刷新用同样 SCAN,实测 41.37ms/次,评审已否决)。2h 的依据:
+    # 本库 MAX(completed_at-started_at)=MAX(duration_ms)=3,852,050ms≈64.2min、
+    # 超过 2h 的行数=0 —— 因此 started_at<cut-2h 且 completed_at>=cut(即单次
+    # 请求持续>2h)的行会被本形态排除,属设计边界(B3'):旧 completed_at-only
+    # 形态会计入这类行,本库实测零行、正常请求不存在,常量在此即声明。
+    COMPLETED_LOOKBACK_MS = 2 * 3_600_000
+    # T6:Claude watcher 合并防抖窗。watchdog 对一次 jsonl append 常连发多条
+    # modified 事件,首事件后再等 0.1s 把同批突发并成一轮 note_changes ——
+    # 增量解析次数 = 批次数而非事件数,而 0.1s 对『提前出数』的延迟贡献
+    # 可忽略(事件路径本就 1s TTL 采样)。
+    WATCH_DEBOUNCE_S = 0.1
 
     def __init__(self, out: "queue.Queue[Snapshot]"):
         super().__init__(daemon=True)
@@ -895,9 +910,65 @@ class DataEngine(threading.Thread):
         self._exact_out_chars = 0
         # ---- 全局瞬时吞吐(v0.8.0 对版期,速度语义从『当前会话』改『机器
         # 全部会话』):_gpart_last = 每会话最新 text part 的 (长度, 时刻),
-        # 增长即流式输出;_gtps_hist = 全局吞吐逐秒采样环形缓冲(sparkline) --
+        # 增长即流式输出;_gtps_hist = 全局吞吐逐秒采样环形缓冲(sparkline)。
+        # v0.9 T1 水位走读根治(改前 4000 行窗口 SQL 被 GROUP BY session_id
+        # 击穿成 part 全索引扫描,两轮实测 80.7/45.95ms,每秒一跑且全程持
+        # snap_lock)新增三态,全部由 _global_part_tps 在引擎线程独占维护:
+        # _part_watermark = part 表已走读到的最大 rowid(None=尚未建基线,首拍
+        # 经 _rebuild_part_baselines 全量重建;刻意不在 __init__ 做 —— 重建含
+        # ~42-56ms 全量 GROUP BY,属引擎线程首拍职责而非 UI 线程构造);
+        # _sid_text_rowid = 每会话最新 text part 行 rowid(仅喂 IN 长度探针,
+        # 与 _gpart_last 在同一裁剪点同步按 seen+64 裁剪,B5');_session_last_
+        # rowid = 每会话最大 rowid(任何类型行,append 语义 = 旧 recent_
+        # sessions 的 MAX(rowid) GROUP BY 增量化,走读喂点 + 回退全量重建;
+        # 刻意全量不裁剪 —— T3 recent_sessions 菜单正确性依赖全历史会话,
+        # 量级 = 会话数千级 × 每条几十字节 ≈ 几十 KB,远小于一行 part 数据)----
         self._gpart_last: dict = {}
         self._gtps_hist: "deque" = deque(maxlen=12)
+        self._part_watermark: int | None = None
+        self._sid_text_rowid: dict = {}
+        self._session_last_rowid: dict = {}
+        # T3:_session_last_rowid 的专属锁。读写双方:引擎写侧(_global_part_
+        # tps 走读批量 update / _rebuild_part_baselines 整体替换,均已在
+        # snap_lock 内)+ 菜单读侧(recent_sessions 快照拷贝 / 冷缓存回填
+        # _rebuild_session_last_rowid,UI 线程)。锁序纪律(N3):唯一合法
+        # 顺序 snap_lock→_session_lock —— 引擎写侧持 snap_lock 时再取本锁
+        # 合法;菜单读侧只取本锁;严禁持本锁再取 snap_lock(反向死锁);严禁
+        # 用 snap_lock 兜底缓存(菜单是低频 UI 路径,不得与引擎每秒 tick 争
+        # 引擎主锁)。
+        self._session_lock = threading.Lock()
+        # ---- T2:completed 行缓存(_global_completed_tps 取数/加权拆分)。
+        # 行集 [(output_tokens, first_token_at, completed_at)] 由
+        # _refresh_completed_rows 用 started_at 前置形态整批换行;加权每拍用
+        # 缓存+当前 now 重算 —— T4 闸门关闭期不刷新,重叠加权随 now 前移
+        # 自然衰减(冻结 db 下与旧『每秒重查』逐拍全等)。_completed_rows_
+        # cut_ms=None 表示从未取过数(_global_completed_tps 直调时兜底取一
+        # 次)。两者只在 snap_lock 内读写(_poll_stats 调用路径天然持锁)。----
+        self._completed_rows: list = []
+        self._completed_rows_cut_ms: int | None = None
+        # ---- T4:ZCode db 文件闸门 + today0 时间闸 + _wake 事件唤醒 ----
+        # _wake = Claude watcher(T6)的提前出数信号:置位让 _db_loop 的
+        # _wake.wait(POLL_DB) 立即返回执行一轮(SQL 段仍由闸门+时间闸独立
+        # 判定,唤醒轮也可能撞上冻结的 db);stop() 双 set,停机不等满周期。
+        self._wake = threading.Event()
+        # 闸门指纹:db.sqlite 与 db.sqlite-wal 各自的 (st_mtime_ns, st_size)。
+        # _gate_ready=False = 尚无基线(首拍必开闸,与旧『每 tick 全查』起步
+        # 一致);None 是合法指纹 = 文件缺席(DELETE journal 模式/首启),必须
+        # 与『从未见过』区分开 —— 否则 db 缺席的机器每拍都判开闸,空闲 0-SQL
+        # 永不成立。_gate_today0 = 上次开闸拍的 today0_ms()(B1' 时间闸:跨
+        # 午夜强制开闸,保午夜清零口径)。全部只由 _db_loop 线程读写。
+        self._gate_ready = False
+        self._gate_db_sig: "tuple | None" = None
+        self._gate_wal_sig: "tuple | None" = None
+        self._gate_today0: int | None = None
+        # 引擎侧 per-source today 值缓存(只装闸门管辖的 ZCode 源分量):
+        # 闸门开拍刷新 —— ZCodeSource.today_usage 的 SQL 属闸门管辖段
+        # (db 未变 ⇔ 今日分量必不变);关门拍 today_by_source 列表照常
+        # 每拍重建,但 ZCode 分量取缓存、非 DB 分量(Claude)现调 —— 故
+        # 刻意不把非 DB 分量装进缓存(装了也永不被读,白付一次调用)。
+        self._src_today_cache: dict = {}
+        # 变化即 push 的『易变字段』指纹(上拍值);None=尚无基线。
+        self._push_fp: "tuple | None" = None
         self._prev_max_rowid = self._max_usage_rowid()
         # ---- v0.5.1:quota 活动信号。水位 = completed 行最大 rowid(全
         # 会话全 query_source,含 subagent —— 与今日用量同宽,子代理消耗
@@ -916,6 +987,13 @@ class DataEngine(threading.Thread):
         # 顺序一致 —— 卡片 today_by_source 显示顺序不变
         self.sources: list = discover_sources()
         self.quota_hint = None           # UI 线程回写的 nextResetTime(ms),纯数据
+        # ---- T6:Claude watcher 的待处理事件队列(.jsonl 路径)。实例属性而
+        # 非 _claude_watch_loop 内局部变量:注入式单测不经 watchdog、不发真实
+        # FS 事件,直接向它喂合成事件即可驱动完整分发路径(验收钉死『测试机
+        # 无 watchdog 也必须绿』)。单生产者(watchdog handler 经
+        # _claude_watch_offer 投放)单消费者(watcher 线程 _claude_watch_pump),
+        # queue.Queue 自身线程安全,无需另加锁 ----
+        self._claude_watch_q: "queue.Queue" = queue.Queue()
 
     def _latest_session(self) -> str:
         """活跃会话 = part 表最新写入行的 session(part 是流式实时写的,
@@ -1054,16 +1132,102 @@ class DataEngine(threading.Thread):
             self._running = False
             self._on_request_done()
 
-    # ---- db 轮询 ----
+    # ---- db 轮询(T4:ZCode db 文件闸门 + today0 时间闸 + _wake 事件唤醒) ----
     def _db_loop(self):
+        # _wake.wait 兼职节拍与唤醒:Claude watcher(T6)置位 → 立即执行一轮
+        # (提前出数);超时 POLL_DB → 常规 1s 节拍。Event 语义保证不丢拍:
+        # 置位发生在 wait 之外时,下一次 wait 立即返回。先 clear 再执行 ——
+        # 执行期间再置位的事件留给下一拍,不丢不并。
         while not self.stop_flag.is_set():
-            self._poll_stats()
-            self._check_activity()          # v0.5.1:水位前进 → quota 活动信号
+            woken = self._wake.wait(self.POLL_DB)
+            if woken:
+                self._wake.clear()
+            self._db_tick(woken)
+
+    @staticmethod
+    def _stat_sig(path: str, prev: "tuple | None") -> "tuple | None":
+        """单文件闸门指纹 (st_mtime_ns, st_size)。stat OSError(文件不存在:
+        DELETE journal 模式/首启)→ 返回 prev,该文件视为维持原状(N2)——
+        绝不能把缺席当『变化』,否则 db 缺席/WAL 回收后的每一拍都假开闸,
+        空闲 0-SQL 名存实亡。"""
+        try:
+            st = os.stat(path)
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return prev
+
+    def _db_tick(self, woken: bool):
+        """_db_loop 单轮:闸门判定 → SQL 段/尾段 → 变化即 push。
+
+        闸门管辖段(B4' 清单,db 未变 ⇒ 全部可跳过且无损)= 本 tick 内经
+        _connect 发出的全部 ZCode DB SQL:_poll_stats 闸门段(会话 sums/
+        speed 分组/rlast/today/cost/burn + _refresh_completed_rows 换行 +
+        _global_part_tps 水位走读/定点探针)+ ZCodeSource.today_usage 分量
+        (经 _src_today_cache 刷新)+ _check_activity(_max_completed_rowid
+        水位:db 未变 ⇔ 水位必不变,quota 活动信号无损)+ _poll_new_
+        completed(db 未变 ⇔ _prev_max_rowid 基线必不变)。
+        尾段(_poll_stats 闸门段之后)每 tick 照跑:today_by_source 非 DB
+        分量、T2 缓存衰减重算、_gtps_hist 采样、push 判定。
+
+        note1:闸门重开首拍 part 差分的 Δt 含空闲期(_gpart_last 的时刻戳
+        停在上次开闸拍),过渡拍 tps 被稀释低估一拍、下拍恢复 —— 与现 1s
+        采样同粒度级的差异,不特殊处理。
+        note4:_switch_session/_refresh_session/_on_request_done/图表 fetch_*
+        等事件路径全量执行不受闸门管辖(它们直调 _poll_stats(),缺省开闸;
+        _refresh_session→_latest_session 每 0.5s 一条既存查询同样豁免)。"""
+        db_sig = self._stat_sig(DB_PATH, self._gate_db_sig)
+        wal_sig = self._stat_sig(DB_PATH + "-wal", self._gate_wal_sig)
+        today0 = today0_ms()
+        # 两文件均未变才关门;-shm 不进闸门(读者也会更新它,纯假阳性)。
+        # B1' 时间闸:today0_ms() 较上次开闸拍变化(跨午夜)→ 强制视为开闸
+        # 一次 —— today/today_cost/ZCode 源分量这类『查询无时间参数、值却
+        # 随本地天界变』的必须重算,午夜清零口径才保得住;顺带修复现状
+        # 『空闲期跨午夜 UI 今日数不刷新』的潜伏缺口(重算后易变字段有变
+        # 即触发下方 push)。
+        gate_open = (not self._gate_ready
+                     or db_sig != self._gate_db_sig
+                     or wal_sig != self._gate_wal_sig
+                     or today0 != self._gate_today0)
+        self._poll_stats(gate_open=gate_open)
+        if gate_open:
+            self._check_activity()      # v0.5.1:水位前进 → quota 活动信号
             if not self._running:
                 self._poll_new_completed()
-            self.stop_flag.wait(self.POLL_DB)
+            # 基线在 SQL 段执行后落地:开闸拍即使 SQL 因坏库被吞(值维持
+            # 旧值),指纹也已消费 —— 空闲期不反复重试坏库(与旧『每秒
+            # 重查坏库』相比少噪音,数据不比旧差:下次文件变化照常开闸)。
+            self._gate_ready = True
+            self._gate_db_sig, self._gate_wal_sig = db_sig, wal_sig
+            self._gate_today0 = today0
+        # 变化即 push:事件唤醒轮(watcher 刚报 Claude jsonl 有变,数字应
+        # 尽快落地)直接 push;开闸/时间闸轮易变字段较上拍有变才 push,
+        # 值未变不 push;关门轮永不 push —— 空闲期 UI 显示旧值本就是现状
+        # 语义(空闲期无 push),与 B1' 燃速冻结容忍同一家族。
+        fp = self._volatile_fp()
+        if woken or (gate_open and fp != self._push_fp):
+            self._push()
+        self._push_fp = fp
 
-    def _poll_stats(self):
+    def _poll_stats(self, gate_open: bool = True):
+        """今日统计一轮(T4 拆两段,闸门只管 ZCode DB SQL 段)。
+
+        gate_open=True(缺省)= 全量执行闸门管辖段 SQL 并刷新 per-source
+        today 值缓存 —— _db_loop 首拍与一切事件路径直调均走全量(note4:
+        _switch_session/_refresh_session/_on_request_done/图表 fetch_* 等
+        事件路径全量执行不受闸门管辖);False(文件闸门关且时间闸未触发)=
+        跳过 ZCode SQL 段,snap 的 ZCode 派生字段保持上次开闸值(燃速滑窗
+        冻结容忍+活动自愈,B1')。尾段每 tick 照跑(_poll_stats_tail)。
+        异常语义与拆分前一致:sqlite3.Error 一律吞掉不穿透。"""
+        part_tps = 0.0
+        if gate_open:
+            part_tps = self._poll_stats_gated()
+        self._poll_stats_tail(part_tps)
+
+    def _poll_stats_gated(self) -> float:
+        """闸门管辖段:本 tick 内全部 ZCode DB SQL(拆分前的整段原样移入,
+        SQL 一字未动),持 snap_lock 与会话切换互斥。返回 part 流式贡献供
+        尾段求和;sqlite3.Error → 吞掉返回 0.0(拆分前同吞法,part 贡献
+        该拍作 0.0)。"""
         try:
             with self.snap_lock:                    # 与会话切换互斥,防半更新快照
                 con = self._connect()
@@ -1147,19 +1311,28 @@ class DataEngine(threading.Thread):
                 self.snap.burn_cny_per_hour = round(burn_cny, 6)
                 self.snap.est_hours_left = est_hours_left(
                     self.daily_budget_cny, cost_cny, burn_cny)
-                # 速度趋势 sparkline:全局吞吐逐秒采样环形缓冲(v0.8.0 对版期
-                # 速度语义改全局,与主数字同口径;12 点 × 1s 采样 ≈ 12s 走势)
+                # 速度趋势 sparkline 的 part 分量(全局吞吐逐秒采样环形缓冲,
+                # v0.8.0 对版期速度语义改全局,与主数字同口径;12 点 × 1s 采样
+                # ≈ 12s 走势);完成分量与采样推进在尾段(每 tick 照跑)。
+                # T2:completed 行缓存换行(取数与加权拆分的取数侧,SQL=主查询
+                # 同一 started_at 前置换行,严禁 completed_at-only 字面形态)
+                # —— 本调用按 T4 设计落在闸门管辖段:仅闸门开/时间闸开才刷,
+                # 关闭期 _global_completed_tps 用缓存+当前 now 衰减重算;期间
+                # db 里被删的行最多残留贡献 THROUGHPUT_WINDOW_S(10s)即自然
+                # 出窗,容忍。
                 now_t = time.time()
-                self.snap.global_tps = (self._global_part_tps(now_t)
-                                        + self._global_completed_tps(
-                                            now_t, self.THROUGHPUT_WINDOW_S))
-                self._gtps_hist.append(self.snap.global_tps)
-                self.snap.recent_speeds = list(self._gtps_hist)
-                # 多源聚合(只读、TTL 缓存);新字段与本批同批填充,
-                # _switch_session 重建 Snapshot 后经 _poll_stats 立即补全不闪空
-                self.snap.today_by_source = [
-                    (s.name, s.today_usage()) for s in self.sources
-                    if s.is_available()]
+                self._refresh_completed_rows(
+                    int((now_t - self.THROUGHPUT_WINDOW_S) * 1000))
+                part_tps = self._global_part_tps(now_t)
+                # T4:per-source today 值缓存开闸拍刷新,且只装闸门管辖的
+                # ZCode 源分量 —— ZCodeSource.today_usage 的 SQL 属闸门管辖段
+                # (db 未变 ⇔ 今日分量必不变),关门拍由尾段取缓存构建列表;
+                # 非 DB 分量(Claude)尾段每拍现调,不进缓存(装了也永不被
+                # 读,白付一次调用)。_switch_session 重建 Snapshot 后经
+                # _poll_stats(全量)立即补全不闪空。
+                self._src_today_cache = {
+                    s.name: s.today_usage() for s in self.sources
+                    if isinstance(s, ZCodeSource) and s.is_available()}
                 self.snap.session_in, self.snap.session_cache, self.snap.session_out = sums
                 self.snap.speed_by_model = speed_by_model
                 self.snap.tps_avg = speed_by_model[0][2] if speed_by_model else None
@@ -1169,6 +1342,40 @@ class DataEngine(threading.Thread):
                                         if self.snap.session_in else 0.0)
                 if speed_by_model:
                     self.snap.model = speed_by_model[0][1]
+                return part_tps
+        except sqlite3.Error:
+            return 0.0
+
+    def _poll_stats_tail(self, part_tps: float) -> None:
+        """T4 尾段:闸门无关,每 tick 照跑(开闸拍在 SQL 段之后、关门拍独自
+        执行)。刻意不持 snap_lock —— 空闲期 0 持锁(N6:尾段是空闲期唯一
+        还在跑的引擎工作),字段写遵循 _poll_new_completed/run() 主循环的
+        既有无锁纪律;本方法触达的全部状态(_completed_rows/_gtps_hist/
+        _src_today_cache)单写者 = 引擎 _db_loop 线程(直调场景为调用线程
+        串行),无跨线程竞争。
+
+        B1'(燃速滑窗冻结容忍,裁决=容忍+自愈):关门期 burn_*(60min 滑窗)
+        随 SQL 段冻结、活动恢复(闸门开)即自愈 —— 与现状 UI 表现一致(空闲
+        期无 push,UI 本就显示旧值;T7 CHANGELOG 声明该语义)。global_tps
+        的完成分量靠 T2 缓存 + 当前 now 重算,衰减照推不冻结;part 分量在
+        关门拍为 0(冻结的 db 无流式增长,查询亦得 0,等价;重开首拍的
+        Δt 稀释见 _db_tick note1)。"""
+        try:
+            now_t = time.time()
+            self.snap.global_tps = (part_tps + self._global_completed_tps(
+                now_t, self.THROUGHPUT_WINDOW_S))
+            self._gtps_hist.append(self.snap.global_tps)
+            self.snap.recent_speeds = list(self._gtps_hist)
+            # today_by_source 列表每 tick 重建:ZCode 分量取开闸拍缓存(关门拍
+            # 绝不发 ZCode SQL —— 空闲 0-SQL 的组成之一),非 DB 分量(Claude
+            # 等)现调(源内部 TTL 缓存,现调代价 O(新增字节))。缓存缺项只
+            # 可能出现在『从未开闸』的异常调用序,兜底现调保口径不缺行(正常
+            # _db_loop 路径首拍必开闸,缺项不可达)。
+            self.snap.today_by_source = [
+                (s.name, self._src_today_cache[s.name]
+                 if isinstance(s, ZCodeSource) and s.name in self._src_today_cache
+                 else s.today_usage())
+                for s in self.sources if s.is_available()]
         except sqlite3.Error:
             pass
 
@@ -1228,60 +1435,251 @@ class DataEngine(threading.Thread):
 
     # ---- 全局瞬时吞吐(2026-09-28,速度语义『当前会话』→『机器全部会话』) ----
     def _global_part_tps(self, now: float) -> float:
-        """流式贡献:所有会话最新 text part 的长度增长之和 ÷ 字符token比。
+        """流式贡献:所有会话最新 text part 行的长度增长之和 ÷ 字符token比。
 
-        part 表每个会话都在流式写入(子代理/工作流同样),取每会话 MAX(rowid)
-        的 text 行长度,与上次采样差分 —— 增长即输出速率;行切换(新一轮开始,
-        新行更短)只重置基线不计负增长。扫近 4000 行窗口防全表 GROUP BY;会话
-        消失(生成完)时裁剪字典防无限长。chars/token 用主会话完成请求自校准
-        的 _chars_per_token(子代理内容比例近似,初始化 3.2)。"""
+        part 表每个会话都在流式写入(子代理/工作流同样),取每会话最新 text
+        part 行长度,与上次采样差分 —— 增长即输出速率;行切换(新一轮开始,
+        新行更短)只重置基线不计负增长;不筛会话(全局吞吐含子代理/工作流)。
+        chars/token 用主会话完成请求自校准的 _chars_per_token(子代理内容比例
+        近似,初始化 3.2)。
+
+        v0.9 T1 根治(改前 80.7/45.95ms:4000 行窗口被 GROUP BY session_id
+        击穿成 part 全索引扫描,每秒一跑且全程持 snap_lock),常态三步:
+        ①水位 `SELECT COALESCE(MAX(rowid),0) FROM part`(实测 0.003ms)——
+        MAX(rowid)<存量水位 = 删顶行/VACUUM 回退,转 _rebuild_part_baselines
+        全量重建;②走读 `rowid>? ORDER BY rowid` 只读新行(20 行 0.033ms/
+        100 行 0.217ms,成本随新行数线性)喂 _session_last_rowid(任何类型行)
+        与 _sid_text_rowid(text 行);③`rowid IN (…)` 定点探针重读每会话最新
+        text 行长度(29 键实测 0.043ms,INTEGER PRIMARY KEY 点查)—— 真实库
+        213,694/434,238 part 行 time_updated>time_created,流式输出在既有
+        rowid 内追加文本,纯『只看新行』会让流式贡献静默归零(口径级回归),
+        in-place 增长只有定点重读可见;顺带让窗口外行的 in-place 增长恢复
+        可见(旧 4000 行窗口外的静默增长,对齐 README 全局吞吐字面语义)。
+        B3:水位/走读/探针三条 SQL 各自函数内吞 sqlite3.Error(走读/探针失败
+        =该拍贡献 0.0、水位失败=维持旧水位下拍重试),绝不穿透 _poll_stats
+        —— 回归 fixture 只建 part(session_id) 无 data 列(test_data_engine
+        的 sparkline 接线断言要求 _gtps_hist 照常 append 0.0)。三查共用
+        一次 connect_ro(单连接纪律同 _poll_stats:WAL 库连接开关 ~1ms 比三
+        查合计 <0.1ms 贵一个数量级),con.close 置 finally 不泄漏。"""
+        # 单连接纪律:水位/走读/探针三查共用一次 connect_ro(与 _poll_stats
+        # 同款;WAL 库上一次连接开关实测 ~1ms,比三条查询本身合计 <0.1ms 贵
+        # 一个数量级,逐查开连接会把亚毫秒路径放大回毫秒级)。连接失败=水位
+        # 失败语义:维持旧水位,本拍贡献 0.0
         try:
             con = self._connect()
+        except sqlite3.Error:
+            return 0.0
+        try:
+            # ① 水位探测(O(1) 尾读)。失败=维持旧水位,本拍贡献 0.0
+            try:
+                (mx,) = con.execute(
+                    "SELECT COALESCE(MAX(rowid),0) FROM part").fetchone()
+            except sqlite3.Error:
+                return 0.0
+            wm = self._part_watermark
+            if wm is None or mx < wm:
+                # 首拍建基线 / MAX(rowid) 回退(删顶行/VACUUM):双基线全量重建
+                # (B2:_gpart 窗口基线 + _session_last_rowid 全量 GROUP BY,T3 缓存
+                # 依赖后者)。重建成功才推进水位 —— 半截重建会让 _session_last_
+                # rowid 永久缺会话且再无补救窗口(走读只覆盖新行),失败保持旧
+                # 水位下拍整体重试;重建拍基线刚重置,贡献恒 0.0
+                if self._rebuild_part_baselines(now, con):
+                    self._part_watermark = mx
+                return 0.0
+            walk_sids = set()
+            if mx > wm:
+                # ② 发现走读:只读水位之后的新行。任何类型行喂 _session_last_
+                # rowid(rowid 递增 + ORDER BY rowid,后写覆盖 = 旧 MAX(rowid)
+                # GROUP BY 的 append 语义);text 行另喂 _sid_text_rowid。走读
+                # 失败=贡献 0.0 且水位不推进(下拍重读,绝不跳行)
+                try:
+                    rows = con.execute(
+                        "SELECT rowid, session_id, length(data), substr(data,1,16)"
+                        " FROM part WHERE rowid>? ORDER BY rowid",
+                        (wm,)).fetchall()
+                except sqlite3.Error:
+                    return 0.0
+                new_last = {}   # T3:本拍新行先积累,循环后一次 _session_lock 换入
+                for rid, sid, _ln, prefix in rows:
+                    if not sid:
+                        continue
+                    new_last[sid] = rid
+                    # substr 取 16 字符(≥前缀 14 字符,留余量),Python 侧
+                    # startswith 与旧 SQL LIKE '{"type":"text"%' 前缀匹配等价
+                    # (闭引号把 "textbox" 之类同前缀类型名挡在外面);isinstance
+                    # 守卫坏库里 data 非 TEXT 的行
+                    if isinstance(prefix, str) and prefix.startswith('{"type":"text"'):
+                        self._sid_text_rowid[sid] = rid
+                    walk_sids.add(sid)
+                if new_last:
+                    # T3 锁序(N3):引擎写侧持 snap_lock(_poll_stats 调用链)时
+                    # 取 _session_lock 是唯一合法顺序;菜单读侧(recent_sessions)
+                    # 只取 _session_lock。批量一次换入 —— 菜单读到的要么是本拍
+                    # 前要么是本拍后的完整 dict,永不读到半拍中间态
+                    with self._session_lock:
+                        self._session_last_rowid.update(new_last)
+                # 水位推进到本拍实际读到的最大 rowid:水位探测与走读之间新到的
+                # 行下一拍重读(dict 更新幂等,无损失);探测后顶行被删则下拍
+                # MAX(rowid) 回落触发回退重建,水位不虚降
+                self._part_watermark = max(mx, rows[-1][0]) if rows else mx
+            # ③ 长度探针:对 _sid_text_rowid 当前键集做 rowid 点查 —— in-place
+            # 增长(流式输出在既有 rowid 内追加文本)只有定点重读可见。分块防
+            # SQLite 变量数上限(旧版默认 999;seen+64 裁剪后常态几十键,分块是
+            # 突发并发的防御 —— 单条 IN 打爆变量上限会被 except 吞成整拍 0.0)
+            if not self._sid_text_rowid:
+                return 0.0
+            try:
+                lens = {}
+                rids = list(self._sid_text_rowid.values())
+                for i in range(0, len(rids), 400):
+                    chunk = rids[i:i + 400]
+                    q = ("SELECT rowid, length(data) FROM part WHERE rowid IN (%s)"
+                         % ",".join("?" * len(chunk)))
+                    for rid, ln in con.execute(q, chunk).fetchall():
+                        lens[rid] = ln
+            except sqlite3.Error:
+                return 0.0        # 探针失败:基线维持,该拍贡献 0.0(不裁剪)
+            # ④ 差分:与旧实现逐字同式 —— 增长才计贡献,行切换只重置基线不计
+            # 负;基线对全部探针命中会话刷新时刻(静默会话也前移 t,长暂停后
+            # 恢复增长不因 dt 跨多拍被稀释,与旧窗口 SQL 每拍全量重读同语义)
+            tps = 0.0
+            seen = set()
+            dropped = []
+            for sid, rid in self._sid_text_rowid.items():
+                ln = lens.get(rid)
+                if ln is None:
+                    # IN 探针 miss:该 text 行已被删除(但表顶 rowid 未回落,不
+                    # 走回退重建)→ 会话裁剪 —— 基线与探针键同步去引用,防死
+                    # 基线对将来的新行算出假增长;会话再写新 text 行时经走读
+                    # 重新入表、基线重置
+                    dropped.append(sid)
+                    continue
+                if not sid or not ln:
+                    continue
+                prev = self._gpart_last.get(sid)
+                # B5' 的 seen = 本拍有活动的会话(走读到新行,或长度较基线有变
+                # 化);静默会话无贡献,超 seen+64 余量即被裁。活动会话被误裁的
+                # 唯一窗口是『本拍既无新行又无长度变化』且余量已耗尽 —— 与旧
+                # 4000 行窗口滚出同粒度级的边界,恢复写新行即重新入表
+                if sid in walk_sids or prev is None or ln != prev[0]:
+                    seen.add(sid)
+                if prev is not None and ln > prev[0]:
+                    dt = max(now - prev[1], 1e-3)
+                    tps += (ln - prev[0]) / dt / self._chars_per_token
+                self._gpart_last[sid] = (ln, now)
+            for sid in dropped:
+                self._sid_text_rowid.pop(sid, None)
+                self._gpart_last.pop(sid, None)
+            # B5' 裁剪策略钉死:两 dict 在同一裁剪点、同一 seen+64 谓词同步裁剪
+            # (_sid_text_rowid 仅喂探针,会话静默即无贡献,防 IN 变量数随历史会
+            # 话无界涨);_session_last_rowid 刻意不裁剪 —— T3 recent_sessions
+            # 菜单正确性依赖全历史会话,量级 = 会话数千级 × 几十字节 ≈ 几十 KB
+            if len(self._gpart_last) > len(seen) + 64:
+                self._gpart_last = {k: v for k, v in self._gpart_last.items()
+                                    if k in seen}
+            if len(self._sid_text_rowid) > len(seen) + 64:
+                self._sid_text_rowid = {k: v for k, v in self._sid_text_rowid.items()
+                                        if k in seen}
+            return tps
+        finally:
+            con.close()
+
+    def _rebuild_part_baselines(self, now: float, con) -> bool:
+        """part 侧基线全量重建(_global_part_tps 首拍/删顶行·VACUUM 回退时
+        独占调用;连接由调用方按单连接纪律开与关,本函数只查不关)。两个
+        重建都是本函数职责(B2,T3 依赖):
+        - _gpart_last/_sid_text_rowid:旧 4000 行窗口 SQL 一次重建(text 行
+          长度基线;窗口 SQL 仅在回退/首拍跑,~46-81ms 不进常态路径);
+        - _session_last_rowid:全量 GROUP BY(session_id, MAX(rowid)) 重建
+          (任何类型行的每会话最大 rowid;实测 ~42-56ms,同样仅此路径)。
+        全有或全无:两查询都成功才落盘并返回 True(调用方据此推进水位),
+        任一失败返回 False 且不动现状 —— 半截重建会让 _session_last_rowid
+        永久缺会话(走读只覆盖新行,再无补救窗口),整体重试才是安全侧。"""
+        try:
             rows = con.execute(
                 "SELECT session_id, MAX(rowid), length(data) FROM part"
                 " WHERE data LIKE '{\"type\":\"text\"%'"
                 " AND rowid > (SELECT MAX(rowid) FROM part) - 4000"
                 " GROUP BY session_id").fetchall()
-            con.close()
         except sqlite3.Error:
-            return 0.0
-        tps = 0.0
-        seen = set()
-        for sid, _mx, ln in rows:
+            return False
+        try:
+            srows = con.execute(
+                "SELECT session_id, MAX(rowid) FROM part"
+                " GROUP BY session_id").fetchall()
+        except sqlite3.Error:
+            return False
+        self._gpart_last = {}
+        self._sid_text_rowid = {}
+        for sid, mx_rid, ln in rows:
             if not sid or not ln:
                 continue
-            seen.add(sid)
-            prev = self._gpart_last.get(sid)
-            if prev is not None and ln > prev[0]:
-                dt = max(now - prev[1], 1e-3)
-                tps += (ln - prev[0]) / dt / self._chars_per_token
             self._gpart_last[sid] = (ln, now)
-        if len(self._gpart_last) > len(seen) + 64:
-            self._gpart_last = {k: v for k, v in self._gpart_last.items()
-                                if k in seen}
-        return tps
+            self._sid_text_rowid[sid] = mx_rid
+        # T3 锁序(N3):本函数经 _global_part_tps←_poll_stats 持 snap_lock,
+        # 此处再取 _session_lock = snap_lock→_session_lock 唯一合法顺序;
+        # 菜单读侧(recent_sessions)只取 _session_lock,绝无反向持锁路径
+        with self._session_lock:
+            self._session_last_rowid = {sid: rid for sid, rid in srows if sid}
+        return True
+
+    def _refresh_completed_rows(self, cut_ms: int) -> None:
+        """completed 行缓存整批换行(T2 取数/加权拆分的取数侧)。
+
+        与主查询同一 started_at 前置换行:`started_at>=cut-COMPLETED_
+        LOOKBACK_MS AND completed_at>=cut` —— started_at 前缀命中
+        model_usage_started_model_idx(真实库实测 0.213ms/SEARCH,同口径复测
+        旧 completed_at-only 形态 40.016ms 全表 SCAN;spec 两轮基线 39.7/
+        33.71ms,字面照搬当缓存刷新用实测 41.37ms/次,均已否决)。
+        completed_at>=cut 只是取数期的行集
+        裁剪:加权侧用当前 cut 重算重叠,缓存里 completed_at 已滑出窗的行
+        在 ov_ms<=0 处自然排除,故缓存行集偏多无害、偏少(闸门关闭期新完成
+        的行)待下拍开闸补齐。
+
+        sqlite3.Error:函数内吞掉、清空缓存并照常盖章 cut —— 该拍完成贡献
+        0.0(与旧『查询失败→0.0』同语义),绝不穿透到 _poll_stats(缺列库/
+        坏库不炸尾段采样);con.close 置 finally,查询抛错也不泄漏连接。"""
+        try:
+            con = self._connect()
+            try:
+                rows = con.execute(
+                    "SELECT output_tokens, first_token_at, completed_at"
+                    " FROM model_usage WHERE status='completed'"
+                    " AND started_at>=? AND completed_at>=?"
+                    " AND output_tokens>0 AND first_token_at IS NOT NULL",
+                    (cut_ms - self.COMPLETED_LOOKBACK_MS, cut_ms)).fetchall()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            self._completed_rows = []
+            self._completed_rows_cut_ms = cut_ms
+            return
+        self._completed_rows = rows
+        self._completed_rows_cut_ms = cut_ms
 
     def _global_completed_tps(self, now: float, window_s: float) -> float:
         """完成贡献:completed 行的输出区间 [first_token_at, completed_at] 与
         最近 window_s 窗口的重叠加权 —— 贡献 = r_i × 重叠秒 / 窗口,其中
         r_i = output/(c−ft)。token 摊到真实生成的那段时间上,完成瞬间不产生
         尖峰;流式请求完成后由 part 增长无缝切换到本项(不重不漏)。
-        completed_at≥窗沿即全部候选行。异常语义:sqlite3.Error → 0.0。"""
+        加权循环与拆分前逐字同式(窗口/加权语义一字不动)。
+
+        T2 取数与加权拆分:行集来自 _completed_rows 缓存(由 _poll_stats 每拍
+        调 _refresh_completed_rows 换行;本函数仅在从未取数时兜底取一次),
+        每拍用缓存+当前 now 重算重叠 —— T4 闸门关闭期缓存冻结、衰减照推:
+        冻结 db 下行集不变,本式与旧『每秒重查』逐拍全等;期间 db 里被删的行
+        最多残留贡献 window_s(10s)即自然出窗,容忍。设计边界(B3'):
+        started_at<cut-COMPLETED_LOOKBACK_MS 且 completed_at>=cut 的行(单次
+        请求持续>2h)在取数侧被排除 —— 本库实测 0 行超 2h(常量注释即声明),
+        旧 completed_at-only 形态会计入,属有意收窄而非回归。
+        异常语义:sqlite3.Error → 0.0(取数侧自吞并清缓存,见上)。"""
         cut_ms = int((now - window_s) * 1000)
-        try:
-            con = self._connect()
-            rows = con.execute(
-                "SELECT output_tokens, first_token_at, completed_at"
-                " FROM model_usage WHERE status='completed' AND completed_at>=?"
-                " AND output_tokens>0 AND first_token_at IS NOT NULL",
-                (cut_ms,)).fetchall()
-            con.close()
-        except sqlite3.Error:
-            return 0.0
+        if self._completed_rows_cut_ms is None:   # 从未取数:直调兜底取一次
+            self._refresh_completed_rows(cut_ms)
         win = max(window_s, 1e-3)
         now_ms = now * 1000.0
         tps = 0.0
-        for out_tok, ft, c in rows:
+        for out_tok, ft, c in self._completed_rows:
             gen_s = max((c - ft) / 1000.0, 1e-3)
             ov_ms = min(c, now_ms) - max(ft, cut_ms)
             if ov_ms > 0:
@@ -1387,10 +1785,40 @@ class DataEngine(threading.Thread):
             self._switch_session(self._latest_session() or self.session_id)
 
     # ---- UI 侧查询(右键会话菜单 / 历史图表窗口,均只读独立连接) ----
-    def recent_sessions(self, limit: int = 8) -> list:
-        """最近会话(手动切换菜单用):按 part 每会话最新写入倒序、排除
-        subagent,与 _latest_session 跟随口径同源。LEFT JOIN 取标题:
-        标题缺失时列出空标题而非丢会话(与 _session_title 行为一致)。"""
+    def _rebuild_session_last_rowid(self) -> None:
+        """_session_last_rowid 全量重建(sid→每会话 part 最大 rowid)。
+
+        刻意不过滤 subagent/dwf —— 排除红线是菜单读侧(recent_sessions)的
+        职责,与 T1 走读『任何新行都喂』的 append 语义保持同一不变式。调用方
+        是 recent_sessions 的冷缓存回填(UI 线程);T1 侧首拍/删顶行回退的全
+        量重建在 _rebuild_part_baselines 内自带同形 GROUP BY(那里还要重建
+        _gpart_last/_sid_text_rowid 吞吐基线,从菜单路径调它会跨线程踩踏
+        引擎线程独占状态,故两处刻意不合并)。
+        锁(N3):只取 _session_lock、绝不取 snap_lock —— 菜单线程严禁碰
+        引擎主锁;sqlite3.Error 自吞:坏库 → dict 维持原值(重建失败不丢
+        已有缓存,菜单下一拍照常读旧值)。"""
+        try:
+            con = connect_ro()
+            try:
+                rows = con.execute(
+                    "SELECT session_id, MAX(rowid) FROM part"
+                    " GROUP BY session_id").fetchall()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return
+        fresh = {sid: rid for sid, rid in rows if sid}
+        with self._session_lock:
+            self._session_last_rowid = fresh
+
+    def _recent_sessions_sql(self, limit: int = 8) -> list:
+        """recent_sessions 的冷缓存回退:改前实现逐字保留。
+
+        真实库实测 67.8/54.88ms(UI 线程对 part 全覆盖索引扫描 + TEMP B-tree
+        排序,无行数窗口、随 part 只增不减线性恶化)—— 正是被缓存读替掉的
+        形态:DESC LIMIT 窗口对深埋 90,184 行的会话无解、窗口 GROUP BY 版亦
+        40.6-58.9ms 不根治(见 registry open 项)。仅缓存冷时走(每引擎至多
+        一拍),行为与改前逐字一致就是回退语义的全部要求。"""
         try:
             con = connect_ro()
             rows = con.execute(
@@ -1404,6 +1832,80 @@ class DataEngine(threading.Thread):
             return [(sid, (title or "").strip()[:16]) for sid, title in rows]
         except sqlite3.Error:
             return []
+
+    def recent_sessions(self, limit: int = 8) -> list:
+        """最近会话(手动切换菜单用):按 part 每会话最新写入倒序、排除
+        subagent/dwf,与 _latest_session 跟随口径同源。签名/返回形状不变
+        (app.py _add_session_menu 的 (sid, title) 消费零改动)。
+
+        v0.9 T3 缓存读:数据源 = 引擎维护的 _session_last_rowid(T1 水位走读
+        每秒增量 + 首拍/删顶行回退的全量重建)。启动基线由 run() 序幕的
+        _poll_stats() 首拍完成(T1 落地后重建属引擎线程首拍职责,早于三子
+        线程启动;与 T3 步骤文本『run() 起步 GROUP BY』的差:同一 GROUP BY
+        不必跑两遍 —— 若 _poll_stats 前段查询坏库吞错,菜单首开仍走本方法
+        的冷回退+回填自愈,不依赖引擎循环活着)。菜单只做快照拷贝 + Python
+        过滤 + title 批查(session.id 主键 IN 点查,暖连接实测 0.008ms),暖读
+        本机实测 ~0.7-0.9ms(改前 67.8/54.88ms;残余大头=每查询独立只读连接
+        的首条语句 ~0.64ms —— SQLite 惰性 schema/页加载,全部 fetch_* 同款
+        纪律、刻意不为菜单破例缓存连接:驻留句柄会挡 ZCode 自己的库维护)。
+        语义与旧 SQL 逐字等价:sess_subagent*/sess_dwf-* 排除红线(Python
+        startswith,与 _handle_log_line 同款约定);批查缺行/NULL 标题 →
+        空标题而非丢会话(旧 LEFT JOIN);(title or '').strip()[:16] 截断
+        不变;rowid 倒序 + LIMIT 逐字镜像 SQLite(负 int=不设上限、0=空;
+        None/不可绑定值旧路径在 execute 即抛 sqlite3.Error 被吞成 [] ——
+        实测 LIMIT NULL → IntegrityError datatype mismatch,同判)。
+        缓存冷(空 dict:引擎未 start/run 序幕未及首拍/首拍失败/part 空)→
+        回退跑一次 _recent_sessions_sql 并全量回填,下一拍起暖读;回填失败
+        (库又没了)只意味着下一拍仍走回退,结果始终与改前一致。
+        锁序(N3):本方法只取 _session_lock、绝不取 snap_lock —— 菜单在
+        UI 线程,不得与引擎每秒 tick 争引擎主锁;引擎写侧持 snap_lock 时取
+        _session_lock 是唯一合法顺序,严禁反向持锁。"""
+        # LIMIT 语义镜像(见 docstring):先于快照判定,非法输入不触库
+        if limit is None:
+            return []
+        try:
+            n = int(limit)
+        except (TypeError, ValueError):
+            return []
+        with self._session_lock:
+            snap = dict(self._session_last_rowid)
+        if not snap:
+            # 冷缓存:回退现 SQL(逐字保留)+ 全量回填。回填不看本拍结果:
+            # part 空表回填得空 dict(下一拍仍冷仍回退,旧代价)、库缺失回填
+            # 自吞失败 —— 两条路径都不产生错误结果,只是慢
+            rows = self._recent_sessions_sql(limit)
+            self._rebuild_session_last_rowid()
+            return rows
+        # Python 过滤(与旧 SQL 的 NOT LIKE 同红线;走读/重建写入侧 `if sid`
+        # 已挡掉 NULL/空串,这里双保险同判)
+        items = [(rid, sid) for sid, rid in snap.items()
+                 if sid and not sid.startswith(("sess_subagent", "sess_dwf-"))]
+        items.sort(key=lambda t: t[0], reverse=True)   # rowid 倒序;每会话最大
+        # rowid 互异无并列,序确定
+        if n >= 0:
+            items = items[:n]
+        sids = [sid for _rid, sid in items]
+        if not sids:
+            return []
+        titles = {}
+        try:
+            con = connect_ro()
+            try:
+                # IN 点查(session.id 主键);字符串只拼 '?' 个数、值全部参数
+                # 绑定;分块防 SQLite 变量数上限(菜单恒传 8,纯防御)
+                for i in range(0, len(sids), 400):
+                    chunk = sids[i:i + 400]
+                    q = ("SELECT id, title FROM session WHERE id IN (%s)"
+                         % ",".join("?" * len(chunk)))
+                    for sid, t in con.execute(q, chunk).fetchall():
+                        titles[sid] = t or ""
+            finally:
+                con.close()
+        except sqlite3.Error:
+            # 旧实现是单条 SQL:session 表缺失/坏库时整体失败 → [];批查
+            # 失败同判(会话列表与标题一体可得不可得,与旧 LEFT JOIN 一致)
+            return []
+        return [(sid, titles.get(sid, "").strip()[:16]) for sid in sids]
 
     def fetch_daily_usage(self, days: int = 30) -> list:
         """按天 token 用量(二元组):completed 全来源 in+out,与今日用量
@@ -1617,6 +2119,151 @@ class DataEngine(threading.Thread):
         except sqlite3.Error:
             pass
 
+    # ---- Claude watcher(v0.9 T6,Live 实时刷新:watchdog 可选加速器) ----
+    # 红线:watcher 的定义与启动都在 data_engine —— sources 包严禁 import
+    # data_engine(v0.6.0 双模块实例事故),所以『FS 事件 → 引擎』的桥只能
+    # 由引擎侧自建:本线程监听 ClaudeSource.projects_dir(默认
+    # ~/.claude/projects)的 .jsonl 变更 → ClaudeSource.note_changes(T5 的
+    # 增量入口)→ self._wake.set()(T4 的引擎唤醒事件)让 _db_loop 提前
+    # 出数。加速器而非承重结构:任何死亡/缺位(watchdog 未安装、目录不
+    # 存在、启动失败、循环体异常)都只回退 ClaudeSource.SCAN_TTL=15s 的
+    # 既有节奏 —— 数据永不错只是慢,引擎三循环与 quota 调度照跑(P1 家族
+    # fixed4/fixed7/10/11 的结构性防御:绝不给 watcher 新增承重路径)。
+
+    def _claude_source(self):
+        """引擎源列表里的 ClaudeSource 实例(无则 None)。watcher 只服务
+        Claude 行的提前出数:其他源没有 note_changes 增量入口,监听无意义;
+        isinstance 而非按 name 匹配 —— 未来的 ClaudeSource 子类自然继承。"""
+        for s in self.sources:
+            if isinstance(s, ClaudeSource):
+                return s
+        return None
+
+    def _claude_watch_offer(self, path) -> None:
+        """watchdog handler 的唯一动作:.jsonl 路径入队,其余(目录事件、
+        别的扩展、缺 src_path 的怪事件)直接丢弃 —— 过滤口径与
+        ClaudeSource._scan 的 .jsonl 判定同款,勿比源更宽:多入队的路径
+        只会让 note_changes 白跑。handler 只入队绝不解析:watchdog 的
+        emitter 线程直接回调本方法,在这里读 jsonl 会阻塞它、拖慢全部
+        事件分发;真正的解析全在引擎侧 _claude_watch_pump 做。"""
+        if isinstance(path, str) and path.endswith(".jsonl"):
+            self._claude_watch_q.put(path)
+
+    def _claude_watch_drain(self) -> list:
+        """非阻塞清空待处理队列:防抖窗内到达的事件并成一批(顺序保留)。"""
+        out = []
+        while True:
+            try:
+                out.append(self._claude_watch_q.get_nowait())
+            except queue.Empty:
+                return out
+
+    def _claude_note_changed(self, paths) -> None:
+        """一批 .jsonl 变更 → 源增量解析 + 唤醒引擎(watcher 主循环每轮的
+        收口)。顺序钉死『先 note_changes 后置位 _wake』:被唤醒的 _db_loop
+        轮询 today_by_source 时源缓存已更新,提前出数才有意义。两个依赖
+        都按『有则用』消费:getattr 拿 _wake —— T4 未落地/注入式单测环境
+        可能没有该事件,此时 note_changes 仍已完成,下一拍 TTL 路径照常
+        出数(watcher 只提前、不承重);异常不在本层吞 —— 循环体的
+        try/except Exception 在 _claude_watch_loop 收口(死亡=回退 15s TTL)。
+        刻意不取 snap_lock:watcher 线程若与闸门/会话切换共享引擎锁,就把
+        『加速器』变成了潜在的死锁源(P1 家族防御),它只应触碰源与 _wake。"""
+        src = self._claude_source()
+        if src is None:
+            return
+        # 去重保序:watchdog 对一次 append 常连发多条 modified,同文件重复
+        # 入队是常态;note_changes 对同文件幂等(同 offset 无新行),去重
+        # 只是省一遍 IO
+        uniq = list(dict.fromkeys(paths))
+        src.note_changes(uniq)
+        wake = getattr(self, "_wake", None)
+        if wake is not None:
+            wake.set()
+
+    def _claude_watch_pump(self) -> bool:
+        """watcher 主循环的一轮:阻塞等首个事件(0.5s 超时只为周期性回查
+        stop_flag,不是节流)→ WATCH_DEBOUNCE_S 防抖窗内合并 → note_changes
+        + _wake 置位。返回本轮是否分发过事件。单独成方法的唯一目的:注入式
+        单测直接向 _claude_watch_q 喂合成事件即可驱动完整分发路径 ——
+        不依赖 watchdog 安装、不发真实 FS 事件(验收钉死的测试口径)。"""
+        try:
+            first = self._claude_watch_q.get(timeout=0.5)
+        except queue.Empty:
+            return False
+        # 合并防抖:首事件后再等一窗,把同批突发并成一轮 note_changes
+        time.sleep(self.WATCH_DEBOUNCE_S)
+        paths = [first]
+        paths.extend(self._claude_watch_drain())
+        self._claude_note_changed(paths)
+        return True
+
+    def _claude_watch_loop(self):
+        """Claude jsonl watcher(daemon 线程,run() 与 _tail/_db/_part 同批
+        启动):watchdog 递归监听 projects 目录,.jsonl 事件入队 → 100ms
+        防抖合并 → note_changes 增量解析 → _wake 置位。
+
+        每道失败路径都是『dbg + return』且不重试(缺依赖每秒重试 import
+        只会刷屏;回退 TTL 后重启应用即恢复):
+        - 守卫环境(--verify/ZM_NO_STATE,与 QuotaMonitor 同纪律):回归
+          测试绝不装真实 ~/.claude 的 FS 监听,测试行为不随机器漂移;
+        - 无 Claude 源 / 无 note_changes 增量入口(T5 未落地的分批合并
+          窗口期)/ projects 目录不存在:无事可做,静默回退 15s TTL;
+        - watchdog 未安装(可选依赖,exe 默认不打包):import 收在函数内
+          —— 挂在模块顶层会让缺依赖的机器启动即崩;ImportError 之外,
+          坏安装的任意导入异常同样降级(缺依赖=慢不死);
+        - observer 启动失败 / 循环体异常:线程退出,引擎三循环照跑。
+        """
+        if _no_persist():
+            return
+        src = self._claude_source()
+        if src is None:
+            dbg("claude watcher: no Claude source, fallback to 15s TTL")
+            return
+        if getattr(src, "note_changes", None) is None:
+            dbg("claude watcher: note_changes unavailable,"
+                " fallback to 15s TTL")
+            return
+        proj = getattr(src, "projects_dir", None)
+        if not proj or not os.path.isdir(proj):
+            dbg("claude watcher: projects dir unavailable,"
+                " fallback to 15s TTL")
+            return
+        try:
+            from watchdog.observers import Observer       # 函数内 import:可选依赖
+            from watchdog.events import FileSystemEventHandler
+        except Exception:              # ImportError=缺依赖;坏安装的异常同降级
+            dbg("claude watcher unavailable, fallback to 15s TTL")
+            return
+        eng = self
+
+        class _JsonlHandler(FileSystemEventHandler):
+            """只入队(on_any_event 收全部事件类型;『绝不解析』红线见
+            _claude_watch_offer docstring)。"""
+
+            def on_any_event(self, event):
+                eng._claude_watch_offer(getattr(event, "src_path", None))
+
+        try:
+            obs = Observer()
+            obs.schedule(_JsonlHandler(), proj, recursive=True)
+            obs.start()
+        except Exception as exc:
+            dbg(f"claude watcher start failed: {type(exc).__name__},"
+                " fallback to 15s TTL")
+            return
+        try:
+            while not self.stop_flag.is_set():
+                self._claude_watch_pump()
+        except Exception as exc:
+            dbg(f"claude watcher died: {type(exc).__name__}: {exc};"
+                " fallback to 15s TTL")
+        finally:
+            try:
+                obs.stop()
+                obs.join(timeout=2.0)
+            except Exception:
+                pass
+
     # ---- 主循环 ----
     def run(self):
         # P1 修复:session_id 为空(全新机器先装 meter 后才用 zcode、启动时
@@ -1633,6 +2280,14 @@ class DataEngine(threading.Thread):
         self._push()
         for target in (self._tail_loop, self._db_loop, self._part_loop):
             threading.Thread(target=target, daemon=True).start()
+        # T6:Claude watcher(watchdog 可选加速器;死亡/缺位=回退 15s TTL,
+        # 引擎三循环照跑)。守卫环境(--verify/ZM_NO_STATE,与 QuotaMonitor
+        # 同纪律)不启动:回归测试绝不装真实 ~/.claude 的 FS 监听;循环内
+        # 首行还有同款守卫,兜住不经 run() 的直接调用(注入式单测)。命名
+        # 线程便于区分:三循环刻意匿名(现状不动),新线程有名字才可观测。
+        if not _no_persist():
+            threading.Thread(target=self._claude_watch_loop, daemon=True,
+                             name="zm-claude-watch").start()
         last_state = None
         while not self.stop_flag.is_set():
             self._refresh_session()                  # 跟随 ZCode 会话切换
@@ -1646,6 +2301,24 @@ class DataEngine(threading.Thread):
                 self._push()
             time.sleep(0.5)
 
+    def _volatile_fp(self) -> tuple:
+        """变化即 push 的『易变字段』指纹:闸门管辖段 + 尾段 + _poll_new_
+        completed 会写的全部数据字段(新完成请求 → tps_exact 家族有变 →
+        push,数字尽快落地)。刻意不含 recent_speeds —— 它随 _gtps_hist
+        每 tick 追加恒有变,纳入会把『值未变不 push』判空;也不含 state/
+        title/gen_elapsed/manual 等事件路径字段(run() 主循环与
+        _switch_session 自带 push,note4)。speed_by_model 行含 None,行
+        元组化后可直接比较。"""
+        s = self.snap
+        return (s.global_tps, s.today_tokens, s.today_cost_cny,
+                s.today_cost_partial, s.burn_tokens_per_hour,
+                s.burn_avg_tokens_per_hour, s.burn_instant_per_hour,
+                s.burn_cny_per_hour, s.est_hours_left, s.session_in,
+                s.session_cache, s.session_out, s.cache_rate, s.tps_avg,
+                s.model, s.tps_exact, s.last_ttft, s.last_duration,
+                tuple(s.today_by_source or ()),
+                tuple(tuple(r) for r in (s.speed_by_model or ())))
+
     def _push(self):
         self.snap.updated = time.time()
         try:
@@ -1655,5 +2328,8 @@ class DataEngine(threading.Thread):
 
     def stop(self):
         self.stop_flag.set()
+        # T4:双 set —— 唤醒可能正阻塞在 _wake.wait(POLL_DB) 的 _db_loop,
+        # 停机不必等满一个轮询周期(stop_flag 由各循环自行判定)。
+        self._wake.set()
 
 
