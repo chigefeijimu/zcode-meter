@@ -1049,53 +1049,11 @@ class MeterWindow(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
 
-    # ---- Liquid Glass 方案 A:Windows 亚克力(真实背景模糊) ----
-    def _ensure_idle_refresh(self):
-        """静止盲区刷新(2026-09-29):卡片停下后正下方被自身遮挡,常规
-        抓取永远看不到 —— needs_blink(静止+环带有变)时 DWM cloak 一帧
-        (~12ms 原子隐藏)抓纯净背景后恢复。安静屏幕零触发;自身呼吸点
-        动画不触环带签名,不会自激。"""
-        t = getattr(self, "_idle_timer", None)
-        if t is not None:
-            # 已建但被 _stop_glass_pipeline 停过(切离 liquid 后切回):
-            # QTimer.stop 不解除连接,这里补 start 才能恢复节拍
-            if not t.isActive():
-                t.start(500)
-            return
-        self._idle_timer = QTimer(self)
-        self._idle_timer.timeout.connect(self._idle_refresh_tick)
-        self._idle_timer.start(500)
-
-    def _idle_refresh_tick(self):
-        from zcode_meter import glass_effect
-        import ctypes
-        # skin 闸是第二道防线(2026-09-30 P1):停表是第一道(_stop_glass_
-        # pipeline),但 QTimer.stop 不撤销已入队的 timeout 事件,切肤瞬间
-        # 仍可能有一拍到达 —— 非 liquid(不透明)卡片绝不能被 blink
-        # setWindowOpacity(0) 整卡闪没,该皮肤根本不消费抓屏缓冲。
-        if (self.skin_id != "liquid" or self._bar_form is not None
-                or not self.isVisible()
-                or not glass_effect.OK or not glass_effect.needs_blink()):
-            return
-        try:
-            # opacity 0 瞬时隐藏(v2,2026-09-29):DWMWA_CLOAK 实测 GDI
-            # 截图可见但 DXGI 复制流不反映(blink 抓回卡片自己,落盘实锤);
-            # opacity 0 在两条管线都即时生效(v3 hide_cb 时期抓到过干净帧)。
-            # 隐身时长 20ms 稳定期 + ~20ms 双帧抓取 ≈ 40ms(2026-09-29
-            # 用户『卡片会闪』:60ms→40ms,配合 glass_effect.needs_blink
-            # 的冷却 2.5s + 动画源 15s 静默)
-            self.setWindowOpacity(0.0)
-
-            def restore():
-                try:
-                    glass_effect.blink_capture()
-                finally:
-                    self.setWindowOpacity(1.0)
-                self.update()
-
-            QTimer.singleShot(20, restore)
-        except Exception:
-            pass
+    # ---- Liquid Glass 静止盲区刷新(零闪,2026-09-30) ----
+    # 旧方案 opacity 隐身抓拍已整体退役:隐身期无论怎么缩短(110ms→40ms)
+    # 都肉眼可见,用户要求彻底无闪。现方案在抓取线程内 PrintWindow 直抓
+    # 卡片下方窗口合成洞区(glass_effect.refresh_hole_below),主线程
+    # 零参与、卡片全程不动 —— 本类不再有 idle blink 定时器。
 
     def _try_acrylic_or_fallback(self):
         """启动路径:亚克力优先,失败落 DXcam。"""
@@ -1131,20 +1089,17 @@ class MeterWindow(QWidget):
             t.start(66)   # 只更新区域坐标(轻)
         glass_effect.set_hwnd(int(self.winId()))   # 精确窗洞(抓拍瞬间)
         glass_effect.start_background_thread()
-        self._ensure_idle_refresh()
+        # 盲区刷新在线程体内(needs_blink→refresh_hole_below),无 idle 表
         self._glass_tick()
 
     def _stop_glass_pipeline(self):
-        """_ensure_glass_timer 的逆操作:整条 liquid 玻璃管线停机(节拍表
-        + idle blink 表 + DXcam 后台抓屏线程)。此前切离 liquid 只调
-        _disable_acrylic(仅重置 DWM accent),三个常驻件全部漏停:
-        - _idle_timer 的 500ms tick 在不透明皮肤上仍可触发 blink,把整卡
-          setWindowOpacity(0) 闪没 ~40ms(用户可见闪烁);
-        - 抓屏线程继续以 16/100ms 节拍做 DXGI 全屏复制,而八款非 liquid
-          皮肤的 deco 根本不消费 glass_effect 缓冲 —— 纯耗 CPU;
-        - glass_effect.stop_background_thread 自诞生起零调用(死接口),
-          这里补上调用点(2026-09-30 P1)。getattr 容缺:构造早期/早退
-          路径进入时保持无操作。"""
+        """_ensure_glass_timer 的逆操作:liquid 玻璃管线停机(66ms 节拍表
+        + DXcam 后台抓屏线程,线程体内含盲区刷新)。此前切离 liquid 只调
+        _disable_acrylic(仅重置 DWM accent),常驻件全部漏停:抓屏线程
+        继续以 16/100ms 节拍做 DXGI 复制,而八款非 liquid 皮肤的 deco
+        根本不消费 glass_effect 缓冲 —— 纯耗 CPU(2026-09-30 P1)。
+        _idle_timer 已随 opacity 隐身方案退役,getattr 容缺以兼容
+        旧实例属性残留。"""
         t = getattr(self, "_glass_timer", None)
         if t is not None:
             t.stop()
@@ -1341,21 +1296,15 @@ class MeterWindow(QWidget):
         # 遮罩』)。update() 是异步排队,与布局激活的时序仍可能错一拍,
         # repaint() 同步重绘(几何此时已新鲜,paintEvent 内会再 activate)
         self.repaint()
-        # 亚克力圆角 region 跟随新尺寸(物理像素;仅 liquid 已开亚克力时)
-        if self.skin_id == "liquid" and self.isVisible():
-            try:
-                import math
-                scale = self.devicePixelRatioF()
-                r = 26
-                w = round(self.width() * scale)
-                h = round(self.height() * scale)
-                rr = round(r * scale)
-                region = ctypes.windll.gdi32.CreateRoundRectRgn(
-                    0, 0, w + 1, h + 1, rr, rr)
-                ctypes.windll.user32.SetWindowRgn(
-                    int(self.winId()), region, True)
-            except Exception:
-                pass
+        # 亚克力时代的 SetWindowRgn 26px 圆角蒙版已整体移除(2026-10-02 P1):
+        # 守卫只查 skin_id=="liquid" 而不查 acrylic_native —— 亚克力路线
+        # 撤退后(见 _apply_skin 注释)acrylic_native 运行期恒 False,蒙版
+        # 却照套;且全仓只有这一处 SetWindowRgn(只设永不复),切形态/切
+        # 皮肤后旧尺寸蒙版残留,把新形态窗口裁成旧形状(实测卡片被条形
+        # 蒙版裁成 40px 条带,region 外还点击穿透)。窗口圆角本就由
+        # WA_TranslucentBackground + paintEvent 圆角 path 全权决定(见
+        # __init__ 注释,对所有皮肤成立),layered 窗 alpha=0 的四角天然
+        # 不命中鼠标 —— 蒙版在现管线下零收益、纯风险,删 setter 即根除。
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1441,6 +1390,15 @@ class MeterWindow(QWidget):
             else:
                 x, y = l + (r_ - l - pw) // 2, b_ - ph
             user32.SetWindowPos(hwnd, None, x, y, pw, ph, 0x0010)  # NOACTIVATE
+            # Qt 缓存对齐(2026-09-30):纯 Win32 SetWindowPos 改了原生窗口,
+            # QPA 层缓存的逻辑几何仍是旧值 —— 事件循环恢复后 Qt 按【旧高】
+            # 发起一次修正(实测:条 40 物理高被顶回卡片 424,宽却留在条值
+            # =高度旧缓存的铁证),窗口呈『宽条+卡片高』的半截裁剪态。
+            # move+resize 走 Qt 全链路,缓存与原生立刻一致;Qt 会再发一次
+            # SetWindowPos,但坐标相同等于幂等。此前靠『200ms 后 _refit_dock
+            # 再设一次』偶然自愈,首帧 200ms 内就是用户看到的『贴顶显示不完整』。
+            self.move(round(x / scale), round(y / scale))
+            self.resize(round(pw / scale), round(ph / scale))
         except Exception:
             import traceback
             dbg("apply_dock_geometry failed: " + traceback.format_exc()[-200:])
@@ -1457,6 +1415,12 @@ class MeterWindow(QWidget):
         vertical = side in ("left", "right")
         self._build_bar(vertical=vertical)
         self.setStyleSheet(self._skin_qss())   # 皮肤化(T2):条形态 → qss_bar
+        # 布局激活先行(2026-09-30):_build_bar 换布局后 Qt 惰性激活,窗口
+        # minimumSize 仍是卡片时代值(高 341)—— _apply_dock_geometry 的
+        # SetWindowPos 设成条尺寸后,事件循环恢复时布局 flush 旧最小约束
+        # 把窗口顶回卡片高(用户『贴顶显示不完整/弹回卡片』真因)。
+        # _unset_dock/_detach_to_pointer 早有同款 activate,唯独本函数漏。
+        self.layout().activate()
         self._apply_snapshot(self.snap)          # 先填文字
         w, h = self._bar_size(vertical)   # 仅供 _apply_dock_geometry 内部重算,此处不再自设几何
         self._apply_dock_geometry()      # 唯一几何权威(物理坐标,尺寸+位置一次到位)
@@ -2192,6 +2156,9 @@ class MeterWindow(QWidget):
         if self.dock:
             self._build_bar(vertical=self.dock in ("left", "right"))
             self.setStyleSheet(self._skin_qss())
+            # 同 _set_dock:条布局激活先行,否则卡片时代最小尺寸在事件循环
+            # 恢复时把 SetWindowPos 的条几何顶回卡片高(贴边切肤显示不完整)
+            self.layout().activate()
             self._apply_dock_geometry()
             self._apply_snapshot(self.snap)
         else:

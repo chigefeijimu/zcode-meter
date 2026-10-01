@@ -56,27 +56,24 @@ _BLUR = None          # np RGB,预模糊区域图
 _BLUR_RECT = None     # (x0,y0,x1,y1) 该图对应的物理屏幕矩形
 _BLUR_VER = -1
 # 静止盲区刷新(2026-09-29 用户『停下后别的窗口移到卡片下,背景不变』):
-# 卡片正下方被自身遮挡,常规抓取永远看不到 —— 需要瞬态 cloak 抓拍。
-# 触发条件 = 卡片静止 + 环带内容变化(签名不同;有东西路过/壁纸换)
+# 卡片正下方被自身遮挡,常规抓取永远看不到。触发条件 = 卡片静止 + 环带
+# 内容变化(签名不同;有东西路过/壁纸换);动作 = refresh_hole_below()
+# 直接 PrintWindow 卡片下方窗口合成(零闪,2026-09-30;旧 opacity 隐身
+# 抓拍方案已退役 —— 无论怎么缩短隐身期都有可见闪烁,用户要求彻底无闪)
 _RING_SIG = None      # 最近一拍环带内容签名
-_BLINK_SIG = None     # 上次 blink 时的环带签名
-_BLINKING = False     # blink 进行中:抓取线程跳过本拍(帧互斥 —— cloaked
-                      # 后的第一帧新画面只有一个消费者,线程 16ms 周期会
-                      # 抢先消费掉,blink 的 grab 恒 None,2026-09-29)
-_BLINK_AT = 0.0       # 上次成功 blink 的 perf_counter 时刻
-_BLINK_MUTE = 0.0     # 静默截止时刻(动画源退避)
-_SIG_CHANGES = 0      # 自上次 blink/稳定以来环带签名实际变化次数
+_BLINK_SIG = None     # 上次盲区刷新时的环带签名
+_BLINK_AT = 0.0       # 上次盲区刷新(含失败退避)的 perf_counter 时刻
+_BLINK_MUTE = 0.0     # 静默截止时刻(动画源 CPU 退避)
+_SIG_CHANGES = 0      # 自上次刷新/稳定以来环带签名实际变化次数
 
 def needs_blink() -> bool:
-    """静止(0.5s 无 region 变更)且环带内容自上次 blink 后变过。
+    """静止(0.5s 无 region 变更)且环带内容自上次盲区刷新后变过。
 
-    防闪节流(2026-09-29 用户『卡片会闪』):真实桌面环带里常有持续动画
-    (视频/滚动/动效),签名每拍都变 → blink 每半秒隐身一次 = 不停闪。
-    判据用【变化次数】而非『变了没有』:冷却期(2.5s,线程 100ms/拍至多
-    25 拍)内签名变了 ≥10 次 = 连续动画源 → 静默 15s(不 blink,零闪);
-    窗口划过/出现是阶跃,2.5s 内只有 3-6 拍变化 → 正常 blink。签名与
-    上次 blink 一致(稳定)或触发静默时清零计数,静态桌面不会因启动
-    settle 期的历史计数而永久静默。"""
+    节流(2026-09-30 零闪改版后纯属 CPU 经济):PrintWindow 直抓不再有
+    视觉代价,但一次要抓数十个相交窗口(数十到数百 ms 后台开销),保留
+    冷却 2.5s + 动画源静默 15s(视频垫背时玻璃 15s 更新一帧,可接受)。
+    动画判据用【变化次数】而非『变了没有』:冷却期内签名变 ≥10 次 =
+    连续动画源 → 静默;窗口划过是阶跃(3-6 次)→ 正常刷新。"""
     global _SIG_CHANGES, _BLINK_MUTE
     now = time.perf_counter()
     if now < _BLINK_MUTE:
@@ -96,60 +93,171 @@ def needs_blink() -> bool:
 
 
 def blink_capture() -> bool:
-    """cloak 期间调用:窗口已从合成中移除,抓取洞区即纯净背景。
-    _BLINKING 置位让抓取线程让路(cloaked 后第一帧新画面唯一消费者),
-    本函数全出口 finally 清除(2026-09-29 帧仲裁)。"""
-    global _BLINK_SIG, _VERSION, _BLINKING, _BLINK_AT, _SIG_CHANGES
-    _BLINKING = True
-    try:
-        cam = _cam()
-        if cam is None or _CLEAN is None:
+    """【已退役 2026-09-30,零闪改版】原方案:opacity 0 隐身 ~40ms 抓洞区。
+    用户要求彻底无闪 → 改为 capture_below() 直接 PrintWindow 卡片下方的
+    窗口合成洞区真背景(卡片全程不动);本函数保留仅作历史参照,无调用方。"""
+    return False
+
+
+# ---- Win32 直抓卡片下方窗口(零闪盲区刷新,2026-09-30) ----
+# 背景:屏幕合成帧里卡片区域=卡片自己画的不透明缓冲背景图(α≈1),
+# 反合成不可行;隐身抓拍必有可见窗口期。PrintWindow(PW_RENDERFULLCONTENT)
+# 逐个抓 z 序在卡片之下的相交窗口,按 z 序合成洞区 —— 实测保真度精确
+# (黄窗垫背:合成中段 BGR=(0,221,255) 与 #ffdd00 逐值一致),且卡片
+# 全程纹丝不动,零闪烁。走 GDI 与 DXcam 相机无共享状态,可在抓取线程
+# 内与 _capture_once 并行无争用。
+_W32 = None            # (user32, dwapi, gdi32, wintypes) 惰性句柄
+_PW_CAP = 24           # 单次刷新最多抓的窗口数(性能护栏)
+
+
+def _win32():
+    global _W32
+    if _W32 is not None:
+        return _W32
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    dwapi = ctypes.windll.dwmapi
+    gdi32 = ctypes.windll.gdi32
+    dwapi.DwmGetWindowAttribute.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                            ctypes.c_void_p, ctypes.c_uint]
+    user32.PrintWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                   ctypes.c_uint]
+    _W32 = (user32, dwapi, gdi32, wintypes)
+    return _W32
+
+
+def _print_window_bgra(hwnd, w, h):
+    """PrintWindow(RENDERFULLCONTENT) 到 32bpp DIB,返回 BGRA 或 None。
+    注意:CreateDIBSection 第 4 参才是位图数据指针,HBITMAP 句柄不是
+    (实验期拿句柄当地址读 → 段错误,2026-09-30)。"""
+    import ctypes
+    user32, dwapi, gdi32, wintypes = _win32()
+    bmi = ctypes.create_string_buffer(48)
+    import struct
+    ctypes.memmove(bmi, struct.pack("lllhhllllll", 40, w, -h, 1, 32,
+                                    0, 0, 0, 0, 0, 0), 40)
+    hdc = user32.GetDC(0)
+    memdc = gdi32.CreateCompatibleDC(hdc)
+    ppv = ctypes.c_void_p()
+    dib = gdi32.CreateDIBSection(hdc, bmi, 0, ctypes.byref(ppv), None, 0)
+    if not dib or not ppv.value:
+        gdi32.DeleteDC(memdc)
+        user32.ReleaseDC(0, hdc)
+        return None
+    old = gdi32.SelectObject(memdc, dib)
+    ok = user32.PrintWindow(hwnd, memdc, 2)     # PW_RENDERFULLCONTENT
+    gdi32.SelectObject(memdc, old)
+    gdi32.DeleteDC(memdc)
+    user32.ReleaseDC(0, hdc)
+    if not ok:
+        gdi32.DeleteObject(dib)
+        return None
+    arr = np.ctypeslib.as_array(
+        (ctypes.c_ubyte * (w * h * 4)).from_address(ppv.value)
+    ).reshape(h, w, 4).copy()
+    gdi32.DeleteObject(dib)
+    return arr
+
+
+def capture_below(hwnd, rect):
+    """合成 rect 处『卡片正下方』的真背景:枚举 z 序在 hwnd 之下且与
+    rect 相交的可见窗口,自底向顶 PrintWindow 合成。
+    返回 (bgr, covered_mask) 或 (None, None)。covered=False 的像素
+    (壁纸/无窗口区)保留调用方旧值,不用黑色覆写。"""
+    import ctypes
+    user32, dwapi, gdi32, wintypes = _win32()
+    x0, y0, x1, y1 = rect
+    W, H = x1 - x0, y1 - y0
+    if W <= 0 or H <= 0:
+        return None, None
+
+    wins = []
+    found = ctypes.c_bool(False)
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _cb(h, lp):
+        if not found.value:
+            if h == hwnd:
+                found.value = True
+            return True
+        if len(wins) >= _PW_CAP:
             return False
-        raw = _window_rect_now()
-        if raw is None:
-            return False   # 窗口在相机覆盖外(多显示器副屏):无纯净背景可抓
-        x0, y0 = max(0, raw[0]), max(0, raw[1])
-        x1, y1 = min(_FW, raw[2]), min(_FH, raw[3])
-        if x1 - x0 < 2 or y1 - y0 < 2:
-            return False
-        # 全屏抓取:线程已让路(_BLINKING),双帧确认 —— 队列里可能排着
-        # 隐藏前的动画帧(首帧=卡片自己),拿到第 2 个非 None 帧即排空
-        # 完毕、必定是隐藏后的纯净桌面;40ms 上限内只有 1 帧也用它
-        # (2026-09-29 提速:60ms 取最后一帧 → 双帧确认,总隐身 ~40ms)
-        full = None
-        deadline = time.perf_counter() + 0.040
-        while time.perf_counter() < deadline:
-            f2 = cam.grab()
-            if f2 is not None:
-                if full is None:
-                    full = f2
-                else:
-                    full = f2
-                    break
-            time.sleep(0.003)
-        if full is None:
-            return False
-        fh_, fw_ = full.shape[:2]
-        x0, y0 = max(0, x0), max(0, y0)
-        x1, y1 = min(fw_, x1), min(fh_, y1)
-        frame = full[y0:y1, x0:x1]
-        with _BUF_LOCK:
-            _CLEAN[y0:y1, x0:x1] = frame
-            _KNOWN[y0:y1, x0:x1] = True
-            _VERSION += 1
-        _BLINK_SIG = _RING_SIG
-        _BLINK_AT = time.perf_counter()
-        _SIG_CHANGES = 0
-        # 主线程内同步刷新预模糊(一次性 ~2ms):不等后台线程(静止态下一拍
-        # 在 100ms 后)。否则恢复显示后的第一次 paint 走快路径,把【旧
-        # _BLUR】的裁剪结果缓存进新版本键,静止态版本不再推进,脏缓存
-        # 永久命中 —— blink 抓到的黄色永远进不了视图(R10/R11 真因)
-        _refresh_blur()
+        if not user32.IsWindowVisible(h):
+            return True
+        cloaked = ctypes.c_uint(0)
+        if dwapi.DwmGetWindowAttribute(h, 14, ctypes.byref(cloaked), 4) == 0 \
+                and cloaked.value:
+            return True                      # cloaked 幽灵窗(UWP 挂起)
+        pid = ctypes.c_uint(0)
+        user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if pid.value == ctypes.windll.kernel32.GetCurrentProcessId():
+            return True                      # 自家 tooltip 等顶层
+        r = wintypes.RECT()
+        if dwapi.DwmGetWindowAttribute(h, 9, ctypes.byref(r),
+                                       ctypes.sizeof(r)) != 0:
+            if not user32.GetWindowRect(h, ctypes.byref(r)):
+                return True
+        if r.left < x1 and r.right > x0 and r.top < y1 and r.bottom > y0:
+            wins.append((h, (r.left, r.top, r.right, r.bottom)))
         return True
-    except Exception:
+
+    user32.EnumWindows(_cb, 0)
+    if not found.value or not wins:
+        return None, None
+
+    canvas = np.zeros((H, W, 3), np.uint8)
+    covered = np.zeros((H, W), bool)
+    for h, (wx0, wy0, wx1, wy1) in reversed(wins):     # 底 → 顶
+        bgra = _print_window_bgra(h, wx1 - wx0, wy1 - wy0)
+        if bgra is None:
+            continue
+        sx0 = max(wx0, x0) - wx0
+        sy0 = max(wy0, y0) - wy0
+        dx0 = max(wx0, x0) - x0
+        dy0 = max(wy0, y0) - y0
+        dx1 = min(wx1, x1) - x0
+        dy1 = min(wy1, y1) - y0
+        if dx1 <= dx0 or dy1 <= dy0:
+            continue
+        sub = bgra[sy0:sy0 + (dy1 - dy0), sx0:sx0 + (dx1 - dx0)]
+        a = sub[:, :, 3].astype(np.float32) / 255.0
+        am = a > 0.02
+        dst = canvas[dy0:dy1, dx0:dx1]
+        dst[:] = (sub[:, :, :3] * a[:, :, None]
+                  + dst * (1.0 - a)[:, :, None]).astype(np.uint8)
+        covered[dy0:dy1, dx0:dx1] |= am
+    if not covered.any():
+        return None, None
+    return canvas, covered
+
+
+def refresh_hole_below() -> bool:
+    """零闪盲区刷新(needs_blink 触发,线程内执行):PrintWindow 直抓洞区
+    写 _CLEAN。失败也推进 _BLINK_AT(2.5s 重试节拍),防止失败拍每
+    100ms 热循环。"""
+    global _VERSION, _BLINK_SIG, _BLINK_AT, _SIG_CHANGES
+    if _CLEAN is None or not _HWND:
         return False
-    finally:
-        _BLINKING = False
+    raw = _window_rect_now()
+    if raw is None:
+        _BLINK_AT = time.perf_counter()
+        return False
+    bgr, covered = capture_below(_HWND, raw)
+    now = time.perf_counter()
+    if bgr is None:
+        _BLINK_AT = now                     # 失败退避到下个冷却期
+        return False
+    x0, y0, x1, y1 = raw
+    with _BUF_LOCK:
+        sub = _CLEAN[y0:y1, x0:x1]
+        sub[covered] = bgr[covered]         # 未覆盖区保留旧真值
+        _KNOWN[y0:y1, x0:x1] = True
+        _VERSION += 1
+    _BLINK_SIG = _RING_SIG
+    _BLINK_AT = now
+    _SIG_CHANGES = 0
+    return True
 
 
 def _cam():
@@ -274,11 +382,16 @@ def _capture_once(hide_cb=None):
     跳写边界 = raw ∪ 上一拍 raw,再外扩 8px(只决定哪些像素不写缓冲)。
     """
     global _PREV_RECT, _LAST_BG, _LAST_COMPOSED, _PREV_HOLE, _VERSION
-    if _BLINKING:
-        return False                # blink 进行中:帧让给 blink_capture
     cam = _cam()
-    if cam is None or _CLEAN is None:
+    if cam is None:
         return False
+    if _CLEAN is None:
+        # 启动竞态自愈(2026-09-30 打包 exe 实测):seed_full 在 show 前
+        # 播种,若此刻 DXGI 复制器未释放(上一个实例刚被杀,<4s 窗口)
+        # 会静默失败,而种子原本只播一次 → 整场 veil 假背景无自愈。
+        # 线程每拍补种(seed_full 可重入、持锁换缓冲),成功即恢复。
+        if not seed_full():
+            return False
     # 输出变化对账(2026-09-30 P1):相机在 access-loss 恢复后会自己更新
     # width/height,而 _FW/_FH 只在 seed_full 赋值一次 —— 每拍用相机当前
     # 尺寸对账,失配即整屏重播种(旧分辨率的干净基准已无意义)。覆盖
@@ -425,6 +538,12 @@ def _thread_body():
     while not _THREAD_STOP:
         try:
             _capture_once()
+            # 零闪盲区刷新(2026-09-30):线程内直抓卡片下方窗口合成,
+            # 替代旧 opacity 隐身路径(主线程 QTimer + setWindowOpacity)。
+            # 走 GDI 与相机无共享状态,无需让路;needs_blink 自带
+            # 2.5s 冷却 + 动画静默,失败也有退避,不会热循环
+            if needs_blink():
+                refresh_hole_below()
             _refresh_blur()
         except Exception:
             pass

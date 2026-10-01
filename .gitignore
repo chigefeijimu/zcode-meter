@@ -26,3 +26,4 @@ zm_*.png
 zm_*.log
 # 本地验证脚本(zm_*.py 是对版/管线调试的一次性工具)
 zm_*.py
+pack/build.log

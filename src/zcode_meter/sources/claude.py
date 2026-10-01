@@ -284,7 +284,12 @@ class ClaudeSource(UsageSource):
         节流 os.walk+stat 的目录扫描(watcher 缺位/死亡时的正确性兜底);
         watcher 活着时 note_changes 已把变更摄取进类级缓存并失效 TTL,
         本方法对未变文件是 stat 短路,聚合 = 各文件 date_agg 求和
-        O(文件数)。"""
+        O(文件数)。
+        瞬时失败与消失的界线(2026-10-02 P1):stat OSError / _ingest
+        "error" 只说明『walk 见到但本轮读不动』(AV/备份/写者瞬锁是
+        _ingest error 分支的自述动机),不等于文件消失 —— 失败文件的
+        last-good 聚合与 mid 归属原样保留;真消失只认 walk 不再列出
+        (删除在 walk→锁间隙发生时同样被下一轮兜住)。"""
         now = time.time()
         if self._entries is not None and now - self._scanned_at < self.SCAN_TTL:
             return self._entries
@@ -297,24 +302,43 @@ class ClaudeSource(UsageSource):
         agg: dict = {}
         with self._lock:
             keys = []
+            errored = set()
             reparse = False
             for k in sorted(walked):     # 确定性摄取序,与重建序一致(note2)
                 try:
                     st = os.stat(k)      # 锁内新鲜 stat:防 walk→锁间隙的变更
                 except OSError:
-                    continue             # walk 与锁之间消失:下轮 vanished 检测兜底
+                    errored.add(k)       # 瞬时读不动:保 last-good,非消失
+                    continue
                 kind = self._ingest(scope, k, st)
                 if kind == "reparse":
                     reparse = True
-                if kind != "error":
+                if kind == "error":
+                    errored.add(k)       # 读失败契约是重试,不是当轮清零
+                else:
                     keys.append(k)
             last = self._scope_files.get(scope)
-            if reparse or (last is not None and not last.issubset(keys)):
-                self._rebuild_scope(scope, keys)
-            self._scope_files[scope] = set(keys)
+            # 消失判定只认 walk:上轮在册而本轮 walk 未列出才是真消失。
+            # 旧判据 not last.issubset(keys) 把瞬时失败也当消失:当轮聚合
+            # 丢 last-good 已违反 _ingest 的 error 契约,更糟的是用不含
+            # 它的 keys 重建 → 共享 mid 归属翻给幸存文件;它恢复后走
+            # unchanged 短路不再重建,同 mid 在两个文件的 date_agg 并存
+            # → 今日用量永久双计(input 双计教训家族,2026-10-02 P1)。
+            if reparse or (last is not None and not last.issubset(walked)):
+                # 重建集并入瞬时失败文件(其条目未动,按完整行集重导
+                # 归属)——漏并的话重建本身就制造一次归属翻转
+                self._rebuild_scope(scope, set(keys) | errored)
+            self._scope_files[scope] = set(keys) | errored
             for k in keys:
                 for d, v in self._file_cache[k]["date_agg"].items():
                     agg[d] = agg.get(d, 0) + v
+            for k in errored:
+                # 兑现 _ingest 的 error 契约:失败轮聚合用 last-good 而非
+                # 归零(冷路径失败无缓存条目,get 容缺自然跳过)
+                e = self._file_cache.get(k)
+                if e is not None:
+                    for d, v in e["date_agg"].items():
+                        agg[d] = agg.get(d, 0) + v
             # TTL 字段写回也在锁内:与 note_changes 的失效互斥,杜绝
             # 『_scan 算完旧值 → note_changes 失效 → _scan 写回旧值』
             # 的丢失失效竞态(两者的锁内先后 whichever,顺序始终成立)

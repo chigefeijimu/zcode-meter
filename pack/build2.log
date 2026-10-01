@@ -1,0 +1,197 @@
+272 INFO: PyInstaller: 6.22.3, contrib hooks: 2026.7
+272 INFO: Python: 3.14.2
+308 INFO: Platform: Windows-11-10.0.26300-SP0
+309 INFO: Python environment: C:\Python314
+310 INFO: wrote D:\codeSoft\zcode\.zcode\workspace\default\zcode-meter\zcode-meter.spec
+241 INFO: Imported existing <module 'comtypes.gen' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\comtypes\\gen\\__init__.py'>
+241 INFO: Using writeable comtypes cache directory: 'C:\Users\woshi\AppData\Roaming\Python\Python314\site-packages\comtypes\gen'
+2399 INFO: Module search paths (PYTHONPATH):
+['D:\\codeSoft\\zcode\\.zcode\\workspace\\default\\zcode-meter',
+ 'C:\\Python314\\python314.zip',
+ 'C:\\Python314\\DLLs',
+ 'C:\\Python314\\Lib',
+ 'C:\\Python314',
+ 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages',
+ 'C:\\Python314\\Lib\\site-packages',
+ 'D:\\codeSoft\\zcode\\.zcode\\workspace\\default\\zcode-meter\\pack',
+ 'D:\\codeSoft\\zcode\\.zcode\\workspace\\default\\zcode-meter\\src']
+2899 INFO: Appending 'datas' from .spec
+2901 INFO: checking Analysis
+2923 INFO: Building because hiddenimports changed
+2923 INFO: Looking for Python shared library...
+2923 INFO: Using Python shared library: C:\Python314\python314.dll
+2923 INFO: Running Analysis Analysis-00.toc
+2923 INFO: Target bytecode optimization level: 0
+2923 INFO: Initializing module dependency graph...
+2925 INFO: Initializing module graph hook caches...
+2952 INFO: Analyzing modules for base_library.zip ...
+4685 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+5284 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+5480 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+5580 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+5590 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+7775 INFO: Caching module dependency graph...
+7797 INFO: Analyzing D:\codeSoft\zcode\.zcode\workspace\default\zcode-meter\pack\entry.py
+7844 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+7849 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+7882 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+8162 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+8164 INFO: SetuptoolsInfo: initializing cached setuptools info...
+9342 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+9420 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+10343 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+10587 INFO: Processing standard module hook 'hook-webbrowser.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+12988 INFO: Processing standard module hook 'hook-comtypes.client.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+13727 INFO: Processing standard module hook 'hook-cv2.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+14379 INFO: Processing standard module hook 'hook-PySide6.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+14767 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+15002 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+19775 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+24915 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+48185 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+52939 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+53399 INFO: Analyzing hidden import 'comtypes.clear_cache'
+53402 INFO: Analyzing hidden import 'comtypes.git'
+53405 INFO: Analyzing hidden import 'comtypes.logutil'
+53441 INFO: Analyzing hidden import 'comtypes.malloc'
+53445 INFO: Analyzing hidden import 'comtypes.server.automation'
+53448 INFO: Analyzing hidden import 'comtypes.server.connectionpoints'
+53454 INFO: Analyzing hidden import 'comtypes.server.inprocserver'
+53459 INFO: Analyzing hidden import 'comtypes.server.localserver'
+53463 INFO: Analyzing hidden import 'comtypes.server.register'
+53479 INFO: Analyzing hidden import 'comtypes.shelllink'
+53489 INFO: Analyzing hidden import 'comtypes.stream'
+53491 INFO: Analyzing hidden import 'comtypes.test'
+53497 INFO: Analyzing hidden import 'comtypes.test.TestComServer'
+53500 INFO: Analyzing hidden import 'comtypes.test.TestDispServer'
+53502 INFO: Analyzing hidden import 'comtypes.test.find_memleak'
+53505 INFO: Analyzing hidden import 'comtypes.test.gdi_helper'
+53509 INFO: Analyzing hidden import 'comtypes.test.monikers_helper'
+53512 INFO: Analyzing hidden import 'comtypes.test.runtests'
+53512 INFO: Analyzing hidden import 'comtypes.test.setup'
+53513 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+53519 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+53563 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+53564 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+53572 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+53573 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+53692 INFO: Processing standard module hook 'hook-_osx_support.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+53706 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+53947 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+53950 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+53957 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+53958 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+54423 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+54424 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+54909 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+54910 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.wheel'!
+54936 INFO: Analyzing hidden import 'comtypes.test.test_BSTR'
+54938 INFO: Analyzing hidden import 'comtypes.test.test_DISPPARAMS'
+54940 INFO: Analyzing hidden import 'comtypes.test.test_GUID'
+54942 INFO: Analyzing hidden import 'comtypes.test.test_QueryService'
+54945 INFO: Analyzing hidden import 'comtypes.test.test_agilent'
+54948 INFO: Analyzing hidden import 'comtypes.test.test_avmc'
+54950 INFO: Analyzing hidden import 'comtypes.test.test_basic'
+54954 INFO: Analyzing hidden import 'comtypes.test.test_bctx'
+54959 INFO: Analyzing hidden import 'comtypes.test.test_casesensitivity'
+54961 INFO: Analyzing hidden import 'comtypes.test.test_classfactory'
+54964 INFO: Analyzing hidden import 'comtypes.test.test_clear_cache'
+55041 INFO: Analyzing hidden import 'comtypes.test.test_client'
+55054 INFO: Analyzing hidden import 'comtypes.test.test_client_dynamic'
+55059 INFO: Analyzing hidden import 'comtypes.test.test_client_regenerate_modules'
+55065 INFO: Analyzing hidden import 'comtypes.test.test_collections'
+55071 INFO: Analyzing hidden import 'comtypes.test.test_comobject'
+55079 INFO: Analyzing hidden import 'comtypes.test.test_comserver'
+55088 INFO: Processing pre-safe-import-module hook 'hook-win32com.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\pre_safe_import_module'
+55161 INFO: Analyzing hidden import 'comtypes.test.test_connectionpoints'
+55166 INFO: Analyzing hidden import 'comtypes.test.test_createwrappers'
+55169 INFO: Analyzing hidden import 'comtypes.test.test_dict'
+55174 INFO: Analyzing hidden import 'comtypes.test.test_dispifc_records'
+55177 INFO: Analyzing hidden import 'comtypes.test.test_dispifc_safearrays'
+55181 INFO: Analyzing hidden import 'comtypes.test.test_dispinterface'
+55185 INFO: Analyzing hidden import 'comtypes.test.test_dyndispatch'
+55189 INFO: Analyzing hidden import 'comtypes.test.test_errorinfo'
+55193 INFO: Analyzing hidden import 'comtypes.test.test_eventinterface'
+55198 INFO: Analyzing hidden import 'comtypes.test.test_excel'
+55203 INFO: Analyzing hidden import 'comtypes.test.test_findgendir'
+55207 INFO: Analyzing hidden import 'comtypes.test.test_getactiveobj'
+55211 INFO: Analyzing hidden import 'comtypes.test.test_git'
+55216 INFO: Analyzing hidden import 'comtypes.test.test_hresult'
+55220 INFO: Analyzing hidden import 'comtypes.test.test_ienum'
+55221 INFO: Analyzing hidden import 'comtypes.test.test_imfattributes'
+55223 INFO: Analyzing hidden import 'comtypes.test.test_inout_args'
+55237 INFO: Analyzing hidden import 'comtypes.test.test_logutil'
+55247 INFO: Analyzing hidden import 'comtypes.test.test_malloc'
+55250 INFO: Analyzing hidden import 'comtypes.test.test_messageloop'
+55254 INFO: Analyzing hidden import 'comtypes.test.test_midl_safearray_create'
+55259 INFO: Analyzing hidden import 'comtypes.test.test_moniker'
+55282 INFO: Analyzing hidden import 'comtypes.test.test_msscript'
+55285 INFO: Analyzing hidden import 'comtypes.test.test_npsupport'
+55308 INFO: Analyzing hidden import 'comtypes.test.test_outparam'
+55311 INFO: Analyzing hidden import 'comtypes.test.test_packing'
+55313 INFO: Analyzing hidden import 'comtypes.test.test_persist'
+55316 INFO: Analyzing hidden import 'comtypes.test.test_pump_events'
+55317 INFO: Analyzing hidden import 'comtypes.test.test_puredispatch'
+55321 INFO: Analyzing hidden import 'comtypes.test.test_recordinfo'
+55324 INFO: Analyzing hidden import 'comtypes.test.test_rot'
+55327 INFO: Analyzing hidden import 'comtypes.test.test_safearray'
+55334 INFO: Analyzing hidden import 'comtypes.test.test_sapi'
+55335 INFO: Analyzing hidden import 'comtypes.test.test_server'
+55338 INFO: Analyzing hidden import 'comtypes.test.test_server_automation'
+55343 INFO: Analyzing hidden import 'comtypes.test.test_server_register'
+55359 INFO: Analyzing hidden import 'comtypes.test.test_shelllink'
+55366 INFO: Analyzing hidden import 'comtypes.test.test_showevents'
+55367 INFO: Analyzing hidden import 'comtypes.test.test_storage'
+55378 INFO: Analyzing hidden import 'comtypes.test.test_stream'
+55394 INFO: Analyzing hidden import 'comtypes.test.test_subinterface'
+55395 INFO: Analyzing hidden import 'comtypes.test.test_typeannotator'
+55400 INFO: Analyzing hidden import 'comtypes.test.test_typeinfo'
+55408 INFO: Analyzing hidden import 'comtypes.test.test_typeinfo_create'
+55419 INFO: Analyzing hidden import 'comtypes.test.test_urlhistory'
+55427 INFO: Analyzing hidden import 'comtypes.test.test_util'
+55434 INFO: Analyzing hidden import 'comtypes.test.test_variant'
+55444 INFO: Analyzing hidden import 'comtypes.test.test_variant_outparam'
+55447 INFO: Analyzing hidden import 'comtypes.test.test_viewobject'
+55457 INFO: Analyzing hidden import 'comtypes.test.test_w_getopt'
+55459 INFO: Analyzing hidden import 'comtypes.test.test_win32com_interop'
+55464 INFO: Analyzing hidden import 'comtypes.test.test_word'
+55467 INFO: Analyzing hidden import 'dxcam.core.duplicator'
+55468 INFO: Analyzing hidden import 'dxcam.processor._numpy_kernels'
+55468 INFO: Processing module hooks (post-graph stage)...
+55796 INFO: Performing binary vs. data reclassification (165 entries)
+55849 INFO: Looking for ctypes DLLs
+56023 INFO: Analyzing run-time hooks ...
+56027 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\rthooks'
+56029 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\rthooks'
+56032 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\rthooks'
+56034 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\rthooks'
+56035 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\rthooks'
+56037 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+56039 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+56053 INFO: Creating base_library.zip...
+56065 INFO: Looking for dynamic libraries
+57359 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\shiboken6', 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\numpy.libs', 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\cv2\\../../x64/vc17/bin']
+57360 INFO: Extra DLL search directories (PATH): ['C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\cv2\\../../x64/vc17/bin', 'C:\\Users\\woshi\\AppData\\Roaming\\Python\\Python314\\site-packages\\PySide6']
+58552 INFO: Warnings written to D:\codeSoft\zcode\.zcode\workspace\default\zcode-meter\build\zcode-meter\warn-zcode-meter.txt
+58607 INFO: Graph cross-reference written to D:\codeSoft\zcode\.zcode\workspace\default\zcode-meter\build\zcode-meter\xref-zcode-meter.html
+58632 INFO: checking PYZ
+58667 INFO: checking PKG
+58681 INFO: Building because D:\codeSoft\zcode\.zcode\workspace\default\zcode-meter\pack\entry.py changed
+58681 INFO: Building PKG (CArchive) zcode-meter.pkg
+58706 INFO: Building PKG (CArchive) zcode-meter.pkg completed successfully.
+58707 INFO: Bootloader C:\Users\woshi\AppData\Roaming\Python\Python314\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+58707 INFO: checking EXE
+58716 INFO: Rebuilding EXE-00.toc because pkg is more recent
+58717 INFO: Building EXE from EXE-00.toc
+58717 INFO: Copying bootloader EXE to D:\codeSoft\zcode\.zcode\workspace\default\zcode-meter\build\zcode-meter\zcode-meter.exe
+58769 INFO: Copying icon to EXE
+58826 INFO: Copying 0 resources to EXE
+58827 INFO: Embedding manifest in EXE
+58871 INFO: Appending PKG archive to EXE
+58969 INFO: Fixing EXE headers
+59261 INFO: Building EXE from EXE-00.toc completed successfully.
+59264 INFO: checking COLLECT
+59279 INFO: Removing dir D:\codeSoft\zcode\.zcode\workspace\default\zcode-meter\dist\zcode-meter
+59310 INFO: Building COLLECT COLLECT-00.toc
+59754 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+59757 INFO: Build complete! The results are available in: D:\codeSoft\zcode\.zcode\workspace\default\zcode-meter\dist

@@ -171,6 +171,82 @@
     {
       "title": "session_sums/group_speed 两条会话聚合 SQL 走 model_usage_query_source_idx 全 main_turn 行过滤后聚合,评审两轮 48.05+46.63 / 58.70+62.90ms(2026-09-30 终版复测 28.09+27.15ms,段合计 55.2~121.6ms 随库波动),每秒一拍全程持 snap_lock —— 与 v0.9 批 T1/T2/T3 同源(索引前置/水位增量/缓存化),spec nonGoals 钉死本批不修,建议下轮同法治治",
       "date": "2026-09-30"
+    },
+    {
+      "title": "模块 docstring 把『PYTHONPATH=src』列为 -m 模块形态的合法替代,但从仓库根(设该变量的自然位置)执行时 cwd(sys.path[0])先于 PYTHONPATH,根 shim zcode_meter.py 仍胜出 → 实际启动 GUI 挂起而非出 CLI 报表",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "_fmt_report 的『全已知模型的窗口金额是精确值』注脚裁决不成立:用户 zm_prices.json 条目可只给 in/out 合法合并,cost_of 对缺 in_cache 档的已知模型按 in 全价计 cache 且不置 partial → 金额系统性高估(Flash 档最高约 3.5x)却无『下限/≈』标记,报表以精确值口径呈现",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "Qt 版 MeterWindow 的 BAR_H/BAR_V/EDGE_NEAR 三个类常量全仓零引用(死常量),实际消费点已改用字面量且与常量值脱节(_settle 用 edge=8 vs EDGE_NEAR=30、_bar_size 竖条基高 total_h=38 vs BAR_V=38)——编辑常量不生效的『固定尺寸脱节』漂移陷阱",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "日志事件的会话过滤只排除 sess_subagent/sess_dwf- 前缀,从不与统计对象(self.session_id/manual_session)比对:手动固定会话期间,另一条主会话(第二个终端的普通 sess_*)的请求事件驱动被固定会话的 generating 状态机",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "self.prices 只在 __init__ 加载一次,运行期无任何刷新点:用户手改 zm_prices.json 后今日金额/燃速¥/历史图表/CSV 导出全部继续用旧价直到重启,且与 daily_budget_cny 的热生效形成同文件内不一致",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "本文件 16 个方法的 con.close() 不在 try/finally 里,execute 抛 sqlite3.Error 的路径连接不显式关闭 —— 新代码已在本文件钉死 finally 纪律,旧代码未跟进(与注册表 open 的 today_usage/daily_usage 项同缺陷类的新站点)",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "capture_below 用 DWMWA_EXTENDED_FRAME_BOUNDS 尺寸建 PrintWindow DIB,但 PrintWindow 内容锚定在 GetWindowRect 原点 —— 相机下方所有带 DWM 边框的窗口(几乎全部常规窗口)合成结果整体错位约 8~9px,且把不可见边框带(不透明灰带)当成真背景写进洞区;洞区唯一真值来源就是这个刷新,错误是系统性的",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "seed_full 把 _FH/_FW 赋值放在 _BUF_LOCK 之外(锁只罩 :291-294 的缓冲交换),paint 侧 view() 却在拿锁【之前】就用 _FW/_FH 算矩形(:590 经 :353/:361)——运行期重播种(改分辨率触发 _resync_output→seed_full)时可让 UI 拿『新尺寸+旧 _CLEAN』组合,numpy 越界切片静默收缩成 0 行数组,cv2.GaussianBlur 抛 cv2.error 被 _deco_liquid 吞成 veil 一帧;与 :288-290 注释『不锁会读到撕裂组合(2026-09-30 P1)』的声明相反——只封了一个方向的撕裂,反方向敞着",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "_thread_body 裸 `except Exception: pass` 把线程体每拍异常全部无声吞掉——本文件自己的注释(:441-444)就记载过这个模式曾让 NameError 被吞、『_RING_SIG 恒 None,整条 blink 链从未点火』;模块无任何 dbg/log 钩子,tests/ 目录零处 import glass_effect(grep 证实),持续性异常(GDI 失败/cv2.error/撕裂数组)= 玻璃静默冻结且零诊断",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "模块头 docstring 的节拍声明停在旧版:『拖动中 33ms/拍(30fps),稳态 80ms』与实际代码 16ms/60fps、稳态 100ms 直接矛盾(代码处 :550-553 自己写着新数字)——文件顶层自述与实现脱节,误导后来者对 CPU 占用/刷新率的预期(与注册表已收录的 paintEvent 『activate() 不存在』同款 doc-漂移类)",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "模块头【F2 纪律延伸】声明停留在 pre-T4 三档口径(『仅 soft/half/vstrong 三档』rgba 豁免、『其余键一律 QColor 可解析 hex』),而本文件除 glass 外 8 款皮肤的 palette[\"sep\"] 全是 rgba 字面,tests/test_stress.py:554-557 已正式把 sep 列为第四档 QSS 豁免——同一纪律存在模块头/测试两份分叉口径",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "deco 对窗口标签属性存在两种访问纪律:swiss/industrial 直接属性访问(win.tps_lbl/tps_unit_lbl/spark),其余六款走 getattr 守卫;分派点 app.py:950 deco(p,self,form) 无任何异常防护——在 app.py:766 自述『paintEvent 可能早于首次 _build_card』的窗口态下,离屏实测 swiss 卡形态与 industrial 全三形态 AttributeError、混合态 industrial 卡形态 _union([]) IndexError,paintEvent 裸崩且 painter 残留未配对 save",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "『本包内严禁 import data_engine』红线零守卫:不变式只活在 docstring(__init__.py:9、base.py:7-9、zcode.py:8、claude.py:9,另 data_engine.py:34-35 共五处)里,没有任何测试或运行时检查钉住它,违约(尤其第三方源模块顶层 `import data_engine` 的双实例变体)将无声发生",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "base.py 自称『多 CLI 聚合的唯一契约』,但真正有效的源契约面分裂在三处:计量语义(今日 in+out、本地午夜天界、daily_usage 的 [(iso日期,tokens)] 升序形状)只写在 README 模板注释里,排序键 order(含默认值 100)只存在于 sources/__init__.py,base.py 本体只有三个裸方法桩 —— 只读『唯一契约』的第三方源作者可以合法实现 UTC 天界或 output-only 口径,卡片上出现不可比行且无任何机制拦截",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "UsageSource 类 docstring 称『Claude Code 为 v1 的额外源』,但 Claude 源已随 v0.4.0(2026-09-26)落地 —— 『v1』是与 CHANGELOG 矛盾的孤儿版本引用,误导后来者以为该源属未发布的未来版本",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "note_changes 摄取新文件但不把它记入 _scope_files(只有 _scan:314 写)——整个生命周期落在两次 walk 之间的文件(经 watcher 摄取、又在下一次 walk 前被删除/改名)永远逃过 vanished 检测,其独占 claim 的共享 mid 永久压制幸存文件同名行,与 99-104 行自述的删除检测语义(『缓存过的键从 walk 中消失 ⇒ 触发重建』)相反且无自愈",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "note_changes 的 reparse 重建集 rkeys 取类级 _file_cache 里本 scope 全部键、不校验文件是否仍存在——已删除文件的陈旧条目在任何后续 reparse 事件中被复活重新 claim,把 vanished 检测(⑤)刚解禁的幸存文件重新压制,与 _scan 侧重建集(走 walk 的 keys,天然存在性校验)口径不一致",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "_read_new_rows 硬编码 ClaudeSource._parse_line(而非经 cls/类型分派)——冷解析与增量尾读全部经此单一入口,data_engine.py:2133-2138 明确预期『未来的 ClaudeSource 子类自然继承』(按 isinstance 识别),子类覆写 _parse_line 会被静默忽略,两套解析规则漂移",
+      "date": "2026-10-02"
+    },
+    {
+      "title": "同一句单点 patch 承诺对 connect_ro/today0_ms 两个再导出名在任何方向都不成立:from-import 共享的是函数对象,rebind zsrc 属性不会重定向 data_engine 侧任何调用点;反之测试经 de.today0_ms 打假时钟时,ZCodeSource.today_usage 仍解析 zsrc 命名空间用真实天界,打破本文件 :47-49 自述的『today_usage 与 _poll_stats 完全同天界』不变式",
+      "date": "2026-10-02"
     }
   ],
   "fixed": [
@@ -266,6 +342,16 @@
       "title": "recent_sessions 在 UI 线程(右键菜单构建,app.py:2157)对 part 表做全覆盖索引扫描 + 临时 B-tree 排序,无任何行数窗口,实测 76-150ms 且随 part 表(只增不减)无界增长 —— 同文件 _global_part_tps 尚知用 4000 行窗口防全表 GROUP BY,本查询同表同形态却无闸",
       "date": "2026-09-30",
       "fix": "v0.9 T3 缓存读:数据源=引擎维护的 _session_last_rowid(T1 水位走读每秒增量+首拍/回退全量重建),菜单=独立 _session_lock 快照拷贝+Python 过滤 sess_subagent*/sess_dwf-*+rowid 倒序+session.id IN 批查 title(0.019ms)+[:16] 不变;冷缓存回退旧 SQL 一次并回填;锁序单向 snap_lock→_session_lock(N3,单测断言三路径 snap_lock acquire==0);签名/返回形状不变 app.py 零改动;67.80/54.88ms→暖读 0.84ms≤1ms"
+    },
+    {
+      "title": "亚克力时代遗留的 26px 圆角 SetWindowRgn 蒙版是活代码且全仓无任何移除路径:切离 liquid 或切形态后旧尺寸蒙版残留,把新形态窗口裁剪成旧尺寸形状(实测卡片被条形蒙版裁成一条带)",
+      "date": "2026-10-02",
+      "fix": "resizeEvent 内 SetWindowRgn 蒙板块整段删除(app.py:1292-1307,删除处注释载明 2026-10-02 P1 根因):守卫只查 skin_id==liquid 不查 acrylic_native,亚克力撤退后 acrylic_native 运行期恒 False 蒙版却照套,且全仓唯一 SetWindowRgn 只设永不复,切形态/切皮肤后旧尺寸蒙版残留把新窗裁成旧形状+region 外点击穿透;窗口圆角本由 WA_TranslucentBackground + paintEvent 圆角 path 全权决定(对所有皮肤成立),layered 窗 alpha=0 四角天然不命中鼠标,蒙版零收益纯风险,删 setter 即根除;grep 复核全仓 SetWindowRgn/CreateRoundRectRgn/setMask 零存活,回归 run_all.py ALL PASS"
+    },
+    {
+      "title": "_scan 把单文件瞬时失败(os.stat 失败或 _ingest 返回 error)当成 vanished 处理:当轮聚合直接丢弃该文件的 last-good date_agg(违反 _ingest 自己声明的『条目保持上次好值不落盘,下一轮重试』),并触发不含它的 _rebuild_scope 使共享 mid 归属翻给幸存文件;文件恢复后走 unchanged、last⊆keys 不再重建 → 同一 mid 在两个文件的 date_agg 中同时存在,今日用量永久双计(input 双计教训家族)",
+      "date": "2026-10-02",
+      "fix": "_scan 区分『瞬时失败』与『真消失』(claude.py:304-347):stat OSError(310-311)与 _ingest 返回 error(316-317)的文件进 errored 集,当轮聚合改用其 last-good date_agg(335-341,冷路径失败无缓存条目 get 容缺跳过),兑现 _ingest『失败保持上次好值不落盘、下一轮重试』契约;消失判定从 not last.issubset(keys) 改为 not last.issubset(walked)(327,只认 walk 不再列出,注释载明旧判据→归属翻转→恢复后 unchanged 短路→永久双计的事故链);重建集与 _scope_files 均写 keys|errored(330-331),瞬时失败文件既不丢聚合也不参与归属翻转;回归 run_all.py ALL PASS"
     }
   ],
   "proposed": [
