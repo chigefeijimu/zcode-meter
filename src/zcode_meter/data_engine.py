@@ -893,6 +893,24 @@ class DataEngine(threading.Thread):
     # 增量解析次数 = 批次数而非事件数,而 0.1s 对『提前出数』的延迟贡献
     # 可忽略(事件路径本就 1s TTL 采样)。
     WATCH_DEBOUNCE_S = 0.1
+    # 失败事件家族(2026-10-04 P1):请求以失败收场时的生命周期事件,必须与
+    # completed 同权进 _handle_log_line 白名单 —— 缺位时主会话失败请求既等
+    # 不到 completed 复位、失败行又被整行丢弃,_running 永久卡 True(卡片无
+    # 限爬『生成中 Ns』+_poll_new_completed 停摆)。四成员:model.request.
+    # failed(请求尝试失败,与 network.failed 同毫秒连发)、model.network.
+    # failed(网络侧)、model.sdk.stream.failed(流中断)、turn.failed(turn
+    # 级失败/用户取消)。
+    FAIL_EVENTS = frozenset(("model.request.failed", "model.network.failed",
+                             "model.sdk.stream.failed", "turn.failed"))
+    # generating episode 的 watchdog 上限(2026-10-04 P1):失败家族也接不住
+    # 的最后一种死角是『started 之后再无任何生命周期事件』(zcode 进程中途
+    # 死亡/强杀,连 failed 都来不及写)。阈值推导:真实库 MAX(duration_ms)
+    # ≈64.2min(见 COMPLETED_LOOKBACK_MS 注释;duration 是请求墙钟,已含
+    # 重试风暴的退避时间),2h≈1.9× 余量 —— 真实数据里不存在超过它的单次
+    # episode。误杀代价 = 超长请求尾段提前显示空闲,完成行仍由 _poll_new_
+    # completed 照常补数(不走 _on_request_done 校准,少一次 chars/token
+    # 刷新而已);不设 watchdog 的代价是修复前的永久卡死。
+    GEN_WATCHDOG_S = 2 * 3600.0
 
     def __init__(self, out: "queue.Queue[Snapshot]"):
         super().__init__(daemon=True)
@@ -904,6 +922,11 @@ class DataEngine(threading.Thread):
         self.snap = Snapshot()
         self._running = False
         self._gen_start = 0.0
+        # watchdog 基线:最近一次『请求仍活着』的生命周期证据时刻(started
+        # 置位、可重试失败推新)。与 _gen_start 分开存:_gen_start 钉住
+        # gen_elapsed 显示的 episode 起点,不能被重试刷新;watchdog 只看
+        # _gen_mark(2026-10-04 P1,消费点 run() 主循环)。
+        self._gen_mark = 0.0
         self._last_len: int | None = None
         self._last_len_t = 0.0
         self._chars_per_token = self.CHAR_PER_TOKEN_INIT
@@ -1111,8 +1134,16 @@ class DataEngine(threading.Thread):
         except json.JSONDecodeError:
             return
         ev = obj.get("event", "")
-        if ev not in ("model.request.started", "model.request.completed",
-                      "model.sdk.stream.completed"):
+        # 白名单 = 驱动 generating 状态机的生命周期事件。失败家族
+        # (FAIL_EVENTS)2026-10-04 前缺位:主会话请求以失败收场时 completed
+        # 永不到来、失败行又被白名单整行丢弃 → _running 永久 True,卡片无限
+        # 爬『生成中 Ns』、_poll_new_completed 被 `if not self._running`
+        # 门控停摆(tps_exact/last_ttft/last_duration 冻结)、_switch_session
+        # 重建快照继承 state 也救不回(3 天真实日志失败事件 ≈62 次/天,
+        # 连败放弃/关终端即触发,机制确定性成立)。
+        if (ev not in ("model.request.started", "model.request.completed",
+                       "model.sdk.stream.completed")
+                and ev not in self.FAIL_EVENTS):
             return
         # 会话排除红线(与 _latest_session/fetch_session_usage 同款):dwf/
         # subagent 会话(sess_dwf-*/sess_subagent*)的请求事件绝不能驱动
@@ -1120,14 +1151,31 @@ class DataEngine(threading.Thread):
         # 放行,空闲的主会话卡片会跟着子代理显示『生成中 Ns』+脉冲,
         # _poll_new_completed 被 _running 门控停摆、tps_est 冻结不清理
         # (『subagent 污染会话判定』教训在日志事件路径复发,2026-09-30 P1)。
-        # 无 sessionId 键的行按旧路径处理(不因缺键丢事件)。
+        # 失败家族同样过这道闸:dwf/subagent 的失败(占真实日志失败的大头)
+        # 不得复位主会话的 generating。无 sessionId 键的行按旧路径处理
+        # (不因缺键丢事件)。
         sid = obj.get("sessionId")
         if isinstance(sid, str) and sid.startswith(("sess_subagent", "sess_dwf-")):
             return
         if ev == "model.request.started":
             self._running = True
-            self._gen_start = time.time()
+            self._gen_start = self._gen_mark = time.time()
             self._last_len = None
+        elif ev in self.FAIL_EVENTS:
+            # 失败分支(2026-10-04 P1):retryable=True(429 限流类,3 天
+            # 真实日志 373 条 request.failed 中 352 条)不是终态 —— zcode
+            # 随即排重试(network.retry_scheduled)且重试【不发新 started】
+            # (实测同 turn 的 attempt 2/3 换新 requestId 直进 completed),
+            # 此时提前复位会让整个重试期(退避+重传流式,实测可达数十秒)
+            # 错显空闲;只把 watchdog 基线推到『现在』= 请求仍活着的证据。
+            # 终态失败(连败放弃 retryable=False/缺键、流中断、turn 取消)
+            # 与 completed 同权结束 episode —— 失败没有 completed 行可校准,
+            # 走 _end_generate 纯清场(tps_est 残留/frozen 指标就此解开)。
+            ctx = obj.get("context")
+            if isinstance(ctx, dict) and ctx.get("retryable"):
+                self._gen_mark = time.time()
+            elif self._running:
+                self._end_generate()
         elif self._running:
             self._running = False
             self._on_request_done()
@@ -1714,6 +1762,28 @@ class DataEngine(threading.Thread):
         self._last_len, self._last_len_t = ln, now
 
     # ---- 请求完成 ----
+    def _end_generate(self):
+        """结束 generating episode(终态失败 / run() watchdog 兜底共用;
+        完成路径不走这里 —— _on_request_done 额外做 completed 行校准)。
+
+        失败场景没有 completed 行可查,只清场:
+        - _last_len=None:失败请求的半截流长不能留给下一请求当校准/差分
+          基线(可重试失败【不】走这里,基线保留让 _poll_part 跨重试继续
+          差分 —— 重试的流式追加写同一 part 行);
+        - tps_est=None:否则残留旧估值(_part_loop 只在 ln>_last_len 时
+          更新,失败后无人清理)冻结到下一次生成;
+        - gen_elapsed=0 + state='idle':卡片立即翻『空闲』,不再显示爬到
+          一半的『生成中 Ns』(run() 主循环 0.5s 内会对齐同值,这里先行
+          避免半拍『生成中 0s』)。_poll_new_completed 的 `if not
+          self._running` 门控随之解开,tps_exact/last_ttft/last_duration
+          恢复由 db tick 补数。"""
+        self._running = False
+        self._last_len = None
+        self.snap.tps_est = None
+        self.snap.gen_elapsed = 0.0
+        self.snap.state = "idle"
+        self._push()
+
     def _on_request_done(self):
         if self._last_len:
             self._exact_out_chars = self._last_len
@@ -1776,7 +1846,15 @@ class DataEngine(threading.Thread):
         """切到指定会话(自动跟随/手动固定共用)。序列不可乱:
         - 先重建 Snapshot:防数据线程读到半更新快照(v0.2.0 修过的老 bug)
         - _last_len=None:否则用两会话 part 长度差算出错误 tps_est
-        - _prev_max_rowid 重置:否则旧会话基线带进新会话,漏读/重读完成请求"""
+        - _prev_max_rowid 重置:否则旧会话基线带进新会话,漏读/重读完成请求
+
+        刻意【不】在这里复位 _running/_gen_start(2026-10-04 P1 复核裁定):
+        _running 是跨主会话的全局标志(事件层按『全部非排除会话』驱动),
+        切换发生时新会话自己的 started 往往刚置位它 —— 若在此复位,切换
+        恰好落在『新会话首请求进行中』的窗口(part 写入触发 _refresh_
+        session)时,该请求余下全程错显空闲,且其 completed 因 _running
+        已 False 走不到 _on_request_done。卡死场景的复位职责在事件层
+        (FAIL_EVENTS 终态)+ run() watchdog,不靠切会话。"""
         with self.snap_lock:
             self.session_id = new
             self.snap = Snapshot(state=self.snap.state, model=self.snap.model,
@@ -2312,6 +2390,14 @@ class DataEngine(threading.Thread):
         last_state = None
         while not self.stop_flag.is_set():
             self._refresh_session()                  # 跟随 ZCode 会话切换
+            # watchdog(2026-10-04 P1):episode 距最近一次生命周期证据
+            # (started 置位 / 可重试失败推新 _gen_mark)超过 GEN_WATCHDOG_S
+            # → 强制收场。兜的是『started 后 zcode 进程死亡,连 failed 都
+            # 没写』的最后死角;正常 completed / 终态失败在事件层早已复位,
+            # 轮不到这里(阈值推导见 GEN_WATCHDOG_S 注释)。
+            if (self._running
+                    and time.time() - self._gen_mark > self.GEN_WATCHDOG_S):
+                self._end_generate()
             state = "generating" if self._running else "idle"
             if state != last_state:
                 last_state = state

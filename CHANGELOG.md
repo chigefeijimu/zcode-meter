@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.9.1 (未发布) — 两 P1 修复:失败事件复位 generating 状态机 + 蒸汽波主数字可读性
+
+- **P1 修复①:请求失败事件全家族纳入 generating 状态机 + watchdog 兜底
+  (2026-10-04)**。缺陷:`_handle_log_line` 白名单只有 started/completed/
+  stream.completed 三事件,`model.request.failed`/`model.network.failed`/
+  `model.sdk.stream.failed`/`turn.failed` 全部整行丢弃,且状态机无任何超时
+  复位路径 —— 主会话请求以失败收场(或 zcode 进程中途死亡只留 started)后
+  `_running` 永久卡 True:卡片无限爬『生成中 Ns』、`_poll_new_completed` 被
+  `if not self._running` 门控永久停摆(tps_exact/last_ttft/last_duration
+  冻结)、tps_est 残留旧值,切会话也不能自愈(3 天真实日志失败事件 ≈62
+  次/天,连败放弃/关终端即触发;独立复核 `_conf_failed_family_repro.py`
+  机制复现坐实)。修复三件套:
+  ① `FAIL_EVENTS` 四事件进白名单,与 completed 同权复位;细分
+  `context.retryable` —— 429 限流类可重试失败(3 天 373 条中 352 条)
+  **保持 generating 只推 watchdog 基线**:实测 zcode 重试不发新 started
+  (attempt 2/3 换新 requestId 直进 completed),提前复位会让整个重试期
+  错显空闲;终态失败(连败放弃/流中断/turn 取消)走新增 `_end_generate`
+  纯清场(`_running=False`/`_last_len=None`/`tps_est=None`/
+  `gen_elapsed=0`/`state='idle'`+push,无 completed 行不做校准);
+  ② `run()` 主循环 watchdog:`_gen_mark`(started 置位、可重试失败推新)
+  距今超 `GEN_WATCHDOG_S=2h` 强制收场 —— 兜『started 后进程死亡连
+  failed 都没写』的最后死角;阈值=真实库 MAX(duration_ms)≈64.2min 的
+  ≈1.9× 余量(含重试风暴墙钟),误杀代价仅超长请求尾段提前显示空闲且
+  完成行仍由 `_poll_new_completed` 补数;
+  ③ `_switch_session` **刻意不**复位 `_running/_gen_start`(注释裁定):
+  该标志跨主会话全局,切换常发生在『新会话首请求进行中』的窗口,复位
+  会让该请求余下全程错显空闲且其 completed 走不到 `_on_request_done`;
+  卡死场景的复位职责全在事件层+watchdog。真实日志回放(4 天)验证:
+  6 个 episode 由 stream.failed 正常收场(修复前全部悬挂),回放终态无
+  悬挂;排除会话红线对失败家族同样生效(dwf 15896/subagent 25623 事件
+  零影响)。
+- **P1 修复②:蒸汽波皮肤主数字底衬(2026-10-04)**。缺陷:HTML 定稿
+  (:208-209/:237)速度数字压条纹太阳靠双色 text-shadow(3px 3px 0
+  #ff2e97/-2px -2px 0 #00e5ff)保分离,Qt 移植是裸 QLabel 无逐件描边通道
+  (全库零 setGraphicsEffect),补偿被整段丢弃 → v 竖条形态小太阳与 24pt
+  主数字结构性重叠,实测 67% 字形面积直压条纹、对黄段 1.04:1/粉红
+  1.77~1.92:1(WCAG 大文本 3:1 以下),核心读数 2/3 面积不可读;卡形态
+  宽值(≥7 字符)尾部伸入太阳左叶同病。修复:以本皮肤自己的词汇补 ——
+  新增 `_vp_plate`(统计暗格同款 rgba(13,5,24,.72)+青 .4 边)铺到主数字
+  行(v 形态锚 tps_lbl、卡形态锚 tps_lbl+tps_unit_lbl 活几何,值变宽底衬
+  每 paint 现读跟随,自愈纪律同组暗格);实拍验证 v 形态本体对比度
+  1.04~1.92→**7.38:1**、卡常态 10.18:1、宽值压太阳 8.09:1,太阳圆内
+  字形带零裸条纹。contrast_bg 的 v 形态申报随之如实升级 #2c1038→
+  #503234(主数字底衬压太阳最亮带的最坏合成;T5 闸按新申报复测全过,
+  申报变严而非维持旧数自证)。
+
 ## v0.9.0 (未发布) — Live 实时刷新(Claude 增量解析+watcher)/ 三条热点 SQL 根治 / ZCode db 文件闸门(空闲 0 SQL)
 
 - **Live 实时刷新 + 引擎性能根治(2026-09-30,spec=v0.9 两需求:①Claude jsonl

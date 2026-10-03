@@ -2019,8 +2019,18 @@ def test_trend_forecast_hand_computed():
     check("趋势:仅窗口外旧数据 → None",
           trend_forecast([("2026-09-14", "GLM-5.3", 1000, 0, 1000, 1.0, False)],
                          today=T) is None)
+    # today 缺省走本地时钟:行日期必须跟真实时钟取(本地今日行)—— 钉死
+    # 历史日期(上面的 rows 是 2026-09 固定值)会随日历漂移滚出 7 日窗,
+    # 2026-10-04 回归就在这条上炸过(today=10-04 → 窗 09-28..10-04,
+    # 全部行窗外 → None)。顺带断言 avg_tokens 手算值,证明行真被缺省
+    # 时钟的窗圈进去了(而非碰巧返回非 None);跨午夜竞态无虞:即使
+    # 两次取 today 之间日期翻转,行变成『昨天』仍在 7 日窗内,和值不变。
+    rows_local = [(dt.date.today().isoformat(), "GLM-5.3",
+                   7000, 5600, 1400, 0.10, False)]
+    rdef = trend_forecast(rows_local)
     check("趋势:today 缺省走本地时钟可用",
-          trend_forecast(rows) is not None)
+          rdef is not None and rdef["avg_tokens"] == round(8400 / 7, 1),
+          str(rdef))
 
 
 # ========== 速度趋势 sparkline 数据源(v0.8.0 T4:合成库手算对账) ==========

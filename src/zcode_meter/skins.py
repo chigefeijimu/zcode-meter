@@ -247,6 +247,21 @@ def _striped_sun(p, cx: float, cy: float, r: float,
     p.restore()
 
 
+def _vp_plate(p, rect) -> None:
+    """蒸汽波统计暗格(HTML :217/:227/:238 rgba(13,5,24,.72)+青 .4 边):
+    落日亮带上的文字必须有暗底(contrast_bg 申报口径)。2026-10-04 P1
+    起也铺到主数字行 —— HTML :208-209/:237 的速度数字压太阳靠双色
+    text-shadow(#ff2e97/#00e5ff 偏移影)保分离,Qt 侧是裸 QLabel 无逐件
+    描边通道(全库零 setGraphicsEffect,translucent+layered 窗口不引入
+    QGraphicsDropShadowEffect),移植时补偿被整段丢弃 → 青字直压条纹
+    (v 形态实测 67% 字形面积,对黄段 1.04:1、粉/红 1.77~1.92:1,均低
+    于 WCAG 大文本 3:1)。以本皮肤自己的词汇补:同款暗格底衬,最坏
+    合成底(衬压太阳最亮带)上青字 ≈7.4:1。"""
+    p.setPen(QPen(QColor(0, 229, 255, 102)))
+    p.setBrush(QColor(13, 5, 24, 184))
+    p.drawRect(rect)
+
+
 # ══════ ① 瑞士国际主义(HTML :26-51):奶白板 + 墨字 + 红点 LIVE ══════
 
 def _deco_swiss(p, win, form) -> None:
@@ -633,6 +648,18 @@ def _deco_vaporwave(p, win, form) -> None:
             p.setPen(QPen(QColor(0, 229, 255, 102)))
             p.setBrush(QColor(13, 5, 24, 184))
             p.drawRect(g)
+        # 主数字行底衬(2026-10-04 P1):HTML :208 .vp-sp 故意叠日
+        # (margin-top:-36px)+双色 text-shadow 保读,Qt 侧数字左置但宽值
+        # (≥7 字符,30pt mono ≈18px/字)尾部会伸进太阳左叶(x≈112 起),
+        # 同病同治(衬底最坏合成 #51213d,青字 8.3:1)。锚 tps_lbl+
+        # tps_unit_lbl 活几何:值变宽 → label 变宽 → 底衬每 paint 现读
+        # 跟随(不缓存,布局/显隐自愈);sparkline 不衬(线件非字段文本,
+        # 与太阳重叠仅边缘 7%)。
+        _nbs = [getattr(win, n, None) for n in ("tps_lbl", "tps_unit_lbl")]
+        _nbs = [lb for lb in _nbs if lb is not None and not lb.isHidden()]
+        if _nbs:
+            _vp_plate(p, _union([lb.geometry() for lb in _nbs])
+                      .adjusted(-6, -4, 6, 4))
     elif form == "h":
         # :223-225 底部 8px 迷你网格
         for i in range(1, int(w / 18) + 1):
@@ -655,6 +682,14 @@ def _deco_vaporwave(p, win, form) -> None:
             p.setPen(QPen(QColor(0, 229, 255, 102)))
             p.setBrush(QColor(13, 5, 24, 184))
             p.drawRect(g)
+        # 主数字底衬(2026-10-04 P1,结构性主病灶):小太阳 (w/2,42,r23)
+        # 与居中 24pt 主数字重叠是本形态布局的必然(实测 67% 字形面积压
+        # 条纹、裸对比 1.04~1.92:1,核心读数 2/3 面积不可读;HTML :237
+        # text-shadow 2px 2px 0 #ff2e97 的补偿移植时被丢,见 _vp_plate)。
+        # 与四组值行暗格同款同 padding(-9,-3,9,4),视觉成套。
+        _lb = getattr(win, "tps_lbl", None)
+        if _lb is not None and not _lb.isHidden():
+            _vp_plate(p, _lb.geometry().adjusted(-9, -3, 9, 4))
     p.restore()
     if form is not None:                                 # :221/:231 青边
         _stroke(p, win, r, QColor(0, 229, 255, 128))
@@ -882,7 +917,10 @@ _SKIN_NEWSPAPER = SkinDef(
 # ⑦ 蒸汽波落日(HTML :201-240):紫红落日渐变 + 青 #00e5ff 网格 + 品红
 # 描边;contrast_bg=统计暗格 rgba(13,5,24,.72) 与落日亮带的最坏合成
 # (评审 D 口径:落日亮带/网格为无字装饰带,不得充当基准 —— 暗格才是
-# 字段文本的真实局部底)
+# 字段文本的真实局部底)。v 形态 2026-10-04 P1 主数字底衬上线后,该形态
+# 最亮承载面升级为『主数字暗格压太阳最亮带』(y≈33 处黄粉插值 (255,166,
+# 124) 合成 → #503234),据此如实申报 —— 高于旧值 #2c1038(组暗格在
+# 太阳下方的暗天空上),申报随之变严而非维持旧数自证。
 _SKIN_VAPORWAVE = SkinDef(
     id="vaporwave",
     menu_label="蒸汽波落日",
@@ -897,7 +935,7 @@ _SKIN_VAPORWAVE = SkinDef(
     pulse_core=_c(0, 229, 255, 230), ring_base=_c(0, 229, 255, 38),
     sep="rgba(0,229,255,102)",
     sep_card="rgba(0,229,255,102)", sep_card_weak="rgba(0,229,255,72)",
-    contrast_bg={"card": "#51213d", "h": "#51213d", "v": "#2c1038"},
+    contrast_bg={"card": "#51213d", "h": "#51213d", "v": "#503234"},
     today_cost_sep=" ",
     font_mono_families=("Cascadia Code", "Consolas"),
     deco=_deco_vaporwave,

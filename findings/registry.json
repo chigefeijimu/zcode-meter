@@ -295,6 +295,42 @@
     {
       "title": "today_usage 契约缺『每秒被现调』的运行时假设声明:引擎尾段对非 ZCode 源每秒无缓存现调(_poll_stats_tail),性能正确性完全依赖 ClaudeSource 实现内部的 15s TTL 缓存(其 docstring 自证『不节流会把 jsonl 目录扫成热点』),而自称『唯一契约』的 base.py 与 README 贡献模板对此零提示——按模板实现口径正确但无缓存的第三方源落地即每秒全量扫盘,无机制拦截(sources/base.py:25;在册『契约面分裂三处』项未覆盖调用频率维度)",
       "date": "2026-10-03"
+    },
+    {
+      "title": "Snapshot.plan_remaining_pct 是生产路径零消费的影子字段:UI 侧每拍回填 pct、换号清号时清 None,但全仓无任何读取方(grep 全仓仅命中写入点/docstring/测试构造传参,无 asdict/__dict__/json.dumps 等动态序列化间接消费),套餐%渲染实际全部走 MeterWindow._plan_pct(19 处引用,含托盘),tests 构造传 plan_remaining_pct=87 后仍须手动 win._plan_pct=87 UI 才显示——两套同值数据源并存,任改一侧无声漂移(app.py:2446 写/2357 清;字段定义 data_engine.py:862)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "_push_fp 在关门拍被无条件推进到从未推送过的值,『值未变不 push』的记账基线与 UI 实收脱节;叠加『关门轮永不 push』(注释自认),尾段每拍专门重算的 global_tps 衰减(其 docstring 自述『衰减照推不冻结』)从不经队列送达——空闲后主速度数字/sparkline 的归零完全依赖在册『_push 活引用共享黑板』项的越权读取才被 UI 看到,一旦按该项改为推拷贝即变成用户可见的『速度永久冻结在旧值』(独立仿真 9/9 PASS:关门拍衰减 100→0 全程 push=0 而 _push_fp 被推进至 0.0,总 push=1;应与共享黑板项联动修复)(data_engine.py:1206-1209)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "needs_blink 的动画静默判据(_SIG_CHANGES>=10→mute 15s)把【自身拖动卡片】的高频环带签名变化误判为连续动画源:拖动≥10 拍变化(16ms/拍,约 0.2s)后停拖,首次评估必命中阈值→mute 15s,新位置的洞区真背景(refresh_hole_below 的 PrintWindow 合成)被推迟 ≥15s,mute 窗口内卡片下方内容变化时玻璃显示旧值——恰是该功能要解决的场景;且 75-76/89 行『窗口划过是阶跃(3-6 次)→正常刷新』的模型对拖动路径不成立(实测拖 25 拍→_SIG_CHANGES=24→停拖 0.6s 后 mute 15.0s)(glass_effect.py:88-91)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "needs_blink docstring 声称『动画源静默 15s(视频垫背时玻璃 15s 更新一帧,可接受)』与实现不符:mute 设置时清零 _SIG_CHANGES(91 行)但 15s 静默期内视频照常每拍累积计数(15s×100ms/拍≈150 次),期满评估必然再次 ≥10→再 mute,持续动画期间实际为开端 1 帧后 0 帧刷新(实测 60s 持续动画仅 1 次刷新+再 mute 4 次,按口径应≈4 帧),直到动画停止一个 mute 周期后才恢复(glass_effect.py:74)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "palette[\"sep\"] 渲染进全程序零匹配控件的 QFrame#sep QSS selector(全仓无 setObjectName(\"sep\")),真实分隔线色全走 SkinDef.sep 字段内联注入(_mk_sep 七处全传 sk.sep、_mk_card_sep 自述零 QSS/objectName 依赖)——双字段携带同值却零护栏,liquid 已经分叉(palette rgba(255,255,255,77) vs 字段 transparent),改 palette 侧是纯无声 no-op,tests 注释还把死路径当活路径文档化(skins.py:82;glass 双份同值 :717-724/:732、liquid 分叉 :817/:824;消费方 app.py:1429/1771)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "LIQUID_GRID_TEXT_W=88 的存在依据(防文字溢出药丸边界,用户 2026-09-29)已随药丸同日移除而失效,liquid 六格仍按 88 一刀切 elide,比其它皮肤(102/68/95)更早截断入/出格与 timing 格(实测 '446.4M / 541K' 实宽 99px,88px 预算截成 '446.4M / 5…',玻璃 102px 预算全显;注释自称该样例宽 84 系误测,差 15px),且 88/79 两份注释口径互相矛盾(skins.py:59-62;消费方 app.py:2760-2763、列宽 app.py:765)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "UsageSource.name 自带默认值 \"source\" 且契约不要求覆写、不要求唯一,而引擎把 s.name 当 per-source 缓存 _src_today_cache 的字典键兼卡片行名——忘覆写 name 的第三方源以 \"source\" 字样上卡;两个同名 ZCodeSource 族源在缓存键上碰撞,先源的今日数值被后源静默覆盖、两行同显后源的值(行值张冠李戴,探针实测 cache={'MyHub':222}、today_by_source 两行均 ('MyHub',222)),无任何机制拦截(sources/base.py:20;消费方 data_engine.py:1333-1335/1374-1378)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "目录级瞬时列举失败(os.walk 静默吞掉 scandir 错误,AV/OneDrive/网络盘瞬锁 ~/.claude/projects 或其子目录)被 _scan 当成『全部/部分文件真消失』:vanish 判据触发空集/部分重建,聚合只对 keys|errored 求和 → 今日聚合被清零/骤降,卡片 today_by_source 把源故障渲染成真实数据『Claude 0』(is_available 仍 True 行不消失)——与本函数给文件级瞬时失败立下的 last-good 纪律(stat OSError→errored 保旧值)和类 docstring『数据永不错,只是慢』相悖;瞬态、恢复轮 returning 重建自愈、无永久双计(全盲探针 1200→0→1200,部分失明探针 1700→1200→1700),区别于 2026-10-02 文件级形态的永久双计 P1(sources/claude.py:301/355-356/361-370)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "缓存条目字段 seen_mid 是无人消费的影子数据:全仓(含 tests)零读取方,claude.py 内 8 处出现全为注释或写置(add/重置/初始化),归属判定实际全由类级 _mid_owner 独立承担(seen_mid 与之镜像冗余,date_agg 被消费而 seen_mid 不被,互为对照),每行 claim 与每次全 scope 重建都为它付维护成本却无任何决策读它——registry 已两次收录同病(SkinDef.radius、font_decor),这是第三例新站点,改 claim/重建任一侧另一侧无声漂移,无护栏(sources/claude.py:92)",
+      "date": "2026-10-04"
     }
   ],
   "fixed": [
@@ -410,6 +446,16 @@
       "title": "文件消失触发归属重建后『原样恢复』(mtime_ns+size 未变,回收站还原/同卷 move/robocopy/OneDrive 水合)走 _ingest unchanged 短路不重导归属:旧 date_agg 与幸存文件翻转后的归属并存,共享 mid 双计(实测今日666 vs 正确 116);目录级消失→恢复还留 owner 真空,恢复后跨文件同 mid 追加被双 claim(实测 664 vs 114),持续到下一次 reparse 类事件才自愈。修复:_scan 增加归来者判定(上轮不在册∧缓存有旧条目∧本轮walk 又列出),归来即 _rebuild_scope 按 sorted 序从各文件完整 entries 重导归属与 date_agg,一次性恢复owner↔date_agg 一致(重建即冷扫语义,幂等;恢复带新追加的变体同被覆盖)",
       "date": "2026-10-03",
       "fix": "claude.py _scan 增加归来者判定(304-307 pre_cached 锁内快照 + 333-356 returning 判定与重建,注释载明 2026-10-03 P1 根因与 666/116、664/114 实测):『上轮不在册∧缓存有旧条目∧本轮 walk 又列出』= 消失轮的重建已动过归属,归来即 _rebuild_scope(scope, present) 按 sorted 序从各文件完整 entries 重导归属与 date_agg,一次性恢复 owner↔date_agg 一致(重建即冷扫语义,幂等);目录级真空形态由同判定整scope重导自动回填,真空窗口内的双 claim 也因重建从 entries 重导而回溯自愈;恢复带新追加(mtime/size 变走 append)的变体同样被覆盖(122 vs 双计 672 实测)。_scope_files 字段注释同步(99-108)。两探针复跑:_rev_claude_restore_after_vanish 今日值 116(原 666)、_rev_claude_owner_vacuum 真空期追加 114(原 664),各自仅剩一条断言『修复前中间态』的检查(归属保持翻转/owner 仍真空)按修复语义翻红 —— 与探针自己的数值期望(116=M 经 a)互斥,不可能同时满足;test_data_engine 五个 claude 测试 + T4 闸门测试全部 PASS"
+    },
+    {
+      "title": "请求失败事件全家族(model.request.failed/model.network.failed/model.sdk.stream.failed/turn.failed)不在 _handle_log_line 事件白名单,且 generating 状态机没有任何超时/watchdog 复位路径——主会话请求以失败收场(或被中断/崩溃,只留 started 无 completed)后 _running 永久卡 True:卡片无限爬升『生成中 Ns』、_poll_new_completed 被 `if not self._running` 永久停摆(tps_exact/last_ttft/last_duration 冻结)、tps_est 残留旧值,_switch_session 重建快照时继承 state 且从不重置 _running/_gen_start,切会话也不能自愈(真实日志失败事件 ≈62 次/天;直驱复现:失败家族逐个喂入后 _running 全程 True、_on_request_done 调用 0 次,孤儿 started 同样卡 True)",
+      "date": "2026-10-04",
+      "fix": "三层修复(data_engine.py):①失败家族 FAIL_EVENTS=frozenset(四事件)入 _handle_log_line 白名单与 completed 同权(903-904 定义/1144-1146 放行),会话排除红线对失败家族同样生效(1157-1159,dwf/subagent 失败不得复位主会话 generating);②失败分支区分可重试(1164-1178):retryable=True(429 限流类,3 天真实日志 373 条 request.failed 中 352 条)不是终态——重试不发新 started(实测 attempt 2/3 换新 requestId 直进 completed),提前复位会让整个重试期(退避+重传流式,实测可达数十秒)错显空闲,只把 watchdog 基线 _gen_mark 推到『现在』(_gen_start 钉住 gen_elapsed 显示起点不被重试刷新、_last_len 保留让 _poll_part 跨重试继续差分);终态失败(retryable=False/缺键/流中断/turn 取消)与 completed 同权结束 episode,走新增 _end_generate()(1765-1785:_running=False/_last_len=None/tps_est=None/gen_elapsed=0/state='idle'+push)纯清场——失败没有 completed 行可校准,卡片立即翻空闲、`if not self._running` 门控解开,tps_exact/last_ttft/last_duration 恢复由 db tick 补数;③GEN_WATCHDOG_S=2h watchdog(905-913,阈值=真实库 MAX(duration_ms)≈64.2min 的 ~1.9×,误杀代价仅超长请求尾段提前显示空闲)在 run() 主循环兜最后死角『started 后 zcode 进程死亡连 failed 都没写』(2393-2400)。本轮修复回归全绿"
+    },
+    {
+      "title": "蒸汽波皮肤把速度主数字直接压在条纹太阳上:v 竖条形态结构性重叠(实测 67% 字形像素落在太阳内,青字对粉/红条纹 1.77~1.92:1、对黄段 1.04:1,远低于 WCAG 大文本 3.0:1),核心读数 2/3 面积不可读;HTML 定稿中该重叠由双色 text-shadow 补偿,移植时丢弃(skins.py:650-652 v 形态小太阳/:615-617 卡形态太阳/:631-635 暗格只护 grid 六格)",
+      "date": "2026-10-04",
+      "fix": "以皮肤自己的暗格词汇补回被丢的补偿:_vp_plate 统计暗格底衬(rgba(13,5,24,.72)+青 .4 边,与 grid 六格/组值行暗格同款同词汇)铺到速度主数字行下(skins.py:250-262):v 竖条形态结构性病灶给 tps_lbl 单件衬底,padding 与四组值行暗格同款 (-9,-3,9,4) 视觉成套(685-692);卡形态锚 tps_lbl+tps_unit_lbl 活几何 _union 后 adjusted(-6,-4,6,4),值变宽→label 变宽→底衬每 paint 现读跟随不缓存,布局/显隐自愈(651-662);sparkline 不衬(线件非字段文本,与太阳仅边缘 7% 重叠)。衬底最坏合成底(衬压太阳最亮带)上青字对比恢复 ≈7.4:1(_vp_plate docstring :259;卡形态口径 #51213d 合成 8.3:1,:654),远超 WCAG 大文本 3:1。本轮修复回归全绿"
     }
   ],
   "proposed": [
