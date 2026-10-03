@@ -560,6 +560,38 @@
     {
       "title": "竖条套餐组补 12px 迷你环,三形态『剩余=环』语言闭环",
       "date": "2026-10-03"
+    },
+    {
+      "title": "分档计费实价核算:DEFAULT_PRICES 支持 (in,out) 阈值分档,cost_of 按实际 token 选档,消除短输出请求最高 2 倍的系统性高估",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "缓存存储费维度预备:DEFAULT_PRICES 增设 cache_store 档(现值 0)+ 限时免费到期哨兵",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "触顶预测升级:带置信区间的『预计 X 点触顶』+ pace 徽标与 now→触顶→重置时间轴",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "额度事件手机推送:窗口重置/剩余跌破阈值/触顶临近三类事件经 ntfy/Bark/Telegram webhook 出站",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "版本化设置 JSON 导入导出:dotfiles 友好的配置迁移(Settings 页 + CLI 双入口)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "Token 活动热力图:GitHub 贡献图式的日/周/累计用量热力图(按模型着色)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "『为什么是这个数』:一键口径血缘报告(文件→行→去重键→价格档)",
+      "date": "2026-10-04"
+    },
+    {
+      "title": "MSIX 打包上架 Microsoft Store(二阶段:Windows 11 小组件板 provider 卡片)",
+      "date": "2026-10-04"
     }
   ]
 }
