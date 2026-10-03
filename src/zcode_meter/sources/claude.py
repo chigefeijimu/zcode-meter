@@ -96,11 +96,15 @@ class ClaudeSource(UsageSource):
     # 分桶:去重边界=同目录树跨文件,与迁移前 per-walk seen 完全一致,
     # 测试临时目录/多实例互不串扰。
     _mid_owner: dict = {}    # scope -> {mid: owner_normpath}
-    # 每个 scope 上一次 walk 摘到的文件键集:仅用于删除/改名检测 ——
+    # 每个 scope 上一次 walk 摘到的文件键集:用于删除/改名检测 ——
     # 缓存过的键从 walk 中消失 ⇒ 旧贡献作废,触发一次 sorted 序重建。
     # 不做这步的话,被删文件独占过的 mid 会永远压着幸存文件的同名行,
     # 而迁移前的『每次 walk 重建 seen』在删除后会重新计入 —— 语义必须
-    # 对齐。(条目本身的只增不删是另一问题,registry open#18,本批不修。)
+    # 对齐。2026-10-03 起兼作『归来者』检测:上轮不在册而缓存有旧条目的
+    # 键重新出现 ⇒ 消失轮的重建已动过归属,归来必须再重建一次重导归属
+    # (见 _scan 的 returning 注释),否则原样恢复的旧 date_agg 与翻转后
+    # 的归属并存双计。(条目本身的只增不删是另一问题,registry open#18,
+    # 本批不修。)
     _scope_files: dict = {}  # scope -> set(normpath)
 
     def __init__(self, projects_dir: str | None = None):
@@ -301,6 +305,10 @@ class ClaudeSource(UsageSource):
         scope = self._scope()
         agg: dict = {}
         with self._lock:
+            # 归来者判定的原料:本轮摄取『前』已在缓存的键。快照必须在摄取
+            # 循环之前取 —— 新文件的条目是循环里 _ingest 才建的,不先快照就
+            # 会把『全新文件』误判成『归来者』(见下方 returning 注释)。
+            pre_cached = set(self._file_cache)
             keys = []
             errored = set()
             reparse = False
@@ -318,17 +326,38 @@ class ClaudeSource(UsageSource):
                 else:
                     keys.append(k)
             last = self._scope_files.get(scope)
+            present = set(keys) | errored
             # 消失判定只认 walk:上轮在册而本轮 walk 未列出才是真消失。
             # 旧判据 not last.issubset(keys) 把瞬时失败也当消失:当轮聚合
             # 丢 last-good 已违反 _ingest 的 error 契约,更糟的是用不含
             # 它的 keys 重建 → 共享 mid 归属翻给幸存文件;它恢复后走
             # unchanged 短路不再重建,同 mid 在两个文件的 date_agg 并存
             # → 今日用量永久双计(input 双计教训家族,2026-10-02 P1)。
-            if reparse or (last is not None and not last.issubset(walked)):
+            #
+            # 归来者重建(2026-10-03 P1):『上轮在册没有、缓存里却有旧条目、
+            # 本轮 walk 又列出』= 消失被观察过、期间已触发把它的 mid 释放给
+            # 幸存文件(或清空整个 scope 归属)的重建。『原样恢复』(回收站
+            # 还原/同卷 Ctrl+Z move/robocopy 镜像还原/OneDrive 水合,mtime_ns
+            # +size 未变)走 _ingest 的 unchanged 短路:条目原样进聚合集,但其
+            # date_agg 还是释放前归属下的旧值 —— 与幸存文件翻转后的 date_agg
+            # 并存,共享 mid 双计(实测今日 666 vs 正确 116);目录级消失→恢复
+            # 形态还会留下 owner 真空,恢复后跨文件同 mid 追加被双 claim(实测
+            # 664 vs 114)。归来即重建:按 sorted 序从各文件完整 entries 重导
+            # 归属与 date_agg,一次性恢复『owner↔date_agg』一致 —— 重建即冷
+            # 扫语义(确定性、幂等),本就是 reparse 事件的自愈通道,普通
+            # append 不触发它才让脏状态一直活到下一次 reparse。全新文件不算
+            # 归来(条目本轮才建,归属已由 _claim_rows 即时落定,重建是白工);
+            # 仅被 note_changes 预摄取过、从未进过 scope_files 的文件会命中同
+            # 判据 → 多一次无害重建(重建幂等,结果与冷扫一致),可接受。
+            returning = (last is not None
+                         and any(k not in last and k in pre_cached
+                                 for k in present))
+            if reparse or returning \
+                    or (last is not None and not last.issubset(walked)):
                 # 重建集并入瞬时失败文件(其条目未动,按完整行集重导
                 # 归属)——漏并的话重建本身就制造一次归属翻转
-                self._rebuild_scope(scope, set(keys) | errored)
-            self._scope_files[scope] = set(keys) | errored
+                self._rebuild_scope(scope, present)
+            self._scope_files[scope] = present
             for k in keys:
                 for d, v in self._file_cache[k]["date_agg"].items():
                     agg[d] = agg.get(d, 0) + v

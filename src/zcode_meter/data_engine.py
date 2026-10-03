@@ -1719,17 +1719,38 @@ class DataEngine(threading.Thread):
             self._exact_out_chars = self._last_len
         try:
             con = self._connect()
+            # rowid>? 下界 = _poll_new_completed 同款水位。为什么必须有:完成
+            # 事件拍 zcode 常尚未把本请求的 completed 行落库(日志里
+            # model.sdk.stream.completed 与 model.request.completed 同毫秒相邻,
+            # 本函数恰在最早那拍触发;活体探针实测 25 个完成触发 5 次 STALE),
+            # 无下界的 ORDER BY rowid DESC LIMIT 1 会命中同会话上一条请求的
+            # 旧行 —— 本次流式字符数 ÷ 上次请求的 output_tokens 持久污染
+            # _chars_per_token(全模块仅此处写入,污染要等下一次干净完成才被
+            # 覆盖,期间 tps_est 与全局 part tps 都除以它)。加下界后 STALE 拍
+            # 查不到新行 → 本轮跳过校准(保持旧校准值才是正确侧),
+            # tps_exact/last_ttft/last_duration 由 _poll_new_completed 在 ~1 个
+            # POLL_DB 内照常补上(旧行为也只是短暂污染后自纠)。缺
+            # query_source 过滤是另一 open 项,此处刻意只加下界不动口径。
             row = con.execute(
-                "SELECT output_tokens, duration_ms, time_to_first_token_ms FROM model_usage"
-                " WHERE status='completed' AND session_id=?"
-                " ORDER BY rowid DESC LIMIT 1", (self.session_id,)).fetchone()
+                "SELECT rowid, output_tokens, duration_ms, time_to_first_token_ms"
+                " FROM model_usage"
+                " WHERE status='completed' AND session_id=? AND rowid>?"
+                " ORDER BY rowid DESC LIMIT 1",
+                (self.session_id, self._prev_max_rowid)).fetchone()
             con.close()
-            if row and row[0]:
-                out_tok, dur_ms, ttft_ms = row
+            if row and row[1]:
+                rid, out_tok, dur_ms, ttft_ms = row
                 gen_ms = max((dur_ms or 0) - (ttft_ms or 0), 1)
                 self.snap.tps_exact = out_tok / (gen_ms / 1000)
                 self.snap.last_ttft = (ttft_ms or 0) / 1000
                 self.snap.last_duration = (dur_ms or 0) / 1000
+                # 消费即推进水位:接受行写的三字段与 _poll_new_completed 同式
+                # 同值,跳过它的重读无害;更重要的是堵住『本行留在下界之下、
+                # 下一请求的 STALE 拍再次吃到它』的残留窗口(back-to-back
+                # 连续两次完成且都查不到新行时,后者会拿前者刚落库的行校准)。
+                # 与 _poll_new_completed 同用 max 合并:两线程(tail/db_loop)
+                # 交错推进时取并集,任何行都不会被跳过或重复消费。
+                self._prev_max_rowid = max(self._prev_max_rowid, rid)
                 if self._exact_out_chars:
                     self._chars_per_token = max(self._exact_out_chars / out_tok, 0.5)
         except sqlite3.Error:

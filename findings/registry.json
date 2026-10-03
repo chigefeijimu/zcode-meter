@@ -247,6 +247,54 @@
     {
       "title": "同一句单点 patch 承诺对 connect_ro/today0_ms 两个再导出名在任何方向都不成立:from-import 共享的是函数对象,rebind zsrc 属性不会重定向 data_engine 侧任何调用点;反之测试经 de.today0_ms 打假时钟时,ZCodeSource.today_usage 仍解析 zsrc 命名空间用真实天界,打破本文件 :47-49 自述的『today_usage 与 _poll_stats 完全同天界』不变式",
       "date": "2026-10-02"
+    },
+    {
+      "title": "贴边态勾/退『显示内容』段开关重建条时,是全文件唯一漏掉 layout().activate() 的条重建路径,且在 _apply_snapshot 填文字之前就 _apply_dock_geometry 量尺寸——同文件两处已修的同款病根(事件循环恢复时布局 flush 旧最小约束把窗口顶回卡片高)在此第三路径复发(app.py:2069-2074;仅靠 _refit_dock 在 200ms poll 内半拍自愈,瞬态视觉缺陷)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "『导出 CSV』把引擎侧 DB 故障当成功导出:fetch_daily_model_usage 吞掉 sqlite3.Error 返回 [],坏库/锁库/库缺与近 30 天真空窗同样产出仅表头的 CSV,且托盘弹『已导出』成功气泡——故障与空窗不可区分的新站点(app.py:2233-2252;与在册 CLI 站点 __main__.py:102 同吞错源、不同消费方)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "liquid 皮肤下『收起到托盘』后玻璃管线不停:66ms _glass_timer + DXcam 后台抓屏线程继续按 100ms/拍抓屏+GaussianBlur 模糊,环带变化时还触发 PrintWindow 数十窗口扫描——隐藏期间零视觉消费者的常驻屏幕复制,是已修『切离 liquid 管线永不停』同款浪费在隐藏触发条件下的复发(app.py:2045 菜单直连裸 hide、TrayController.toggle 同样无管线停机,全文件无 hideEvent 钩子,且切肤停机点在 isVisible 闸内)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "data_engine.py 顶层 ctypes 与 ctypes.wintypes as wt 两个导入是死代码:全文件 2335 行零使用(ast.walk 证死,Name/属性访问均 0),也无任何模块经 data_engine 再导入它们——UI 侧 app.py/legacy_tk.py 各自 import 自己的(data_engine.py:14-15)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "三处 docstring 仍引用 v0.6.0 已改名的模块 zcode_meter_qt(现 app.py):QuotaMonitor『只由 zcode_meter_qt 的 MeterWindow 实例化』的启动位置钉死说明(自称评审必改#1)、_no_persist『与 zcode_meter_qt._state_guard 同语义』对齐基准,指向不存在的模块名,新读者按图索骥找不到文件(data_engine.py:4/134/714)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "_PREV_RECT 与 _PREV_HOLE 两个模块级全局在全部赋值点恒等(初始化/清空/写值三处同值),docstring 自述的差异化设计『跳写边界=raw∪上一拍raw+8(只作用于跳写,_PREV_HOLE 恒存 raw 防膨胀)』从未落地——由它派生的抓取区并集 min/max(prev,…) 经穷举 1,680,912 例+随机 200,000 例证实恒无效,是可整段删除的死计算,双名双生命周期误导后来者(glass_effect.py:437-438/:419-423)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "refresh_hole_below 自诺的失败退避『失败也推进 _BLINK_AT(2.5s 重试节拍),防止失败拍每 100ms 热循环』只对两条 return False 路径兑现;capture_below 或锁内写若抛异常,_BLINK_AT 永不推进——从未成功过时 _BLINK_AT=0/_BLINK_SIG=None 使 needs_blink 每拍通过全部闸门,异常被 _thread_body 裸吞后立即重试,形成 16~100ms 节拍、每拍含 EnumWindows+PrintWindow『数十到数百 ms 后台开销』的无退避 GDI 热循环(实测重播种竞态可稳定触发 IndexError 进入该洞;glass_effect.py:246)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "liquid 的 contrast_bg 申报值三重失真:既漏算自述公式中的白.14 合成,也不等于药丸移除后的实际绘制面,T5 WCAG 闸消费申报底放行——复核修正:实际跌破 4.5 的档是 dim(state_lbl/今日行等 11pt 文本实测最坏 4.38~4.44:1,闸按申报底算 7.60 放行),half 档真实卡面 4.40~4.8 边缘擦线(skins.py:826-829,消费方 tests/test_stress.py:864-869;对照组 vaporwave 证明申报口径本可如实)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "font_decor 是零消费影子字段:全仓无任何读取方(测试仅 hasattr 断言存在性,字段注释却宣称 T4 消费),真正生效的装饰字体族是各 deco 内硬编码字面(报纸 Georgia/蓝图 Consolas),两侧任改其一即无声漂移——注册表『SkinDef.radius 影子数据』同病的新字段(skins.py:114/878/927)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "模块头以『手写感由 deco 侧粉笔字标题承接』论证 chalk 字族偏离 HTML 定稿(Segoe Print→Cascadia)的正当性,但 _deco_chalk 标题装订未传任何字体族、实测落 Microsoft YaHei UI 系统默认——声称的补偿机制不存在,字族偏离实际无任何承接,与注册表『paintEvent 宣称 activate() 不存在』同款 doc-机制漂移(skins.py:41-47 声明/:346 实现;机制本身可用,对照传 families=['Segoe Print'] 正常生效)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "order 缺省回退只看整条 MRO:getattr(cls,\"order\",_DEFAULT_ORDER) 对子类化内置源的第三方模块失效——子类静默继承 ZCode=0/Claude=10,击破本文件自述不变式『未声明 order 的第三方源排在所有内置源之后』(实测行序 ZCode,AcmeClaude,Claude,第三方排在内置 Claude 之前),裸子类还产生两行同名源、并把引擎 watcher 绑定翻转到共享类级 _file_cache 的第三方实例(sources/__init__.py:50;子类化是被 data_engine docstring 明示邀请的扩展路径)",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "today_usage 契约缺『每秒被现调』的运行时假设声明:引擎尾段对非 ZCode 源每秒无缓存现调(_poll_stats_tail),性能正确性完全依赖 ClaudeSource 实现内部的 15s TTL 缓存(其 docstring 自证『不节流会把 jsonl 目录扫成热点』),而自称『唯一契约』的 base.py 与 README 贡献模板对此零提示——按模板实现口径正确但无缓存的第三方源落地即每秒全量扫盘,无机制拦截(sources/base.py:25;在册『契约面分裂三处』项未覆盖调用频率维度)",
+      "date": "2026-10-03"
     }
   ],
   "fixed": [
@@ -352,6 +400,16 @@
       "title": "_scan 把单文件瞬时失败(os.stat 失败或 _ingest 返回 error)当成 vanished 处理:当轮聚合直接丢弃该文件的 last-good date_agg(违反 _ingest 自己声明的『条目保持上次好值不落盘,下一轮重试』),并触发不含它的 _rebuild_scope 使共享 mid 归属翻给幸存文件;文件恢复后走 unchanged、last⊆keys 不再重建 → 同一 mid 在两个文件的 date_agg 中同时存在,今日用量永久双计(input 双计教训家族)",
       "date": "2026-10-02",
       "fix": "_scan 区分『瞬时失败』与『真消失』(claude.py:304-347):stat OSError(310-311)与 _ingest 返回 error(316-317)的文件进 errored 集,当轮聚合改用其 last-good date_agg(335-341,冷路径失败无缓存条目 get 容缺跳过),兑现 _ingest『失败保持上次好值不落盘、下一轮重试』契约;消失判定从 not last.issubset(keys) 改为 not last.issubset(walked)(327,只认 walk 不再列出,注释载明旧判据→归属翻转→恢复后 unchanged 短路→永久双计的事故链);重建集与 _scope_files 均写 keys|errored(330-331),瞬时失败文件既不丢聚合也不参与归属翻转;回归 run_all.py ALL PASS"
+    },
+    {
+      "title": "_on_request_done 的完成行查询无 rowid 下界:完成事件拍 zcode 常尚未把本请求 completed 行落库(stream.completed 与 request.completed 同毫秒相邻,活体探针 25 触发 5 次 STALE),无界 ORDER BY rowid DESC LIMIT 1 命中同会话上一请求旧行 —— 本次流式字符数÷上次请求 output_tokens 持久污染_chars_per_token(全模块仅此处写入,tps_est/全局 part tps 都除以它)。修复:查询加 rowid>? 水位下界(_poll_new_completed 同款),STALE 拍查不到新行即跳过本轮校准(保持旧校准值),接受行消费即max 合并推进水位(堵 back-to-back 残留窗口);query_source 过滤缺口是另一 open 项刻意不动",
+      "date": "2026-10-03",
+      "fix": "data_engine.py:1734-1739 完成行查询加 rowid>? 下界,参数复用 _poll_new_completed 同款水位 _prev_max_rowid(1721-1733 注释载明 2026-10-03 P1 根因与 STALE 实测数据):STALE 拍查不到新行即跳过本轮校准,保持旧 _chars_per_token 才是正确侧,tps_exact/last_ttft/last_duration 由 _poll_new_completed 在 ~1 个 POLL_DB 内照常补上;接受行消费即 max 合并推进水位(1747-1753),写的三字段与 _poll_new_completed 同式同值故跳过其重读无害,且堵住 back-to-back 双 STALE 时后者拿前者刚落库行校准的残留窗口。合成库直驱 _handle_log_line 验证 14 断言全过(_verify_fix_stale_row_race.py:STALE 不污染/落库自纠/非 STALE 校准照常/b2b 不吃已消费行),旧实现差分对照精确复现污染值 6.5=6500/1000;tests/test_data_engine.py 的 T4 闸门测试通过"
+    },
+    {
+      "title": "文件消失触发归属重建后『原样恢复』(mtime_ns+size 未变,回收站还原/同卷 move/robocopy/OneDrive 水合)走 _ingest unchanged 短路不重导归属:旧 date_agg 与幸存文件翻转后的归属并存,共享 mid 双计(实测今日666 vs 正确 116);目录级消失→恢复还留 owner 真空,恢复后跨文件同 mid 追加被双 claim(实测 664 vs 114),持续到下一次 reparse 类事件才自愈。修复:_scan 增加归来者判定(上轮不在册∧缓存有旧条目∧本轮walk 又列出),归来即 _rebuild_scope 按 sorted 序从各文件完整 entries 重导归属与 date_agg,一次性恢复owner↔date_agg 一致(重建即冷扫语义,幂等;恢复带新追加的变体同被覆盖)",
+      "date": "2026-10-03",
+      "fix": "claude.py _scan 增加归来者判定(304-307 pre_cached 锁内快照 + 333-356 returning 判定与重建,注释载明 2026-10-03 P1 根因与 666/116、664/114 实测):『上轮不在册∧缓存有旧条目∧本轮 walk 又列出』= 消失轮的重建已动过归属,归来即 _rebuild_scope(scope, present) 按 sorted 序从各文件完整 entries 重导归属与 date_agg,一次性恢复 owner↔date_agg 一致(重建即冷扫语义,幂等);目录级真空形态由同判定整scope重导自动回填,真空窗口内的双 claim 也因重建从 entries 重导而回溯自愈;恢复带新追加(mtime/size 变走 append)的变体同样被覆盖(122 vs 双计 672 实测)。_scope_files 字段注释同步(99-108)。两探针复跑:_rev_claude_restore_after_vanish 今日值 116(原 666)、_rev_claude_owner_vacuum 真空期追加 114(原 664),各自仅剩一条断言『修复前中间态』的检查(归属保持翻转/owner 仍真空)按修复语义翻红 —— 与探针自己的数值期望(116=M 经 a)互斥,不可能同时满足;test_data_engine 五个 claude 测试 + T4 闸门测试全部 PASS"
     }
   ],
   "proposed": [
