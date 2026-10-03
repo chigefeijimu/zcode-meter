@@ -470,6 +470,38 @@
     {
       "title": "套餐余量燃降曲线:记录每次 quota 轮询的剩余% 成时间序列,历史图表新增「余量燃降」页签,展示 5h/周窗余量下降轨迹与重置锯齿,悬停显示采样时龄",
       "date": "2026-10-02"
+    },
+    {
+      "title": "parse_quota_payload 窗口分类换锚:limits[].unit 优先 + 兼容 CREDIT_LIMIT + 失败分层经 error 键透出",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "无价模型显式告警(未计价 token 单列)+ zm_prices 覆盖全视图一致生效",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "Claude 源会话去重防线:fork/resume 双计数检测 + 去重审计视图",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "历史图表『当前』高亮语言统一:accent 填充+白描边替换 C_WARN,按天页补今天锚点",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "UI design token 收口:elide 宽由 CARD_CONTENT_W 派生 + 圆角标度 R + 表面色 C_SURFACE 三族散落字面集中",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "多提供商订阅聚合:Codex/Gemini/Cursor 源接入 + 跨家剩余额度与重置窗口一屏决策",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "套餐重置倒计时临期染 tier 色:<30min 黄、<10min 红",
+      "date": "2026-10-03"
+    },
+    {
+      "title": "竖条套餐组补 12px 迷你环,三形态『剩余=环』语言闭环",
+      "date": "2026-10-03"
     }
   ]
 }
