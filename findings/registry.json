@@ -638,6 +638,38 @@
     {
       "title": "MSIX 打包上架 Microsoft Store(二阶段:Windows 11 小组件板 provider 卡片)",
       "date": "2026-10-04"
+    },
+    {
+      "title": "限流/失败状态一等公民:『限流中』徽标 + 当日 429 计数 + 失败率统计行 + 分时段能跑热力图",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "quota 新载荷绝对值直读:remaining/currentValue 替代 EMA 估算,长周期窗文案月→周",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "倍率对账侦探:平台扣减量 vs 本地计算量的 5h 窗对账",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "quota 响应竞态与重置边界防御:stale 响应不覆盖新快照 + nextResetTime 过期滞留检测",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "MCP 工具月度用量段:web 搜索/网页阅读/zread 等套餐内工具消耗上卡",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "按项目/目录的用量与成本归因:「哪个仓库在烧我的额度」",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "上游漂移防御包:ZCode DB schema 兼容闸 + 三依赖 --verify 自检 + Claude null-model 解析防御",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "DXcam 抓屏线程按需调度:静止降频/暂停,拖动与换肤后短窗高频",
+      "date": "2026-10-06"
     }
   ]
 }
