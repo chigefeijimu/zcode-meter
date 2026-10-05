@@ -2046,6 +2046,16 @@ class MeterWindow(QWidget):
         m.addSeparator()
         m.addAction("退出", QApplication.quit)
         m.exec(pos)
+        # exec 返回≠销毁:QMenu 只 hide,QMenu(self) 父子所有权又把整棵菜单树
+        # (3 个子菜单+全部 QAction/QActionGroup)钉在常驻主窗下 —— 本文件原
+        # 全程零 deleteLater/WA_DeleteOnClose,离屏探针实测每右键一次 +4
+        # QMenu/+约 40 QAction 线性累积(2026-10 P1)。exec 返回时菜单必已
+        # 关闭,此后 deleteLater 把整棵树(含下方 QActionGroup『随菜单销毁』
+        # 的既定前提)交还事件循环销毁;QMenu(self) 的父所有权只在 exec 模态
+        # 循环期间兜底,不再延伸到窗口生命期。菜单槽(triggered)均不引用
+        # 菜单对象本身,_open_history/_open_settings 的 show 又被
+        # singleShot(0) 延到模态循环返回之后,销毁不与任何槽竞争。
+        m.deleteLater()
 
     def _add_segment_menu(self, m: QMenu):
         """「显示内容」子菜单(v0.8.0 对版期,用户『靠边停放自定义显示内容』):
@@ -2090,7 +2100,8 @@ class MeterWindow(QWidget):
         skin_menu = m.addMenu("皮肤")
         skin_menu.setStyleSheet(m.styleSheet())
         # 组挂子菜单为父(不挂 self):子菜单每次右键重建,组随菜单销毁,
-        # 不在窗口上逐次累积 QActionGroup 对象
+        # 不在窗口上逐次累积 QActionGroup 对象(『随菜单销毁』此前被
+        # exec 后不销毁挫败,现由 _popup_menu 尾部的 deleteLater 兑现)
         group = QActionGroup(skin_menu)      # exclusive:九项互斥,勾态唯一
         group.setExclusive(True)
         for sid in skins.SKIN_IDS:

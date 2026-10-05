@@ -331,6 +331,46 @@
     {
       "title": "缓存条目字段 seen_mid 是无人消费的影子数据:全仓(含 tests)零读取方,claude.py 内 8 处出现全为注释或写置(add/重置/初始化),归属判定实际全由类级 _mid_owner 独立承担(seen_mid 与之镜像冗余,date_agg 被消费而 seen_mid 不被,互为对照),每行 claim 与每次全 scope 重建都为它付维护成本却无任何决策读它——registry 已两次收录同病(SkinDef.radius、font_decor),这是第三例新站点,改 claim/重建任一侧另一侧无声漂移,无护栏(sources/claude.py:92)",
       "date": "2026-10-04"
+    },
+    {
+      "title": "CLI 一次性只读报表在 DataEngine.__init__ 里白付 3 次无消费者的 DB 连接查询与引擎轮询态初始化,DB 缺失时还多付一次 ROLL_DIR 全目录扫描:__main__.py:97-100 注释自认『只做一次性只读查询,绝不起轮询线程』,而 __init__ 三查询(_latest_session/_max_usage_rowid/_max_completed_rowid)的三值消费者全在引擎线程,fetch_daily_model_usage 与 stop() 一个都不用 —— monkeypatch 实测 init connect_ro=3 次、冷启 __init__ 117.95ms 占 CLI 报表整链 20.9%;DB 缺失时 _latest_session 的 sqlite3.Error 兜底再多付一次 os.listdir(ROLL_DIR)+getmtime 全目录扫描(__main__.py:100;data_engine.py:921/995/1002)",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "_apply_card 同一方法内模型名 elide 钳宽两处口径分叉:区块注释写『固定 150px 钳宽』,实际代码与其近邻注释为 190px(『190px:内容宽 289−速度列 87−间距 6 取整』+ fm.elidedText(...,190))——150px 全文件仅此一处纯注释提及、无任何代码使用,生效值唯一为 190,doc 漂移误导后来者调宽时的基准(app.py:2665 注释 vs :2671-2673 代码)",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "_tail_loop 消费不完整残行且 pos=f.tell() 无条件越过它:写者按块缓冲冲刷(一次 flush 边界落在行中间)时 readline() 在 EOF 返回无 \\n 的半行→json.JSONDecodeError 静默丢弃(无 dbg),补全到达的后半行也独立解析失败——单条生命周期事件(request.completed/FAIL_EVENTS)被永久拆丢且零诊断,丢 completed/failed 时 _running 卡 True、_poll_new_completed 被 `if not self._running` 停摆,恢复只能靠下一请求或 2h GEN_WATCHDOG_S;同仓 claude.py:167-190 增量尾读有『未终止残行不越过』防线而 zcode tail 侧无,不对称(独立复现 completed_ok=1/decode_fail=2;近 7 天 31 万+真实日志行零触发,属潜伏防御缺口;data_engine.py:1119-1123,静默点 :1131-1135)",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "set_manual_session/clear_manual_session 在 UI 线程同步执行 _switch_session→_poll_stats()(缺省开闸、不受闸门管辖)的全部 SQL 批并全程持 snap_lock——右键菜单『会话』子菜单切换统计会话(triggered 直连同步执行)时 UI 线程阻塞百毫秒级(会话聚合两条按注册表 2026-09-30 复测段合计 55.2~121.6ms 随库波动,段内另有 today/cost/burn 窗口聚合与三项刷新),且与引擎每秒 _db_tick(同一把 RLock)双向争锁;在册 open 项只记该 SQL 段的引擎侧每秒成本,未覆盖这个 UI 消费点(data_engine.py:1871-1884→:1858-1867→_poll_stats gated 段 :1274-1393;消费方 app.py:2185/2196)",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "view() 的 win 参数是死参数:函数体从不读 win(AST 探针证 Name 集不含 win),取景实际锚定模块级 _HWND(_window_rect_now 先读 _HWND 否则回退 _REGION),唯一调用方 skins.py:468 `glass_effect.view(win)` 传入 win 形成按窗口取景的 API 假象(宿主 _deco_liquid 同参喂 _base_path/_lens_edge 的 per-window 词汇)——当前唯一路径 win 即 set_hwnd 钉住的同一窗无现行错误,但未来双窗/测试/工具传他窗会静默拿到 _HWND 窗口的视图,且 tests/ 零处 import glass_effect 无护栏(glass_effect.py:583/:337-364;app.py:1090 set_hwnd)",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "industrial 的 contrast_bg 三形态均申报 #101614(readout 暗屏),但该暗屏在卡形态只承载 tps 行与 grid 铭牌,字段文本档 half(模型行速度 10px)的真实承载面是 QLinearGradient #3a3f45→#23272c 金属渐变整卡铺底——T5 WCAG 闸按申报底给 half 算 5.15:1 放行,离屏实测真实金属底上模型行仅 3.85~3.97:1(比原申报 4.42~4.47 更糟),WCAG 复算金属渐变全程 3.55~4.53 即整个金属面上 half 档无处真正过闸自定的字段文本档 4.5——注册表『liquid contrast_bg 三重失真』同类项的新站点(不同皮肤、不同档;skins.py:887/497-500/524-542,消费方 tests/test_stress.py:864)",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "皮肤白名单 SKIN_IDS 存在两份独立字面(skins.py:65-66 与 data_engine.py:169-170,注释自称『T1 同源』但无任何运行时同源机制),全仓无任何相等性断言钉住二者(test_stress/test_data_engine 各自只查本侧)——未来新增第 10 款皮肤只改 skins 侧(菜单 for sid in skins.SKIN_IDS 与 _apply_skin 白名单都放行)时,save_config→_norm_skin 按 data_engine 副本判非法→skin 键整键省略(实测 save_config({'skin':'neon'}) 落盘无 skin 键)→用户选择每次重启静默回退 glass,且无任何测试变红——注册表 SkinDef.radius/font_decor/palette[\"sep\"] 三例同病的新站点",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "sources/__init__.py:46-47 注释以『无参实例化即 NotImplementedError』论证 `cls is not UsageSource` 守卫的必要性,但该机理为假:UsageSource 是普通类非 ABC,无参构造完全成功(实测 UB() 构造成功 name='source'/is_available()=True),NotImplementedError 延迟到引擎每秒现调的 today_usage()/daily_usage() 方法侧才抛——注释把守卫移除后的真实失败面(端到端复现:Source=UsageSource 再导出被实例化出潜伏源行→引擎 _poll_stats_tail 调用时 NotImplementedError 穿透唯一的 except sqlite3.Error→_db_loop daemon 线程无声永久死亡)误述为『实例化即崩』的响亮失败,误导后来者弱化守卫;同一错误机理复述于守护该行为的测试 docstring(tests/test_data_engine.py:1172『无参构造即 NotImplementedError』)",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "嵌套 projects_dir 双实例下文件级 date_agg 经类级 _file_cache 跨 scope 共享而 mid 归属 _mid_owner 按 scope 分桶:第二 scope 对共享文件命中 mtime_ns+size 未变走 unchanged 短路,本 scope 的归属裁决从未应用,聚合直接复用另一 scope 归属下的 date_agg 值→同 mid 跨文件双计或整个子目录清零,持久不自愈(探针实测 inner_first inner=100/outer=150(正确 100/50)、outer_first outer=50/inner=0,TTL 过期重扫 inner 仍 0),违反 claude.py:96-97『多实例互不串扰』自声明;生产默认单实例不可达、嵌套双实例属子类化/projects_dir 扩展面的自然衍生用法(claude.py:254-257 及 :92-98 缓存结构;测试全为独立 tmp 目录无嵌套场景,run_all.py ALL PASS 未拦截)",
+      "date": "2026-10-06"
+    },
+    {
+      "title": "_parse_line 的 json.loads 只捕 json.JSONDecodeError,深嵌套 JSON 行(探针实测 10 万层数组、经 _parse_line 最小触发深度 16916 层,正常 Claude jsonl 嵌套个位数)抛 RecursionError 穿透『坏行返回 None 逐行跳过』契约,沿 _read_new_rows→_ingest→_scan→today_usage 全链无 except 接住,引擎侧唯一护栏 _poll_stats_tail 只捕 sqlite3.Error(RecursionError 非其子类)→杀 _db_loop daemon 线程整卡冻结,run() 主线启动时毒文件存在则 run() 本体一并炸穿——与已修复的 _claude_ts_local 异常面教训(fixed 2026-09-30,except 扩 ValueError/OSError/OverflowError)同族同杀伤链的 json.loads 站点未同步扫尾(claude.py:137-140;引擎消费点 data_engine.py:1425-1427)",
+      "date": "2026-10-06"
     }
   ],
   "fixed": [
@@ -456,6 +496,11 @@
       "title": "蒸汽波皮肤把速度主数字直接压在条纹太阳上:v 竖条形态结构性重叠(实测 67% 字形像素落在太阳内,青字对粉/红条纹 1.77~1.92:1、对黄段 1.04:1,远低于 WCAG 大文本 3.0:1),核心读数 2/3 面积不可读;HTML 定稿中该重叠由双色 text-shadow 补偿,移植时丢弃(skins.py:650-652 v 形态小太阳/:615-617 卡形态太阳/:631-635 暗格只护 grid 六格)",
       "date": "2026-10-04",
       "fix": "以皮肤自己的暗格词汇补回被丢的补偿:_vp_plate 统计暗格底衬(rgba(13,5,24,.72)+青 .4 边,与 grid 六格/组值行暗格同款同词汇)铺到速度主数字行下(skins.py:250-262):v 竖条形态结构性病灶给 tps_lbl 单件衬底,padding 与四组值行暗格同款 (-9,-3,9,4) 视觉成套(685-692);卡形态锚 tps_lbl+tps_unit_lbl 活几何 _union 后 adjusted(-6,-4,6,4),值变宽→label 变宽→底衬每 paint 现读跟随不缓存,布局/显隐自愈(651-662);sparkline 不衬(线件非字段文本,与太阳仅边缘 7% 重叠)。衬底最坏合成底(衬压太阳最亮带)上青字对比恢复 ≈7.4:1(_vp_plate docstring :259;卡形态口径 #51213d 合成 8.3:1,:654),远超 WCAG 大文本 3:1。本轮修复回归全绿"
+    },
+    {
+      "title": "_popup_menu 每次右键 new QMenu(self) 且全文件零 deleteLater/WA_DeleteOnClose,PySide6 父子所有权把整棵菜单树(『显示内容』『皮肤』『会话』3 个子菜单+全部 QAction/QActionGroup)钉在常驻主窗下永不销毁——常驻桌面件(FramelessWindowHint|WindowStaysOnTopHint 长期存活)右键即累积泄漏:离屏探针实测每击 +4 QMenu/+1 QActionGroup/+39 QAction 完全线性无回收,6 击后挂 win 下存活 QMenu=24/QActionGroup=6/QAction=234(同构无父对照组零增长证根因即 QMenu(self) 父所有权),恰是 _add_skin_menu 注释自认要防的 QActionGroup『随菜单销毁』前提被 exec 后不销毁挫败(app.py:2027/2048,grep 证全文件原零 deleteLater/WA_DeleteOnClose)",
+      "date": "2026-10-06",
+      "fix": "exec 返回后整树交还事件循环销毁:_popup_menu 尾部 m.exec(pos) 之后新增 m.deleteLater()(app.py:2058,注释 2049-2057 载明机理)——exec 返回≠销毁(QMenu 只 hide),exec 返回时菜单必已关闭,此后 deleteLater 把整棵树含 QActionGroup 安全销毁,QMenu(self) 的父所有权只在 exec 模态循环期间兜底不再延伸到窗口生命期;销毁不与任何槽竞争(菜单槽均不引用菜单对象本身,_open_history/_open_settings 的 show 又被 singleShot(0) 延到模态循环返回之后);_add_skin_menu 2102-2104 注释同步改写『组随菜单销毁』前提此前被 exec 后不销毁挫败、现由该 deleteLater 兑现。复跑离屏探针 _verify_fix_popup_menu_leak.py:修复后 6 次真实 _popup_menu 逐拍 before/after 存活 QMenu/QActionGroup/QAction 全 0,leak-stopped PASS + 菜单触发仍生效 menu-works PASS;本轮修复回归全绿"
     }
   ],
   "proposed": [
