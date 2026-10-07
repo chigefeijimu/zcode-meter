@@ -25,6 +25,12 @@ def check(name: str, cond: bool, detail: str = ""):
         FAILED.append(name)
 
 
+def _gptps(eng, now: float) -> float:
+    """_global_part_tps 的总贡献分量。#12 起该函数返回 (tps, {sid: 贡献})
+    二元组 —— 既有断言只消费总量,per-session dict 由 #12 专项测试覆盖。"""
+    return eng._global_part_tps(now)[0]
+
+
 def db() -> sqlite3.Connection:
     return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
 
@@ -1214,7 +1220,11 @@ def test_discover_sources():
                      "    name = 'PRIV'\n",
             # 无 Source 属性:跳过不炸
             "nosrc": "x = 1\n",
-            # Source=UsageSource 基类本体:不算源(无参构造即 NotImplementedError)
+            # Source=UsageSource 基类本体:不算源(纯接口再导出豁免)。
+            # #91 注:守卫的必要性不在『无参构造会抛』—— 普通类无参构造完全
+            # 成功,NotImplementedError 延迟到 today_usage() 调用侧才抛(引擎
+            # #17 守卫兜底);守卫真正防的是『接口再导出』被当源声明,让
+            # 潜伏源行活到引擎每秒现调时才被跳过
             "raw": "from zcode_meter.sources.base import UsageSource\n"
                    "Source = UsageSource\n",
         }
@@ -1251,11 +1261,13 @@ def test_cli_cost_report():
     from zcode_meter import __main__ as zm_cli
 
     class _FakeEngine:
-        def __init__(self, out):
+        def __init__(self, out, boot_queries=True):   # #84:CLI 现传 boot_queries
             self.out = out
 
-        def fetch_daily_model_usage(self, days):
+        def fetch_daily_model_usage(self, days, raise_on_error=False):
             assert days == 3, days          # clamp 后的窗口原样传到数据层
+            # raise_on_error 形参镜像真实签名(#64b CLI 查询侧故障通道):
+            # main() 现以 raise_on_error=True 调用,缺参会 TypeError
             # 手算:09-20 两模型合并 tokens=(1M+0.2M)+(0.5M+0.1M)=1.8M、
             # ¥24.50;09-21=0.5M、¥0.0+partial;合计 2.3M、¥24.50
             return [("2026-09-20", "GLM-5.3", 1_000_000, 800_000, 200_000,
@@ -1286,7 +1298,7 @@ def test_cli_cost_report():
     check("CLI:口径行恒打印", "ZCode-DB-only" in out and "刊例价" in out, out)
 
     class _FakeClean(_FakeEngine):
-        def fetch_daily_model_usage(self, days):
+        def fetch_daily_model_usage(self, days, raise_on_error=False):
             return [("2026-09-20", "GLM-5.3", 1_000, 0, 200, 0.02, False)]
 
     zm_cli.DataEngine = _FakeClean
@@ -1311,10 +1323,10 @@ def test_cli_cost_report():
     check("CLI:缺子命令 rc=2", rc_nocmd == 2, str(rc_nocmd))
 
     class _FakeWin(_FakeEngine):
-        def __init__(self, out):
+        def __init__(self, out, boot_queries=True):
             self.out = out
 
-        def fetch_daily_model_usage(self, days):
+        def fetch_daily_model_usage(self, days, raise_on_error=False):
             assert days in (1, 366), days   # clamp 裁决的直接证据
             return []
 
@@ -2263,8 +2275,9 @@ def test_global_completed_tps_started_at_cache():
 
         zsrc.DB_PATH = tdb; de.DB_PATH = tdb
         e = de.DataEngine(queue.Queue(maxsize=1))   # 不 start,同步路径已完整
-        expect_rows = {(1_350, cut + 1_000, cut + 4_000),
-                       (1_000, cut - 5_000, cut + 2_000)}
+        # #12 起行集带 session_id(4 元组,尾段完成拍去重的原料)
+        expect_rows = {(1_350, cut + 1_000, cut + 4_000, "sess_main"),
+                       (1_000, cut - 5_000, cut + 2_000, "sess_main")}
         expect = 135.0 + 200.0 / 7.0
         check("T2:新引擎缓存未灌(cut None、行集空)",
               e._completed_rows_cut_ms is None and e._completed_rows == [], "")
@@ -2417,7 +2430,7 @@ def test_global_part_tps_watermark_walk_probe():
         e = de.DataEngine(queue.Queue(maxsize=1))        # 不 start,同步路径已完整
         e._chars_per_token = 3.2                         # 固定字符比(手算口径)
         check("T1:首拍建基线贡献 0.0",
-              e._global_part_tps(T0) == 0.0, "")
+              _gptps(e, T0) == 0.0, "")
         check("T1:首拍重建灌满三态",
               e._part_watermark == 1
               and e._gpart_last == {"sess_a": (L(100), T0)}
@@ -2428,7 +2441,7 @@ def test_global_part_tps_watermark_walk_probe():
         # in-place 增长:同 rowid 内追加文本(真实库 213,694/434,238 行如此,
         # 只有定点重读可见 —— 本重构存在的理由)
         part_exec("UPDATE part SET data=? WHERE rowid=1", (mk(132),))
-        got = e._global_part_tps(T0 + 1.0)
+        got = _gptps(e, T0 + 1.0)
         expect_a = (L(132) - L(100)) / 1.0 / 3.2
         check("T1:(a) in-place 增长两拍手算对账",
               abs(got - expect_a) < 1e-9, f"got {got} expect {expect_a}")
@@ -2436,27 +2449,27 @@ def test_global_part_tps_watermark_walk_probe():
         # ---- (b) 新 text 行 append:重置基线不计负;更长新行仍计正差 ----
         part_rows("sess_a", mk(50))                      # rowid 2,更短的新一轮
         check("T1:(b) 新行更短 → 重置基线不计负",
-              e._global_part_tps(T0 + 2.0) == 0.0
+              _gptps(e, T0 + 2.0) == 0.0
               and e._gpart_last["sess_a"][0] == L(50)
               and e._sid_text_rowid["sess_a"] == 2
               and e._session_last_rowid["sess_a"] == 2,
               f"g={e._gpart_last} s={e._sid_text_rowid}")
         part_rows("sess_a", mk(200))                     # rowid 3,更长的新行
-        got = e._global_part_tps(T0 + 3.0)
+        got = _gptps(e, T0 + 3.0)
         expect_b = (L(200) - L(50)) / 1.0 / 3.2
         check("T1:(b) 新行更长 → 按旧语义计正差(手算)",
               abs(got - expect_b) < 1e-9, f"got {got} expect {expect_b}")
 
         # ---- (c) 删顶行 → MAX(rowid) 回退 → 双基线全量重建 ----
         part_rows("sess_b", mk(80))                      # rowid 4
-        e._global_part_tps(T0 + 3.5)                     # 走读喂入 sess_b
+        _gptps(e, T0 + 3.5)                     # 走读喂入 sess_b
         # 注入 ghost 键:重建必须从零覆盖两 dict,而非增量修补(半截重建会让
         # _session_last_rowid 永久缺会话,走读只覆盖新行再无补救窗口)
         e._gpart_last["ghost"] = (1.0, 0.0)
         e._session_last_rowid["ghost2"] = 999
         part_exec("DELETE FROM part WHERE rowid=4")      # 删顶行,MAX 4→3 回退
         check("T1:(c) 回退拍贡献 0.0(基线刚重置)",
-              e._global_part_tps(T0 + 4.0) == 0.0, "")
+              _gptps(e, T0 + 4.0) == 0.0, "")
         check("T1:(c) 双基线从零重建(ghost 清除、GROUP BY 对账)",
               e._part_watermark == 3
               and "ghost" not in e._gpart_last and "ghost2" not in e._session_last_rowid
@@ -2469,20 +2482,20 @@ def test_global_part_tps_watermark_walk_probe():
         # ---- (d) 探针 miss 裁剪 + 非 text 行只喂 session 缓存 ----
         r_tool1 = part_rows("sess_c", tool())            # rowid 4(顶行已删,复用)
         r_text = part_rows("sess_d", mk(60))             # rowid 5
-        e._global_part_tps(T0 + 5.0)
+        _gptps(e, T0 + 5.0)
         check("T1:(d) 非 text 行喂 _session_last_rowid 不进探针集",
               e._session_last_rowid["sess_c"] == r_tool1
               and "sess_c" not in e._sid_text_rowid
               and e._sid_text_rowid["sess_d"] == r_text,
               f"sl={e._session_last_rowid} s={e._sid_text_rowid}")
         r_tool2 = part_rows("sess_c", tool())            # rowid 6,顶行抬高
-        e._global_part_tps(T0 + 6.0)
+        _gptps(e, T0 + 6.0)
         check("T1:(d) 同会话再写非 text 行仍推进 session 缓存",
               e._session_last_rowid["sess_c"] == r_tool2, "")
         part_exec("DELETE FROM part WHERE rowid=?", (r_text,))   # 删 sess_d 的
         # text 行:表顶(rowid 6)未回落 → 不触发回退重建,只走探针 miss 裁剪
         check("T1:(d) 探针 miss → 会话从探针集与基线双裁剪",
-              e._global_part_tps(T0 + 7.0) == 0.0
+              _gptps(e, T0 + 7.0) == 0.0
               and "sess_d" not in e._sid_text_rowid
               and "sess_d" not in e._gpart_last
               and e._part_watermark == r_tool2,
@@ -2527,7 +2540,7 @@ def test_global_part_tps_watermark_walk_probe():
         e2._chars_per_token = 3.2
         lg, ls = {}, {}                    # 参照实现自持状态
         # 拍 1:双基线(sess_sub1 刻意用 subagent 名 —— 全局吞吐不筛会话口径)
-        got = e2._global_part_tps(2000.0)
+        got = _gptps(e2, 2000.0)
         ref, lg, ls = legacy_ref(2000.0, lg, ls)
         check("T1:(e) 拍1 建基线新旧全等",
               got == 0.0 and ref == 0.0 and e2._gpart_last == lg
@@ -2536,7 +2549,7 @@ def test_global_part_tps_watermark_walk_probe():
         # 拍 2:sess_a in-place 增长 + 新 subagent 会话入窗
         part_exec("UPDATE part SET data=? WHERE rowid=3", (mk(240),))
         r_sub = part_rows("sess_sub1", mk(70))
-        got = e2._global_part_tps(2000.5)
+        got = _gptps(e2, 2000.5)
         ref, lg, ls = legacy_ref(2000.5, lg, ls)
         expect_2 = (L(240) - L(200)) / 0.5 / 3.2
         check("T1:(e) 拍2 in-place 增长新旧全等(含手算)",
@@ -2546,7 +2559,7 @@ def test_global_part_tps_watermark_walk_probe():
         # 拍 3:subagent 会话 in-place 增长(不筛会话口径)+ 新会话入窗
         part_exec("UPDATE part SET data=? WHERE rowid=?", (mk(130), r_sub))
         part_rows("sess_e", mk(90))
-        got = e2._global_part_tps(2001.0)
+        got = _gptps(e2, 2001.0)
         ref, lg, ls = legacy_ref(2001.0, lg, ls)
         expect_3 = (L(130) - L(70)) / 0.5 / 3.2
         check("T1:(e) 拍3 subagent 增长计贡献(新旧全等+手算)",
@@ -2554,7 +2567,7 @@ def test_global_part_tps_watermark_walk_probe():
               f"got {got} ref {ref} expect {expect_3}")
         # 拍 4:sess_a 新行更短(行切换重置,双方都 0)
         part_rows("sess_a", mk(10))
-        got = e2._global_part_tps(2001.5)
+        got = _gptps(e2, 2001.5)
         ref, lg, ls = legacy_ref(2001.5, lg, ls)
         check("T1:(e) 拍4 行切换重置新旧全等(双方 0)",
               got == 0.0 and ref == 0.0
@@ -2562,7 +2575,7 @@ def test_global_part_tps_watermark_walk_probe():
               f"got {got} ref {ref}")
         # 拍 5:sess_e 新行更长(旧行基线差分,双方都计正差)
         part_rows("sess_e", mk(300))
-        got = e2._global_part_tps(2002.0)
+        got = _gptps(e2, 2002.0)
         ref, lg, ls = legacy_ref(2002.0, lg, ls)
         expect_5 = (L(300) - L(90)) / 0.5 / 3.2
         check("T1:(e) 拍5 更长新行计正差新旧全等(含手算)",
@@ -2582,13 +2595,13 @@ def test_global_part_tps_watermark_walk_probe():
         wm_before = e2._part_watermark
         zsrc.DB_PATH = str(tmp / "nope.sqlite"); de.DB_PATH = zsrc.DB_PATH
         check("T1:B3 库打不开 → 0.0 且水位维持",
-              e2._global_part_tps(2010.0) == 0.0
+              _gptps(e2, 2010.0) == 0.0
               and e2._part_watermark == wm_before,
               f"wm={e2._part_watermark}")
         zsrc.DB_PATH = tdb; de.DB_PATH = tdb
         r_z = part_rows("sess_z", mk(40))
         check("T1:B3 恢复后走读自愈(新会话重新入表)",
-              e2._global_part_tps(2011.0) == 0.0
+              _gptps(e2, 2011.0) == 0.0
               and e2._sid_text_rowid.get("sess_z") == r_z
               and e2._part_watermark == r_z,
               f"s={e2._sid_text_rowid} wm={e2._part_watermark}")
@@ -2612,7 +2625,7 @@ def test_global_part_tps_watermark_walk_probe():
         zsrc.DB_PATH = fdb; de.DB_PATH = fdb
         ef = de.DataEngine(queue.Queue(maxsize=1))
         ef._chars_per_token = 3.2
-        ef._global_part_tps(3000.0)      # 建基线:首拍不裁剪(100 全跟踪)
+        _gptps(ef, 3000.0)      # 建基线:首拍不裁剪(100 全跟踪)
         check("T1:(f) 建基线拍不裁剪(100 会话全跟踪)",
               len(ef._gpart_last) == 100 and len(ef._sid_text_rowid) == 100
               and len(ef._session_last_rowid) == 100,
@@ -2623,7 +2636,7 @@ def test_global_part_tps_watermark_walk_probe():
             fcur.execute("UPDATE part SET data=? WHERE session_id=?",
                          (mk(150), f"sess_f{i:03d}"))
         fcur.commit(); fcur.close()
-        got = ef._global_part_tps(3001.0)
+        got = _gptps(ef, 3001.0)
         grown = {f"sess_f{i:03d}" for i in range(1, 11)}
         expect_f = 10 * (L(150) - L(100)) / 1.0 / 3.2
         check("T1:(f) 裁剪拍活动会话贡献照计(手算)",
@@ -2653,8 +2666,8 @@ def test_global_part_tps_watermark_walk_probe():
         zsrc.DB_PATH = bad; de.DB_PATH = bad
         e3 = de.DataEngine(queue.Queue(maxsize=1))
         check("T1:B3 无 data 列 → 贡献 0.0 且水位不推进(重试语义)",
-              e3._global_part_tps(4000.0) == 0.0
-              and e3._global_part_tps(4001.0) == 0.0
+              _gptps(e3, 4000.0) == 0.0
+              and _gptps(e3, 4001.0) == 0.0
               and e3._part_watermark is None,
               f"wm={e3._part_watermark}")
         e3.stop()
@@ -3004,14 +3017,14 @@ def test_recent_sessions_cache_read():
               str(sorted(e._session_last_rowid)))
 
         # ---- ③ T1 走读喂点:首拍建水位,插新行后走读批量喂入 ----
-        e._global_part_tps(1_800_000.0)     # 首拍:水位 None → 全量重建,水位=8
+        _gptps(e, 1_800_000.0)     # 首拍:水位 None → 全量重建,水位=8
         con = sqlite3.connect(tdb)
         con.execute("INSERT INTO part (session_id, data)"
                     " VALUES ('sess_new', NULL)")
         con.execute("INSERT INTO session (id, title)"
                     " VALUES ('sess_new', '新会话')")
         con.commit(); con.close()
-        e._global_part_tps(1_800_001.0)     # 走读 rowid 9 → 锁内批量 update
+        _gptps(e, 1_800_001.0)     # 走读 rowid 9 → 锁内批量 update
         got_new = e.recent_sessions(8)
         check("T3:T1 走读喂点 → 菜单暖读即得新会话居首",
               got_new == oracle(8) and got_new[0] == ("sess_new", "新会话"),
@@ -3045,7 +3058,7 @@ def test_recent_sessions_cache_read():
         con = sqlite3.connect(tdb)
         con.execute("DELETE FROM part")
         con.commit(); con.close()
-        e._global_part_tps(1_800_002.0)     # mx=0 < 水位 9 → 回退重建 → dict={}
+        _gptps(e, 1_800_002.0)     # mx=0 < 水位 9 → 回退重建 → dict={}
         check("T3:会话行全删+T1 回退重建 → 菜单不再列出",
               e._session_last_rowid == {} and e.recent_sessions(8) == []
               and oracle(8) == [],
@@ -3054,7 +3067,7 @@ def test_recent_sessions_cache_read():
         con.execute("INSERT INTO part (session_id, data)"
                     " VALUES ('sess_old', NULL)")
         con.commit(); con.close()
-        e._global_part_tps(1_800_003.0)     # 走读新行 → dict={'sess_old':…}
+        _gptps(e, 1_800_003.0)     # 走读新行 → dict={'sess_old':…}
         got_part = e.recent_sessions(8)
         check("T3:部分幸存会话重建后恰列一个(截断不变)",
               got_part == oracle(8)
@@ -3108,7 +3121,7 @@ def test_recent_sessions_cache_read():
         try:
             e.recent_sessions(8)                    # 读侧快照:1 次 _session_lock
             e._rebuild_session_last_rowid()         # 冷回填:1 次
-            e._global_part_tps(1_800_004.0)         # 走读 sess_late:锁内喂点 1 次
+            _gptps(e, 1_800_004.0)         # 走读 sess_late:锁内喂点 1 次
             check("T3:N3 菜单/回填/走读三路径 snap_lock acquire==0",
                   snap_probe.acquires == 0, str(snap_probe.acquires))
             check("T3:N3 三路径各取 _session_lock(≥3)",
@@ -3276,9 +3289,11 @@ def test_t4_db_gate_time_gate_and_wake():
 
         # —— 基线拍:无基线必开闸(SQL 已跑、源缓存已灌、首拍 push)——
         e._db_tick(False)
+        # #20:ZCode 源分量不再现调源(改前同 tick 同 WHERE 双跑),直接取
+        # 本拍 today SQL 的值(2350=1000+1350)双用 —— fz.calls 恒 0
         check("T4①:首拍无基线必开闸(SQL 已跑+基线已立+源缓存已灌)",
-              len(sql) > 0 and e._gate_ready and fz.calls == 1
-              and e._src_today_cache.get("ZCode") == 111,
+              len(sql) > 0 and e._gate_ready and fz.calls == 0
+              and e._src_today_cache.get("ZCode") == 2350,
               f"sql={len(sql)} fz={fz.calls} cache={e._src_today_cache}")
         check("T4①:首拍 push(fp 无基线必不同)", e.out.qsize() == 1,
               str(e.out.qsize()))
@@ -3317,16 +3332,19 @@ def test_t4_db_gate_time_gate_and_wake():
               f"hist={[round(v, 3) for v in hist]}")
         check("T4③:Claude 分量每 tick 现调(6 拍 6 调)",
               fc.calls == 6, f"calls={fc.calls}")
-        check("T4③:ZCode 分量关门拍取缓存(仅开闸拍现调 1 次)",
-              fz.calls == 1, f"calls={fz.calls}")
-        check("T4③:today_by_source 两源在列(ZCode=缓存值)",
-              dict(e.snap.today_by_source) == {"ZCode": 111, "FakeClaude": 7},
+        check("T4③:ZCode 分量全程零现调(#20 单查询双用)",
+              fz.calls == 0, f"calls={fz.calls}")
+        check("T4③:today_by_source 两源在列(ZCode=today SQL 缓存值)",
+              dict(e.snap.today_by_source) == {"ZCode": 2350, "FakeClaude": 7},
               str(e.snap.today_by_source))
         check("T4③:ZCode 派生字段保持开闸值(today_tokens 不动)",
               e.snap.today_tokens == today_base,
               f"{e.snap.today_tokens} vs {today_base}")
-        check("T4⑥:关门拍不 push(空闲期无 push = 现状 UI 语义)",
-              e.out.qsize() == 1, f"qsize={e.out.qsize()}")
+        # #76 修订:关门拍不再『永不 push』—— 本 fixture 完成行在 10s 窗内,
+        # 尾段每拍衰减重算 global_tps(②已断言逐拍严格递减),fp 逐拍有变
+        # → 逐拍送达(基线+5=6);『值未变不 push』由下方 tdb2 fixture 验证
+        check("T4⑥(#76):关门拍衰减照推(基线+5=6,逐拍送达)",
+              e.out.qsize() == 6, f"qsize={e.out.qsize()}")
 
         # —— ⑤ 文件 append(内容变)→ 下一拍 SQL 恢复 + 活动信号 + push ——
         n2 = len(sql)
@@ -3343,12 +3361,13 @@ def test_t4_db_gate_time_gate_and_wake():
         e._db_tick(False)
         check("T4⑤:append 后下一拍 SQL 恢复(闸门开)",
               len(sql) > n2, f"sql={len(sql)}")
-        check("T4⑤:ZCode 源分量随开闸刷新(现调 +1)",
-              fz.calls == 2, f"calls={fz.calls}")
+        check("T4⑤:ZCode 源分量随开闸刷新(today SQL 值同步,#20)",
+              fz.calls == 0 and e._src_today_cache.get("ZCode") == today_base + 600,
+              f"calls={fz.calls} cache={e._src_today_cache}")
         check("T4⑤:quota 活动信号照发(_check_activity 未被闸门饿死)",
               len(act) == 1, f"act={len(act)}")
         check("T4⑤:易变字段有变(today_tokens +600)→ push",
-              e.out.qsize() == 2 and e.snap.today_tokens == today_base + 600,
+              e.out.qsize() == 7 and e.snap.today_tokens == today_base + 600,
               f"qsize={e.out.qsize()} today={e.snap.today_tokens}")
 
         # —— ⑥ touch(仅 mtime 变,行集不变)→ 开闸但值未必变:本引擎完成
@@ -3411,11 +3430,13 @@ def test_t4_db_gate_time_gate_and_wake():
               f"qsize={e2.out.qsize()}")
         n5 = len(sql2)
         e2._db_tick(False)
-        check("T4⑥:关门拍不 push 且 0 SQL",
+        # #76:fp 恒定(global_tps 衰减已归稳为 0)→ 关门拍 0 SQL 亦 0 push
+        # ——『值未变不 push』在新语义下的归宿:衰减期逐拍推、归稳后自然停推
+        check("T4⑥:衰减归稳后 fp 恒定 → 关门拍 0 SQL 亦 0 push",
               len(sql2) == n5 and e2.out.qsize() == 1,
               f"sql={len(sql2)} qsize={e2.out.qsize()}")
         # ⑧ 跨午夜:假时钟 today0 前跳一天 → 时间闸强制开闸一次
-        fz2.val = 222                            # 值也变:验证缓存随之刷新
+        # (#20 后 ZCode 分量随 today SQL 值走:新天界下 SQL 归 0 → 缓存 0)
         de.today0_ms = lambda: t0 + 86_400_000
         n6 = len(sql2)
         e2._db_tick(False)
@@ -3423,9 +3444,9 @@ def test_t4_db_gate_time_gate_and_wake():
               len(sql2) > n6, f"sql={len(sql2)}")
         check("T4⑧:today_tokens 随新天界清零",
               e2.snap.today_tokens == 0, str(e2.snap.today_tokens))
-        check("T4⑧:ZCode 源分量缓存随之刷新",
-              e2._src_today_cache.get("ZCode") == 222
-              and dict(e2.snap.today_by_source)["ZCode"] == 222,
+        check("T4⑧:ZCode 源分量缓存随之刷新(today SQL 清零双用)",
+              e2._src_today_cache.get("ZCode") == 0
+              and dict(e2.snap.today_by_source)["ZCode"] == 0,
               f"cache={e2._src_today_cache} tbs={e2.snap.today_by_source}")
         check("T4⑧:易变字段有变(今日清零)→ push",
               e2.out.qsize() == 2, f"qsize={e2.out.qsize()}")
@@ -3469,6 +3490,1113 @@ def test_t4_db_gate_time_gate_and_wake():
         de.today0_ms = orig_today0
         de._no_persist = orig_nopersist
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+
+
+# ===================== v0.9.2 T1 治理批:逐项新单测 =====================
+
+def test_load_config_early_exit_bar_segments():
+    """#9:load_config 三条早退路径(缺文件/坏 JSON/非 dict)返回的 dict 恒含
+    bar_segments(规范化全开形态)与 skin —— 『恒含』的完整承诺,此前早退
+    dict 只有 skin 修过同款缺口,bar_segments 漏了。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_bs_"))
+    orig_path = de.CONFIG_PATH
+    full = {"h": list(de.BAR_SEGMENTS_H), "v": list(de.BAR_SEGMENTS_V)}
+    try:
+        # ① 缺文件
+        de.CONFIG_PATH = str(tmp / "no_such_file.json")
+        back = de.load_config()
+        check("load:缺文件 → 恒含 bar_segments 全开",
+              back.get("bar_segments") == full, str(back.get("bar_segments")))
+        check("load:缺文件 → 恒含 skin=glass(既有承诺不回归)",
+              back.get("skin") == "glass", str(back.get("skin")))
+        # ② 坏 JSON
+        bad = tmp / "bad.json"
+        bad.write_text("{not json", encoding="utf-8")
+        de.CONFIG_PATH = str(bad)
+        back = de.load_config()
+        check("load:坏 JSON → 恒含 bar_segments 全开",
+              back.get("bar_segments") == full, str(back.get("bar_segments")))
+        # ③ 非 dict
+        nd = tmp / "arr.json"
+        nd.write_text("[1,2,3]", encoding="utf-8")
+        de.CONFIG_PATH = str(nd)
+        back = de.load_config()
+        check("load:非 dict → 恒含 bar_segments 全开",
+              back.get("bar_segments") == full, str(back.get("bar_segments")))
+    finally:
+        de.CONFIG_PATH = orig_path
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_handle_log_line_guards():
+    """#10:_handle_log_line 对 json.loads 结果的 isinstance(dict) 守卫 ——
+    一行合法 JSON 但非对象(数组/数字/字符串/裸值)曾 AttributeError 打死
+    _tail_loop(外层只捕 OSError);对象行驱动状态机不受影响。"""
+    e = DataEngine(queue.Queue(maxsize=1))     # 不 start:直接驱动解析路径
+    for bad in ('[1,2,3]', '42', '"txt"', 'true', 'null'):
+        e._handle_log_line(bad + "\n")        # 改前首行即 AttributeError
+    check("非对象 JSON 行静默丢弃不炸(#10)", True)
+    e._handle_log_line('{"event":"model.request.started",'
+                       '"sessionId":"sess_g1"}\n')
+    check("对象行仍驱动状态机", e._running is True)
+    e._handle_log_line('{"event":"model.request.completed",'
+                       '"sessionId":"sess_g1"}\n')
+    check("completed 事件复位", e._running is False)
+    e.stop()
+
+
+def test_on_request_done_main_turn_scope():
+    """#11:_on_request_done 会话查询补 query_source='main_turn'(8 处会话
+    口径查询的最后一处漏网):同会话内更晚落库的 workflow_child 行不再覆盖
+    tps_exact/last_ttft/last_duration(合成库手算)。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_ord_"))
+    orig = zsrc.DB_PATH
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        t0 = de.today0_ms()
+        # r1:main_turn 完成行 —— 期望命中:900/((10000-1000)/1000)=100.0
+        con.execute(
+            "INSERT INTO model_usage (session_id, query_source, status,"
+            " started_at, model_id, provider_id, input_tokens,"
+            " cache_read_input_tokens, output_tokens, duration_ms,"
+            " time_to_first_token_ms) VALUES"
+            " ('sess_main','main_turn','completed',?,'GLM-5.3','bigmodel',"
+            "  1000,0,900,10000,1000)", (t0,))
+        # r2:同会话更晚 rowid 的 workflow_child 行 —— 改前 ORDER BY rowid
+        # DESC LIMIT 1 命中它(9000/9=1000.0),污染三字段与 chars/token 校准
+        con.execute(
+            "INSERT INTO model_usage (session_id, query_source, status,"
+            " started_at, model_id, provider_id, input_tokens,"
+            " cache_read_input_tokens, output_tokens, duration_ms,"
+            " time_to_first_token_ms) VALUES"
+            " ('sess_main','workflow_child','completed',?,'GLM-5.3','bigmodel',"
+            "  9000,0,9000,9000,0)", (t0 + 1000,))
+        con.execute("INSERT INTO part (session_id) VALUES ('sess_main')")
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        e = de.DataEngine(queue.Queue(maxsize=1))
+        check("引擎锚定 sess_main", e.session_id == "sess_main", e.session_id)
+        e._prev_max_rowid = 0
+        e._last_len = None
+        e._on_request_done()
+        check("校准命中 main_turn 行(tps=100.0 手算,#11)",
+              e.snap.tps_exact is not None
+              and abs(e.snap.tps_exact - 100.0) < 1e-9,
+              f"got {e.snap.tps_exact}")
+        check("last_ttft=main_turn 行 1.0s",
+              abs(e.snap.last_ttft - 1.0) < 1e-9, str(e.snap.last_ttft))
+        check("last_duration=main_turn 行 10.0s",
+              abs(e.snap.last_duration - 10.0) < 1e-9, str(e.snap.last_duration))
+        e.stop()
+    finally:
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_global_tps_completion_tick_dedup():
+    """#12 完成拍同拍去重(默认裁决):完成的瞬间同一批输出曾同时以 part
+    尾部增长与 completed 重叠加权两路计入(≈2× 尖峰)。扣减语义:对
+    completed_at≥now−2×POLL_DB 的新鲜完成行,从 part 总贡献扣去该会话本拍
+    贡献(钳 0);会话不匹配不扣、非新鲜不扣、扣不减负;完成分量权重公式
+    r×ov/win 一字不动(手算 90.0)。另验 per-session 贡献 dict 的生产侧。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+
+    # ---- 消费侧:直接装填行集驱动尾段(值全部手算,ov=c−ft 与时钟零耦合)----
+    e = de.DataEngine(queue.Queue(maxsize=1))   # 不 start,不触库(仅装填缓存)
+    now = time.time()
+    # 行:gen=2s r=450,ov=c−ft=2s → 完成分量 = 450×2/10 = 90.0(恒定,
+    # min(c,now)>c 且 max(ft,cut)<ft,now 的微秒级漂移不影响)
+    e._completed_rows = [(900, (now - 3.0) * 1000, (now - 1.0) * 1000,
+                          "sess_main")]
+    e._completed_rows_cut_ms = int((now - 10) * 1000)
+    # ① 会话匹配 + 新鲜(c=now−1 ≥ now−2):31.25 全额扣去 → 90.0 不再 2×
+    e._poll_stats_tail(31.25, {"sess_main": 31.25})
+    check("#12 匹配新鲜行:part 贡献被扣(90.0,不再 121.25)",
+          abs(e.snap.global_tps - 90.0) < 1e-6, f"got {e.snap.global_tps}")
+    # ② 会话不匹配:不扣 → 90+31.25
+    e._poll_stats_tail(31.25, {"sess_other": 31.25})
+    check("#12 他会话 part 贡献不扣(90+31.25)",
+          abs(e.snap.global_tps - 121.25) < 1e-6, f"got {e.snap.global_tps}")
+    # ③ 非新鲜行(c=now−6 < now−2):不扣。手算:gen=c−ft=1s → r=900,
+    # ov=1s → 完成分量 900×1/10=90;若误扣则得 90,不扣=121.25
+    e._completed_rows = [(900, (now - 7.0) * 1000, (now - 6.0) * 1000,
+                          "sess_main")]
+    e._poll_stats_tail(31.25, {"sess_main": 31.25})
+    check("#12 非新鲜行不扣(90+31.25=121.25,误扣则 90)",
+          abs(e.snap.global_tps - 121.25) < 1e-6, f"got {e.snap.global_tps}")
+    # ④ 钳 0:part 总量 10 < 扣减 31.25 → 0,不得为负
+    e._completed_rows = [(900, (now - 3.0) * 1000, (now - 1.0) * 1000,
+                          "sess_main")]
+    e._poll_stats_tail(10.0, {"sess_main": 31.25})
+    check("#12 扣减钳 0(不为负,90.0)",
+          abs(e.snap.global_tps - 90.0) < 1e-6, f"got {e.snap.global_tps}")
+    e.stop()
+
+    # ---- 生产侧:_global_part_tps 的 per-session dict 与总量同源同值 ----
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_ded_"))
+    orig = zsrc.DB_PATH
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute("CREATE TABLE part (session_id TEXT, data TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        con.execute("INSERT INTO part (session_id, data) VALUES (?,?)",
+                    ("sess_a", '{"type":"text","text":"' + "x" * 100 + '"}'))
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        e2 = de.DataEngine(queue.Queue(maxsize=1))
+        e2._chars_per_token = 3.2
+        T0 = 1_800_000.0
+        _tps, by_sid = e2._global_part_tps(T0)      # 建基线
+        check("#12 生产侧:基线拍 dict 为空", by_sid == {}, str(by_sid))
+        cur = sqlite3.connect(tdb)
+        cur.execute("UPDATE part SET data=?",
+                    ('{"type":"text","text":"' + "x" * 150 + '"}',))
+        cur.commit(); cur.close()
+        tps2, by_sid2 = e2._global_part_tps(T0 + 1.0)
+        L = lambda n: len('{"type":"text","text":"' + "x" * n + '"}')
+        expect = (L(150) - L(100)) / 1.0 / 3.2
+        check("#12 生产侧:dict 与总量同源同值(手算)",
+              abs(tps2 - expect) < 1e-9 and list(by_sid2) == ["sess_a"]
+              and abs(by_sid2["sess_a"] - expect) < 1e-9,
+              f"tps={tps2} by_sid={by_sid2}")
+        e2.stop()
+    finally:
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_switch_session_resets_exact_chars():
+    """#14:_switch_session 重置 _last_len 时同步 _exact_out_chars=0 —— 只重
+    _last_len 会让旧会话字符数残留,切换后首个快速请求用旧字符数÷新会话
+    token 数污染 chars/token 校准。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_exc_"))
+    orig = zsrc.DB_PATH
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        con.executemany("INSERT INTO part (session_id) VALUES (?)",
+                        [("sess_main",), ("sess_other",)])
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        e = de.DataEngine(queue.Queue(maxsize=1))
+        e._exact_out_chars = 4321          # 模拟旧会话遗留的流式字符数
+        e._switch_session("sess_other")
+        check("#14 切换同步重置 _exact_out_chars", e._exact_out_chars == 0,
+              str(e._exact_out_chars))
+        check("#14 既有 _last_len 重置不回归", e._last_len is None, "")
+        e.stop()
+    finally:
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_source_guard_exception():
+    """#17 源守卫:注入抛 NotImplementedError 的源(非 DB 源 today_usage 抛、
+    ZCode 族 is_available 抛)—— 引擎 tick 不死、该源当拍跳过(行消失/缓存
+    维持旧值)、dbg 每源仅首记(镜像 QuotaMonitor 节流)。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    from zcode_meter.sources.base import UsageSource
+
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_guard_"))
+    orig_db, orig_dbg, orig_debug = zsrc.DB_PATH, de.DBG_PATH, de.DEBUG
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        con.execute("INSERT INTO part (session_id) VALUES ('sess_main')")
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        de.DEBUG = True
+        de.DBG_PATH = str(tmp / "dbg.log")
+
+        class _BoomZ(zsrc.ZCodeSource):
+            name = "BoomZ"
+            def is_available(self):
+                raise NotImplementedError("boom-avail")
+            def today_usage(self):
+                raise NotImplementedError("boom-today")
+
+        class _BoomO(UsageSource):
+            name = "BoomO"
+            def is_available(self):
+                return True
+            def today_usage(self):
+                raise NotImplementedError("boom-today")
+
+        e = de.DataEngine(queue.Queue(maxsize=1))
+        e.sources = [_BoomZ(), _BoomO()]
+        e._src_today_cache = {"BoomZ": 42}     # 预置缓存:失败侧维持旧值
+        e._db_tick(False)                      # 开闸拍:gated+tail 双守卫
+        e._db_tick(False)                      # 关门拍:tail 守卫再次触发
+        check("#17 引擎 tick 存活(采样推进 2 拍)", len(e._gtps_hist) == 2,
+              str(len(e._gtps_hist)))
+        check("#17 坏源当拍跳过(today_by_source 无行)",
+              dict(e.snap.today_by_source) == {}, str(e.snap.today_by_source))
+        check("#17 失败 ZCode 源维持缓存旧值",
+              e._src_today_cache.get("BoomZ") == 42, str(e._src_today_cache))
+        with open(de.DBG_PATH, encoding="utf-8") as f:
+            dbg_txt = f.read()
+        check("#17 dbg 每源仅首记(BoomZ ×1)",
+              dbg_txt.count("source guard: 'BoomZ'") == 1, dbg_txt[-300:])
+        check("#17 dbg 每源仅首记(BoomO ×1)",
+              dbg_txt.count("source guard: 'BoomO'") == 1, dbg_txt[-300:])
+        e.stop()
+    finally:
+        zsrc.DB_PATH = orig_db; de.DB_PATH = orig_db
+        de.DBG_PATH = orig_dbg
+        de.DEBUG = orig_debug
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_db_path_patch_contract():
+    """#41/#62 单点 patch 契约:唯一定义在 sources/zcode —— monkeypatch
+    zsrc.DB_PATH 后 ZCodeSource.is_available/today_usage/connect_ro 全部跟随;
+    de.DB_PATH 是 import 时刻的值拷贝,不跟随(引擎侧查询走 connect_ro 的
+    调用时属性查找,与 de.DB_PATH 名字无关)。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_patch_"))
+    orig = zsrc.DB_PATH
+    try:
+        zsrc.DB_PATH = str(tmp / "no_dir" / "nope.sqlite")
+        z = zsrc.ZCodeSource()
+        check("契约:zsrc patch → is_available 跟随(False)",
+              z.is_available() is False, "")
+        check("契约:zsrc patch → today_usage 跟随(0)", z.today_usage() == 0, "")
+        raised = False
+        try:
+            zsrc.connect_ro()
+        except sqlite3.OperationalError:
+            raised = True
+        check("契约:zsrc patch → connect_ro 跟随(OperationalError)",
+              raised, "connect_ro 未跟随 patch")
+        check("契约:de.DB_PATH 为 import 时刻快照(不跟随)",
+              de.DB_PATH == orig, f"{de.DB_PATH} vs {orig}")
+        # 换合成库:源跟随读到值(往返自证 patch 确实驱动源方法)
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute(
+            "CREATE TABLE model_usage (started_at INTEGER, model_id TEXT,"
+            " status TEXT, query_source TEXT, input_tokens INTEGER,"
+            " cache_read_input_tokens INTEGER, output_tokens INTEGER)")
+        con.execute(
+            "INSERT INTO model_usage VALUES (?,?,?,?,?,?,?)",
+            (de.today0_ms(), "GLM-5.3", "completed", "main_turn", 70, 0, 30))
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb
+        check("契约:zsrc patch → today_usage 读到合成值 100",
+              zsrc.ZCodeSource().today_usage() == 100, "")
+    finally:
+        zsrc.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_prices_hot_reload():
+    """#48:zm_prices.json (mtime_ns,size) 签名变化 → 重载 prices 且强制开闸
+    一拍(db 未变也重算):今日金额随新价落地,空闲期改价不再等重启/等
+    db 变化。合成库+合成价格文件,不碰真实 zm_prices.json。"""
+    import json as jsonmod
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_pri_"))
+    orig_db, orig_prices = zsrc.DB_PATH, de.PRICES_PATH
+    sql = []
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        con.execute(
+            "INSERT INTO model_usage (session_id, query_source, status,"
+            " started_at, model_id, provider_id, input_tokens,"
+            " cache_read_input_tokens, output_tokens)"
+            " VALUES ('sess_main','main_turn','completed',?,"
+            " 'GLM-5.3','bigmodel',1000000,0,1000000)",
+            (de.today0_ms(),))
+        con.execute("INSERT INTO part (session_id) VALUES ('sess_main')")
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+
+        pf = tmp / "p.json"
+        pf.write_text(jsonmod.dumps(
+            {"GLM-5.3": {"in": 1.0, "in_cache": 1.0, "out": 1.0}}),
+            encoding="utf-8")
+        de.PRICES_PATH = str(pf)
+        e = de.DataEngine(queue.Queue(maxsize=1))
+        orig_connect = e._connect
+
+        def _counting():
+            sql.append(1)
+            return orig_connect()
+        e._connect = _counting
+        e._db_tick(False)                       # 基线拍:¥(1M+1M)/1M=2.0
+        check("#48 基线拍金额=文件价手算 2.0",
+              abs(e.snap.today_cost_cny - 2.0) < 1e-6,
+              str(e.snap.today_cost_cny))
+        n_base = len(sql)
+        # 改价(in=4 档)且显式推 mtime,保证签名变化
+        pf.write_text(jsonmod.dumps(
+            {"GLM-5.3": {"in": 4.0, "in_cache": 4.0, "out": 4.0}}),
+            encoding="utf-8")
+        st = pf.stat()
+        import os as osmod
+        osmod.utime(pf, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        e._db_tick(False)                       # db 冻结,但价格闸强制开闸
+        check("#48 价格签名变 → prices 重载", e.prices["GLM-5.3"]["in"] == 4.0,
+              str(e.prices["GLM-5.3"]))
+        check("#48 db 冻结仍强制开闸(SQL 恢复)", len(sql) > n_base,
+              f"sql={len(sql)} base={n_base}")
+        check("#48 金额随新价重算 8.0",
+              abs(e.snap.today_cost_cny - 8.0) < 1e-6,
+              str(e.snap.today_cost_cny))
+        n2 = len(sql)
+        e._db_tick(False)                       # 签名消费后恢复关门
+        check("#48 价格闸消费后恢复关门", len(sql) == n2, f"sql={len(sql)}")
+        e.stop()
+    finally:
+        zsrc.DB_PATH = orig_db; de.DB_PATH = orig_db
+        de.PRICES_PATH = orig_prices
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_fetch_daily_model_usage_raise_on_error():
+    """#64:fetch_daily_model_usage 的 raise_on_error 参数 —— 缺省 False 吞错
+    返回 [](引擎侧既有语义);True 时 sqlite3.Error 原样上抛(『导出 CSV』
+    消费方区分 DB 故障与真空窗)。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_reo_"))
+    orig = zsrc.DB_PATH
+    try:
+        bad = str(tmp / "bad.sqlite")
+        con = sqlite3.connect(bad)
+        con.execute("CREATE TABLE part (session_id TEXT)")  # 无 model_usage 表
+        con.commit(); con.close()
+        zsrc.DB_PATH = bad; de.DB_PATH = bad
+        e = de.DataEngine(queue.Queue(maxsize=1))
+        check("#64 缺省吞错返回 []", e.fetch_daily_model_usage(30) == [], "")
+        raised = False
+        try:
+            e.fetch_daily_model_usage(30, raise_on_error=True)
+        except sqlite3.Error:
+            raised = True
+        check("#64 raise_on_error=True 上抛 sqlite3.Error", raised, "")
+        e.stop()
+    finally:
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_plan_remaining_pct_deprecated_compat():
+    """#75:plan_remaining_pct 按 S1 裁决保留(仅构造兼容),引擎不写不读 ——
+    字段可构造传参(既有测试构造零改动),_poll_stats 全轮后仍为缺省 None。"""
+    from zcode_meter import data_engine as de
+    s = de.Snapshot(plan_remaining_pct=87.0)
+    check("#75 字段保留:构造传参可用", s.plan_remaining_pct == 87.0, "")
+    e = DataEngine(queue.Queue(maxsize=1))
+    e._poll_stats()
+    check("#75 引擎不写(全轮后恒 None)", e.snap.plan_remaining_pct is None, "")
+    e.stop()
+
+
+def test_push_snapshot_copy():
+    """#28:_push 推浅拷贝(dataclasses.replace)而非活引用 —— UI 侧对收到的
+    快照改回写不再影响引擎快照(改前跨线程共享黑板,单帧可读到撕裂组合);
+    列表字段整体重赋值纪律下浅拷即安全。"""
+    e = DataEngine(queue.Queue(maxsize=5))
+    e.snap.today_tokens = 123
+    e._push()
+    s = e.out.get_nowait()
+    check("#28 推入的是拷贝(非活引用)", s is not e.snap, "")
+    s.today_tokens = 99999                     # UI 改回写
+    check("#28 UI 改回写不影响引擎快照", e.snap.today_tokens == 123,
+          str(e.snap.today_tokens))
+    e.snap.today_by_source = [("ZCode", 1)]
+    e._push()
+    s2 = e.out.get_nowait()
+    e.snap.today_by_source = [("ZCode", 2)]    # 引擎整体重赋值(既有纪律)
+    check("#28 列表字段拷贝后引擎重赋值互不干扰",
+          s2.today_by_source == [("ZCode", 1)], str(s2.today_by_source))
+    e.stop()
+
+
+def test_boot_queries_and_ensure():
+    """#84:boot_queries=False 跳过构造期三查询(零连接);run() 序幕的
+    _ensure_boot_state 补齐且幂等;缺省 True(GUI 路径)行为不变。"""
+    import shutil
+    import tempfile
+    import threading as thmod
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_boot_"))
+    orig = zsrc.DB_PATH
+    calls = []
+    orig_connect = de.connect_ro
+
+    def _counting():
+        calls.append(thmod.current_thread().name)
+        return orig_connect()
+    de.connect_ro = _counting
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        con.execute("INSERT INTO part (session_id) VALUES ('sess_main')")
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        e0 = de.DataEngine(queue.Queue(maxsize=1), boot_queries=False)
+        check("#84 boot_queries=False 构造零连接", calls == [], str(calls))
+        check("#84 三值缺省占位",
+              e0.session_id == "" and e0._prev_max_rowid == 0
+              and e0._act_rowid == 0, "")
+        e0._ensure_boot_state()
+        e0._ensure_boot_state()                 # 幂等:第二次零查询
+        check("#84 ensure 补齐恰三连接且幂等", len(calls) == 3, str(calls))
+        check("#84 补齐后三值就绪", e0.session_id == "sess_main"
+              and e0._boot_state_ready, e0.session_id)
+        e0.stop()
+        calls.clear()
+        e1 = de.DataEngine(queue.Queue(maxsize=1))
+        check("#84 缺省构造 3 连接(GUI 行为不变)", len(calls) == 3, str(calls))
+        n = len(calls)
+        e1._ensure_boot_state()
+        check("#84 已就绪后 ensure 零查询", len(calls) == n, "")
+        e1.stop()
+    finally:
+        de.connect_ro = orig_connect
+        zsrc.DB_PATH = orig; de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_tail_partial_line_defense():
+    """#86:_tail_loop 残行防线 —— 写者按块缓冲冲刷出的半行不消费(seek 回
+    原位),补全换行后一次计入(镜像 claude._read_new_rows 纪律);完整行
+    JSONDecodeError 落一条 dbg(不再零诊断)。合成日志文件,绝不碰真实
+    ~/.zcode 日志。"""
+    import shutil
+    import tempfile
+    import threading as thmod
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_tail_"))
+    orig_dbg, orig_debug = de.DBG_PATH, de.DEBUG
+    log = tmp / "zcode-test.jsonl"
+    th = None
+    e = None
+    try:
+        de.DEBUG = True
+        de.DBG_PATH = str(tmp / "dbg.log")
+        # tail 从 EOF 起步:残行必须写在 tail 线程启动【之后】(写者按块
+        # 冲刷出的半行),启动前已有的内容本就不消费
+        log.write_text("", encoding="utf-8")
+        e = de.DataEngine(queue.Queue(maxsize=1))
+        e._log_path = lambda: str(log)          # 实例属性遮蔽方法
+        th = thmod.Thread(target=e._tail_loop, daemon=True)
+        th.start()
+        time.sleep(0.3)                         # 线程就绪(空文件空转)
+        with open(log, "a", encoding="utf-8") as f:
+            f.write('{"event":"model.request.sta')   # 半行 flush
+        time.sleep(0.5)                         # 残行防线:反复重读不消费
+        check("#86 残行不被消费(状态机不动作)", e._running is False, "")
+        with open(log, "a", encoding="utf-8") as f:
+            f.write('rted","sessionId":"sess_t1"}\n')
+        time.sleep(0.5)
+        check("#86 补全后完整行一次计入", e._running is True, "")
+        with open(log, "a", encoding="utf-8") as f:
+            f.write('{not json\n')             # 完整坏行:dbg 一条
+        time.sleep(0.6)
+        with open(de.DBG_PATH, encoding="utf-8") as f:
+            dbg_txt = f.read()
+        check("#86 完整行 JSONDecodeError 落 dbg",
+              "JSONDecodeError dropped" in dbg_txt, dbg_txt[-200:])
+        check("#86 坏行不炸状态机", e._running is True, "")
+    finally:
+        if e is not None:
+            e.stop()
+        if th is not None:
+            th.join(1.0)
+        de.DBG_PATH = orig_dbg
+        de.DEBUG = orig_debug
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_manual_switch_deferred():
+    """#87 专项:引擎 alive 时 set/clear_manual_session 只投递意图 —— UI
+    (调用方)线程零 SQL(计数主线程连接);pending 切换 ≤1 POLL_DB 内生效
+    (manual_session/snap.manual/session_id 落地);切换后排除前缀
+    (sess_subagent*/sess_dwf-*)在 _latest_session/recent_sessions 原样存活;
+    未 start 路径保持同步执行。合成库,run() 由真实线程承载。"""
+    import shutil
+    import tempfile
+    import threading as thmod
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_def_"))
+    orig_db, orig_np = zsrc.DB_PATH, de._no_persist
+    calls = []
+    orig_connect = de.connect_ro
+
+    def _counting():
+        calls.append(thmod.get_ident())
+        return orig_connect()
+    de.connect_ro = _counting
+    e = None
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute("CREATE TABLE part (session_id TEXT)")
+        con.execute(
+            "CREATE TABLE model_usage (session_id TEXT, query_source TEXT,"
+            " status TEXT, started_at INTEGER, model_id TEXT, provider_id TEXT,"
+            " input_tokens INTEGER, cache_read_input_tokens INTEGER,"
+            " output_tokens INTEGER, duration_ms INTEGER,"
+            " time_to_first_token_ms INTEGER,"
+            " first_token_at INTEGER, completed_at INTEGER)")
+        # session 表:recent_sessions 批查依赖(缺表 → 整体 [],旧 LEFT
+        # JOIN 同判);标题留空即『空标题不丢会话』语义
+        con.execute("CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT)")
+        # rowid 序:mainA(1) < subagent(2) < mainB(3) < dwf(4,最新)——
+        # 最新行是排除会话:跟随/菜单的排除前缀必须原样存活
+        con.executemany("INSERT INTO part (session_id) VALUES (?)",
+                        [("sess_mainA",), ("sess_subagent-9",),
+                         ("sess_mainB",), ("sess_dwf-dwfrun-1",)])
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb; de.DB_PATH = tdb
+        de._no_persist = lambda: True           # watcher 不启动(免真实 FS 事件)
+        main_tid = thmod.get_ident()
+        e = de.DataEngine(queue.Queue(maxsize=50))
+        e.start()
+        time.sleep(1.2)                         # 启动 push/首拍落定
+        n_main_before = sum(1 for t in calls if t == main_tid)
+        t0 = time.time()
+        e.set_manual_session("sess_mainB")
+        dur = time.time() - t0
+        check("#87 set_manual_session 快速返回(SQL 批不在调用线程)",
+              dur < 0.3, f"{dur:.3f}s")
+        deadline = time.time() + de.DataEngine.POLL_DB + 1.0
+        while time.time() < deadline and not (
+                e.session_id == "sess_mainB" and e.snap.manual):
+            time.sleep(0.02)
+        check("#87 pending ≤1 POLL_DB 内生效(切换落地)",
+              e.session_id == "sess_mainB" and e.manual_session == "sess_mainB"
+              and e.snap.manual is True,
+              f"sess={e.session_id} manual={e.manual_session} snap={e.snap.manual}")
+        n_main_after = sum(1 for t in calls if t == main_tid)
+        check("#87 UI 线程同步路径零连接(SQL 批全在引擎线程)",
+              n_main_after == n_main_before,
+              f"{n_main_before} -> {n_main_after}")
+        # 排除前缀原样存活(以下两个调用本身在主线程连接,先记账再断言)
+        latest = e._latest_session()
+        check("#87 切换后 _latest_session 排除前缀存活(=mainB)",
+              latest == "sess_mainB", latest)
+        rows = e.recent_sessions(8)
+        check("#87 recent_sessions 无 subagent/dwf",
+              all(not sid.startswith(("sess_subagent", "sess_dwf-"))
+                  for sid, _ in rows)
+              and {sid for sid, _ in rows} == {"sess_mainA", "sess_mainB"},
+              str(rows))
+        # 清除:switch_auto 延迟,引擎线程解析最新会话(=mainB,dwf 被排除)
+        e.clear_manual_session()
+        deadline = time.time() + de.DataEngine.POLL_DB + 1.0
+        while time.time() < deadline and e.snap.manual:
+            time.sleep(0.02)
+        check("#87 clear 延迟生效(恢复自动,仍锚 mainB 非 dwf)",
+              e.manual_session is None and e.snap.manual is False
+              and e.session_id == "sess_mainB",
+              f"{e.manual_session}/{e.snap.manual}/{e.session_id}")
+        # 未 start 路径:同步行为不变(既有语义)
+        e2 = de.DataEngine(queue.Queue(maxsize=1))
+        e2.set_manual_session("sess_mainA")
+        check("#87 未 start:同步切换立即生效",
+              e2.session_id == "sess_mainA" and e2.snap.manual is True, "")
+        e2.clear_manual_session()
+        check("#87 未 start:同步清除立即生效",
+              e2.manual_session is None and e2.snap.manual is False, "")
+        e2.stop()
+    finally:
+        if e is not None:
+            e.stop()
+            e.join(timeout=2.0)                 # 先停引擎再还原计数补丁
+        de.connect_ro = orig_connect
+        de._no_persist = orig_np
+        zsrc.DB_PATH = orig_db; de.DB_PATH = orig_db
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_discover_sources_contract_guards():
+    """sources 发现机制治理批断言:
+    ① #15 字面导入行 ↔ 包内非_模块 对账(PyInstaller 静态分析只认字面
+       import,漏行=该源在 exe 被静默丢弃);
+    ② #16 同一类的再导出按类身份去重(不二次实例化,两行同名同值的
+       『用量翻倍假象』防线);
+    ③ #38 Source 形态不合法(实例/函数/非 UsageSource 子类)loudly raise;
+    ④ #73 order 只认 cls.__dict__ 自身声明,子类化内置源不继承 0/10;
+    ⑤ #81 两个不同类同名 → raise(引擎 per-source 缓存键兼行名)。"""
+    import ast as astmod
+    import inspect as insmod
+    import os as osmod
+    import pkgutil
+    import shutil
+    import tempfile
+    import zcode_meter.sources as srcs
+    from zcode_meter.sources import discover_sources
+
+    # ① #15 对账:字面导入行集合 == 包内非_模块集合
+    init_src = insmod.getsource(srcs)
+    tree = astmod.parse(init_src)
+    literal = set()
+    for node in astmod.walk(tree):
+        if (isinstance(node, astmod.ImportFrom) and node.level == 1
+                and node.module is None):
+            literal |= {a.name for a in node.names}
+    pkg_mods = {m.name for m in pkgutil.iter_modules(srcs.__path__)
+                if not m.name.startswith("_")}
+    check("#15 字面导入行==包内非_模块(对账)",
+          literal == pkg_mods and len(literal) >= 3,
+          f"literal={sorted(literal)} pkg={sorted(pkg_mods)}")
+
+    root = tempfile.mkdtemp(prefix="zm_disc2_")
+    orig_path = list(srcs.__path__)
+    made_sysmods = []
+    try:
+        pkg = osmod.path.join(root, "fake1")
+        osmod.makedirs(pkg)
+        mods = {
+            # ④ #73:子类化 ZCodeSource(order=0)但不声明自己的 order → 100
+            "subz": "from zcode_meter.sources.zcode import ZCodeSource\n"
+                    "class Source(ZCodeSource):\n    name = 'SUBZ'\n",
+            # ② #16:同一类的再导出 ×2 —— 必须去重为一次
+            "reexp": "from zcode_meter.sources.zcode import Source\n",
+            "reexp2": "from zcode_meter.sources.zcode import Source\n",
+            "aaa": "from zcode_meter.sources.base import UsageSource\n"
+                   "class Source(UsageSource):\n    name = 'AAA'\n"
+                   "    order = 50\n",
+            "zzz": "from zcode_meter.sources.base import UsageSource\n"
+                   "class Source(UsageSource):\n    name = 'ZZZ'\n"
+                   "    order = 5\n",
+        }
+        for mod_name, text in mods.items():
+            with open(osmod.path.join(pkg, mod_name + ".py"), "w",
+                      encoding="utf-8") as f:
+                f.write(text)
+            made_sysmods.append(mod_name)
+        srcs.__path__ = [pkg]
+        got = [s.name for s in discover_sources()]
+        check("#16 再导出去重(ZCode 恰一次)",
+              got.count("ZCode") == 1, str(got))
+        check("#73 子类不声明 order 排 100(在 5/50 之后,不继承 0)",
+              got == ["ZCode", "ZZZ", "AAA", "SUBZ"], str(got))
+
+        # ③ #38:形态不合法 loudly raise(每个独立假包,互不掺干扰)
+        for bad_src, label in (
+            ("Source = 12345\n", "实例"),
+            ("def Source():\n    pass\n", "函数"),
+            ("class Source:\n    name = 'X'\n", "非 UsageSource 子类"),
+            ("class Source(UsageSource):\n    name = 38\n", "name 非 str"),
+        ):
+            pkg2 = osmod.path.join(root, "fake_" + label[:3])
+            osmod.makedirs(pkg2, exist_ok=True)
+            body = bad_src if "UsageSource" not in bad_src else (
+                "from zcode_meter.sources.base import UsageSource\n" + bad_src)
+            with open(osmod.path.join(pkg2, "bad.py"), "w",
+                      encoding="utf-8") as f:
+                f.write(body)
+            srcs.__path__ = [pkg2]
+            raised = False
+            try:
+                discover_sources()
+            except ValueError:
+                raised = True
+            check(f"#38 Source 形态不合法({label})→ ValueError", raised,
+                  "未抛错(静默跳过)")
+
+        # ⑤ #81:两个不同类同名 → raise
+        pkg3 = osmod.path.join(root, "fake_dup")
+        osmod.makedirs(pkg3)
+        for mod_name in ("d1", "d2"):
+            with open(osmod.path.join(pkg3, mod_name + ".py"), "w",
+                      encoding="utf-8") as f:
+                f.write("from zcode_meter.sources.base import UsageSource\n"
+                        "class Source(UsageSource):\n"
+                        f"    name = 'DUP'\n    order = {60 + len(mod_name)}\n")
+            made_sysmods.append(mod_name)
+        srcs.__path__ = [pkg3]
+        raised = False
+        try:
+            discover_sources()
+        except ValueError as exc:
+            raised = "duplicate source name" in str(exc)
+        check("#81 两个不同类同名 → ValueError", raised, "未按同名抛错")
+    finally:
+        srcs.__path__ = orig_path
+        for mod_name in set(made_sysmods) | {"reexp", "reexp2", "subz",
+                                             "aaa", "zzz", "bad"}:
+            sys.modules.pop(f"zcode_meter.sources.{mod_name}", None)
+        shutil.rmtree(root, ignore_errors=True)
+    check("还原后内置顺序仍 [ZCode, Claude]",
+          [s.name for s in discover_sources()] == ["ZCode", "Claude"], "")
+
+
+def test_zcode_daily_usage_floor():
+    """#22:ZCodeSource.daily_usage 补 MAX_SCAN_ROWS rowid floor(镜像
+    fetch_daily_usage 同闸)—— 超限旧行不计;patch 常量即调窗(参数绑定
+    证据);唯一定义 re-export 后 de/zsrc 两名同值。"""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    tmp = _Path(tempfile.mkdtemp(prefix="zm_zfloor_"))
+    orig_db, orig_rows = zsrc.DB_PATH, zsrc.MAX_SCAN_ROWS
+    check("#22 唯一定义 re-export:de/zsrc 两名同值(默认)",
+          de.MAX_SCAN_ROWS == zsrc.MAX_SCAN_ROWS == 100_000, "")
+    try:
+        tdb = str(tmp / "t.sqlite")
+        con = sqlite3.connect(tdb)
+        con.execute(
+            "CREATE TABLE model_usage (started_at INTEGER, model_id TEXT,"
+            " status TEXT, query_source TEXT, input_tokens INTEGER,"
+            " cache_read_input_tokens INTEGER, output_tokens INTEGER)")
+        t0 = de.today0_ms()
+        con.executemany(
+            "INSERT INTO model_usage VALUES (?,?,?,?,?,?,?)",
+            [(t0 - 3_600_000, "GLM-5.3", "completed", "main_turn",
+              1_000, 0, 0),                       # 昨天(rowid 1,将被 floor 裁)
+             (t0 + 60_000, "GLM-5.3", "completed", "main_turn",
+              2_000, 0, 0),                       # 今天(rowid 2)
+             (t0 + 120_000, "GLM-5.3", "completed", "main_turn",
+              4_000, 0, 0)])                      # 今天(rowid 3)
+        con.commit(); con.close()
+        zsrc.DB_PATH = tdb
+        # floor 语义 = rowid >= MAX(rowid)-floor:floor=1 → rowid 1(昨天)被裁
+        zsrc.MAX_SCAN_ROWS = 1
+        z = zsrc.ZCodeSource()
+        rows = z.daily_usage(30)
+        # 手算:floor=1 只留今天两行(rowid 2/3)→ 6000;无 floor 含昨天 1000
+        check("#22 daily_usage 受 floor(=今天 6000,昨天 1000 被裁)",
+              [t for _d, t in rows] == [6_000], str(rows))
+        rc = sqlite3.connect(tdb)
+        manual = rc.execute(
+            "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
+            " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
+            " FROM model_usage WHERE status='completed' AND started_at>=?"
+            " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
+            " GROUP BY d ORDER BY d",
+            (t0 - 86_400_000, 1)).fetchall()
+        rc.close()
+        check("#22 =带同 floor 手算逐值相等", rows == manual,
+              f"{rows} vs {manual}")
+    finally:
+        zsrc.DB_PATH = orig_db
+        zsrc.MAX_SCAN_ROWS = orig_rows
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_claude_note_changes_scope_files():
+    """#59:note_changes 摄取的新文件补记入 _scope_files —— 两次 walk 之间
+    出生即死的文件不再逃过 vanished 检测:其独占 claim 的共享 mid 由幸存
+    文件重新计入(改前永久压制,今日用量静默少计且无自愈)。"""
+    import os as osmod
+    import shutil
+    import tempfile
+    from zcode_meter.data_engine import ClaudeSource
+
+    line, t_today, _ = _claude_line_factory()
+    root = tempfile.mkdtemp(prefix="zm_c59_")
+    try:
+        proj = osmod.path.join(root, "p1")
+        osmod.makedirs(proj)
+        fa = osmod.path.join(proj, "a.jsonl")
+        fab = osmod.path.join(proj, "ab.jsonl")
+        fb = osmod.path.join(proj, "b.jsonl")
+        # 场景:两次 walk 之间,watcher 先报 ab 出生(共享 mid n59_s 此刻
+        # 空闲 → ab 即时 claim,m=5),再报 b 出生(n59_s 已被 ab 占 →
+        # b 的同名行按『首 claim 者胜』抑制,b 只计自有行 20);随后 ab
+        # 在下一次 walk 前死亡 —— #59 修复前 ab 不在 _scope_files,
+        # vanished 检测永远不触发,n59_s 永久归属死文件,b 的 m=8 行被
+        # 永久压制(35 不自愈);修复后 walk 不再列出 ab → 重建 → b 计 38
+        with open(fa, "w", encoding="utf-8") as f:
+            f.write(line(t_today, "n59_a", 5, 0, 0, 5) + "\n")     # 10
+        src = ClaudeSource(projects_dir=root)
+        check("#59 基线:首扫 10", src.today_usage() == 10,
+              str(src.today_usage()))
+        with open(fab, "w", encoding="utf-8") as f:
+            f.write(line(t_today, "n59_s", 2, 0, 0, 3) + "\n")     # 5
+        src.note_changes([fab])                 # 出生:claim 共享 mid
+        check("#59 出生文件被摄取(15)", src.today_usage() == 15,
+              str(src.today_usage()))
+        with open(fb, "w", encoding="utf-8") as f:
+            f.write(line(t_today, "n59_b", 10, 0, 0, 10) + "\n"    # 20
+                    + line(t_today, "n59_s", 4, 0, 0, 4) + "\n")   # 8(被抑制)
+        src.note_changes([fb])                  # 同名行抑制(b 只计 20)
+        check("#59 后到者的共享 mid 行被抑制(35)",
+              src.today_usage() == 35, str(src.today_usage()))
+        # 即死:下一次 walk 前删除 → vanished 检测必须触发,n59_s 归还 b
+        osmod.remove(fab)
+        src.SCAN_TTL = 0.05
+        time.sleep(0.08)
+        got = src.today_usage()
+        check("#59 出生即死不逃逸(共享 mid 归还幸存者,10+20+8=38)",
+              got == 38, f"got {got}")
+        check("#59 重建后稳定(无双计)", src.today_usage() == 38, "")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_claude_reparse_stale_entries():
+    """#60:note_changes 的 reparse 重建集过滤已不存在路径 —— 已删文件的
+    陈旧条目(条目只增不删是 #19 维持裁决)在任何后续 reparse 事件中不再
+    复活重新 claim(vanished 刚解禁的幸存文件不再被压制)。"""
+    import os as osmod
+    import shutil
+    import tempfile
+    import time as timemod
+    from zcode_meter.data_engine import ClaudeSource
+
+    line, t_today, _ = _claude_line_factory()
+    root = tempfile.mkdtemp(prefix="zm_c60_")
+    try:
+        proj = osmod.path.join(root, "p1")
+        osmod.makedirs(proj)
+        fa = osmod.path.join(proj, "a.jsonl")
+        fb = osmod.path.join(proj, "b.jsonl")
+        with open(fa, "w", encoding="utf-8") as f:
+            f.write(line(t_today, "m60_a", 5, 0, 0, 5) + "\n")     # 10
+        with open(fb, "w", encoding="utf-8") as f:
+            f.write(line(t_today, "m60_b", 9, 0, 0, 1) + "\n")     # 10
+        src = ClaudeSource(projects_dir=root)
+        check("#60 基线 20", src.today_usage() == 20, str(src.today_usage()))
+        osmod.remove(fa)
+        src.SCAN_TTL = 0.05
+        timemod.sleep(0.08)
+        check("#60 a 删除后 vanished 重建(余 10)",
+              src.today_usage() == 10, str(src.today_usage()))
+        # b 原地重写(同长度不同值 9/1→8/1,mtime 前进)→ reparse 事件:
+        # 重建集必须排除已删除的 a,否则 a 的陈旧条目复活把 10 抢回来
+        timemod.sleep(0.02)
+        with open(fb, "w", encoding="utf-8") as f:
+            f.write(line(t_today, "m60_b", 8, 0, 0, 1) + "\n")     # 9
+        src.note_changes([fb])
+        got = src.today_usage()
+        check("#60 陈旧条目不复活(重写 b 后 9,非 19)",
+              got == 9, f"got {got}")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_claude_walk_blind_lastgood():
+    """#82:目录级瞬盲(os.walk scandir 错误)按 last-good 保守 —— 当轮聚合
+    不清零(盲区文件沿用旧 date_agg)、vanished/returning 判定跳过;恢复
+    后数值稳定;真删除仍照常触发 vanished(健康轮裁决力不减)。"""
+    import os as osmod
+    import shutil
+    import tempfile
+    from zcode_meter.data_engine import ClaudeSource
+
+    line, t_today, _ = _claude_line_factory()
+    root = tempfile.mkdtemp(prefix="zm_c82_")
+    real_walk = osmod.walk
+    try:
+        proj = osmod.path.join(root, "p1")
+        osmod.makedirs(proj)
+        for name, mid, i, o in (("a.jsonl", "w82_a", 10, 10),
+                                ("b.jsonl", "w82_b", 5, 5)):
+            with open(osmod.path.join(proj, name), "w", encoding="utf-8") as f:
+                f.write(line(t_today, mid, i, 0, 0, o) + "\n")
+        src = ClaudeSource(projects_dir=root)
+        check("#82 基线 30", src.today_usage() == 30, str(src.today_usage()))
+        src.SCAN_TTL = 0.05
+
+        def blind_walk(top, topdown=True, onerror=None, followlinks=False):
+            if onerror is None:                 # 引擎外调用不受影响
+                yield from real_walk(top, topdown=True)
+                return
+            onerror(OSError(13, "simulated transient scandir failure"))
+            for r, ds, fs in real_walk(top, topdown=True):
+                yield r, ds, [f for f in fs if f != "b.jsonl"]
+
+        osmod.walk = blind_walk                 # 注入:子目录瞬盲 + b 落盲区
+        try:
+            time.sleep(0.08)
+            got = src.today_usage()
+            check("#82 瞬盲轮聚合按 last-good 不清零(仍 30)",
+                  got == 30, f"got {got}")
+            time.sleep(0.08)
+            check("#82 瞬盲多轮稳定(不触发 vanished/returning)",
+                  src.today_usage() == 30, str(src.today_usage()))
+        finally:
+            osmod.walk = real_walk
+        time.sleep(0.08)
+        check("#82 恢复健康 walk 后数值稳定", src.today_usage() == 30, "")
+        osmod.remove(osmod.path.join(proj, "b.jsonl"))
+        time.sleep(0.08)
+        check("#82 健康轮真删 b 照常裁决(20)",
+              src.today_usage() == 20, str(src.today_usage()))
+    finally:
+        osmod.walk = real_walk
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_claude_nested_scope_isolation():
+    """#92:_file_cache 按 scope 嵌套 —— 嵌套 projects_dir 双实例不再跨
+    scope 串扰:共享文件级 date_agg 随 scope 独立裁决,两序(inner 先/outer
+    先)终值都正确(inner=100/outer=50),TTL 过期重扫不回退。"""
+    import os as osmod
+    import shutil
+    import tempfile
+    from zcode_meter.data_engine import ClaudeSource
+
+    line, t_today, _ = _claude_line_factory()
+    root = tempfile.mkdtemp(prefix="zm_c92_")
+
+    def build():
+        outer = osmod.path.join(root, "outer")
+        sub = osmod.path.join(outer, "sub")
+        osmod.makedirs(sub, exist_ok=True)
+        # sorted 序:OUTER/a.jsonl < OUTER/sub/x.jsonl → outer 域共享 mid 归 a(50)
+        with open(osmod.path.join(outer, "a.jsonl"), "w", encoding="utf-8") as f:
+            f.write(line(t_today, "n92_m", 25, 0, 0, 25) + "\n")   # 50
+        with open(osmod.path.join(sub, "x.jsonl"), "w", encoding="utf-8") as f:
+            f.write(line(t_today, "n92_m", 60, 0, 0, 40) + "\n")   # 100
+        return outer, sub
+
+    try:
+        # 序一:inner 先扫,outer 后扫
+        outer, sub = build()
+        inner = ClaudeSource(projects_dir=sub)
+        outer_src = ClaudeSource(projects_dir=outer)
+        check("#92 inner 首值 100(独占共享 mid)", inner.today_usage() == 100,
+              str(inner.today_usage()))
+        check("#92 outer 随后 50(本 scope 内 a 先 claim)",
+              outer_src.today_usage() == 50, str(outer_src.today_usage()))
+        check("#92 inner 不被 outer 扫描回退(仍 100)",
+              inner.today_usage() == 100, str(inner.today_usage()))
+        # TTL 过期重扫:两实例都稳定(类级缓存按 scope 分桶)
+        inner.SCAN_TTL = outer_src.SCAN_TTL = 0.05
+        time.sleep(0.08)
+        check("#92 TTL 重扫 inner 仍 100", inner.today_usage() == 100,
+              str(inner.today_usage()))
+        check("#92 TTL 重扫 outer 仍 50", outer_src.today_usage() == 50,
+              str(outer_src.today_usage()))
+        # 序二:outer 先扫,inner 后扫(全新目录,免上一序缓存干扰)
+        outer2, sub2 = build()
+        outer_first = ClaudeSource(projects_dir=outer2)
+        inner_first = ClaudeSource(projects_dir=sub2)
+        check("#92(outer 先)outer 50", outer_first.today_usage() == 50,
+              str(outer_first.today_usage()))
+        check("#92(outer 先)inner 100(此前会得 0)",
+              inner_first.today_usage() == 100, str(inner_first.today_usage()))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_claude_deep_nesting_poison():
+    """#93:_parse_line 的 json.loads 捕 RecursionError —— 深嵌套毒行
+    (≥17000 层)按坏行跳过,today_usage 不抛、不杀引擎 _db_loop。"""
+    import datetime as dtmod
+    import os as osmod
+    import shutil
+    import tempfile
+    from zcode_meter.data_engine import ClaudeSource
+
+    line, t_today, _ = _claude_line_factory()
+    root = tempfile.mkdtemp(prefix="zm_c93_")
+    try:
+        proj = osmod.path.join(root, "p1")
+        osmod.makedirs(proj)
+        poison = "[" * 20_000 + "]" * 20_000    # > 最小触发深度 16916
+        with open(osmod.path.join(proj, "s.jsonl"), "w",
+                  encoding="utf-8") as f:
+            f.write(line(t_today, "n93_ok", 4, 0, 0, 6) + "\n"     # 10
+                    + poison + "\n")
+        src = ClaudeSource(projects_dir=root)
+        got = src.today_usage()                  # 改前 RecursionError 上抛
+        check("#93 深嵌套毒行按坏行跳过(today=10 不抛)",
+              got == 10, f"got {got}")
+        check("#93 按天同判",
+              dict(src.daily_usage(1)).get(dtmod.date.today().isoformat()) == 10,
+              "")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":
@@ -3540,6 +4668,28 @@ if __name__ == "__main__":
     # ---- T4:ZCode db 文件闸门+today0 时间闸+_wake+变化即 push(空闲 0 SQL/0 持锁) ----
     print("== test_t4_db_gate_time_gate_and_wake ==")
     test_t4_db_gate_time_gate_and_wake()
+    # ---- v0.9.2 T1 治理批逐项新单测(#9/10/11/12/14/17/28/41+62/48/64/75/84/86/87 等) ----
+    print("== test_load_config_early_exit_bar_segments =="); test_load_config_early_exit_bar_segments()
+    print("== test_handle_log_line_guards ==");             test_handle_log_line_guards()
+    print("== test_on_request_done_main_turn_scope ==");    test_on_request_done_main_turn_scope()
+    print("== test_global_tps_completion_tick_dedup ==");   test_global_tps_completion_tick_dedup()
+    print("== test_switch_session_resets_exact_chars ==");  test_switch_session_resets_exact_chars()
+    print("== test_source_guard_exception ==");             test_source_guard_exception()
+    print("== test_db_path_patch_contract ==");             test_db_path_patch_contract()
+    print("== test_prices_hot_reload ==");                  test_prices_hot_reload()
+    print("== test_fetch_daily_model_usage_raise_on_error =="); test_fetch_daily_model_usage_raise_on_error()
+    print("== test_plan_remaining_pct_deprecated_compat =="); test_plan_remaining_pct_deprecated_compat()
+    print("== test_push_snapshot_copy ==");                 test_push_snapshot_copy()
+    print("== test_boot_queries_and_ensure ==");            test_boot_queries_and_ensure()
+    print("== test_tail_partial_line_defense ==");          test_tail_partial_line_defense()
+    print("== test_manual_switch_deferred ==");             test_manual_switch_deferred()
+    print("== test_discover_sources_contract_guards ==");   test_discover_sources_contract_guards()
+    print("== test_zcode_daily_usage_floor ==");            test_zcode_daily_usage_floor()
+    print("== test_claude_note_changes_scope_files ==");    test_claude_note_changes_scope_files()
+    print("== test_claude_reparse_stale_entries ==");       test_claude_reparse_stale_entries()
+    print("== test_claude_walk_blind_lastgood ==");         test_claude_walk_blind_lastgood()
+    print("== test_claude_nested_scope_isolation ==");      test_claude_nested_scope_isolation()
+    print("== test_claude_deep_nesting_poison ==");         test_claude_deep_nesting_poison()
     if FAILED:
         print(f"\nFAILED: {FAILED}")
         sys.exit(1)

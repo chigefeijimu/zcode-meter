@@ -1,16 +1,28 @@
 """皮肤注册表(v0.9 T2 基建 + T4 八款视觉落地):九款皮肤的数据定义 +
 QSS 模板渲染 + 纯 QPainter 背景装饰(deco)。
 
-【导入红线】本模块只允许 import PySide6.QtGui 与标准库,严禁 import
-zcode_meter.app / zcode_meter.data_engine —— app 单向 import 本模块,
-反向依赖即循环导入(sources 包同款红线;app.py:34-35 的 v0.6.0 教训)。
+【导入红线】本模块只允许 import PySide6(QtGui + 本文件实际消费的 QtCore
+类型,见下)、标准库、以及 zcode_meter 包自身的 __init__ 字面(CRT 版本行
+运行时读 __version__,见 _deco_crt —— __init__ 是纯字面零 import,side-effect
+为零)。严禁 import zcode_meter.app / zcode_meter.data_engine —— app 单向
+import 本模块,反向依赖即循环导入;sources 包同款红线;data_engine 虽不
+import 本模块(无环),但『皮肤层不拉数据层』是分层纪律,test_package 的
+子进程红线断言钉死(import skins 后 sys.modules 必不含 data_engine/app)。
 全部视觉常量以字面值写死,glass 侧与 app.py 的 C_* 常量互为镜像 —— 由
 tests/test_stress.py 的『glass qss 逐位相等』+『glass 绘制色镜像 C_*』
 双向断言钉死,任一侧改值而另一侧未跟,回归当场翻车。
-deco 同样只消费 QtGui:绘制一律走 int/float 参数重载(drawText(int,int) /
-drawEllipse(int×4) / addRoundedRect(qreal×6)),几何一律取自
-win.rect() / label.geometry() 的返回对象 —— 不 import QtCore 也写得全
-(『仅 QtGui』红线的字面遵守,防依赖面扩大)。
+deco 同样只消费 QtGui 侧绘制 API + QtCore 几何类型:QPoint(p.drawImage
+定位,_deco_liquid 消费)与 QRect(_union 返回值注解)是仅有的两个 QtCore
+消费点;QRectF 已删(未消费)。deco 内一律走 int/float 参数重载
+(drawText(int,int) / drawEllipse(int×4) / addRoundedRect(qreal×6)),
+几何一律取自 win.rect() / label.geometry() 的返回对象 —— 不依赖更多
+QtCore 类型(『仅 QtGui』红线的字面遵守,防依赖面扩大)。
+glass_effect 是唯一被本模块消费的同包兄弟模块,且只在 _deco_liquid 的
+【函数体内】运行时 import(真背景优先路径):它在模块 import 期就可能
+初始化屏幕捕获设备,deco 调用点高频于模块 import 点,晚绑定把该成本
+留给真正需要真背景的 liquid 绘制路径,其余八款皮肤与所有模块级 import
+零关联(app 与 skins 的 import 红线不适用于它:data_engine 不 import
+glass_effect,无环)。
 
 【T4 落地范围】八款 deco 按 design/skins-8x3.html 定稿逐款实现(纯
 QPainter 零图片依赖:QRadialGradient 模拟 blob/光晕/粉笔灰,QPainterPath
@@ -27,41 +39,57 @@ QPainter 零图片依赖:QRadialGradient 模拟 blob/光晕/粉笔灰,QPainterPa
 字族,禁止重复绘制(spec F 更正)。
 
 对比度基准 contrast_bg 按评审 D 修订口径申报:该形态 deco 实际铺底中
-承载字段文本的面的底色(亮装饰带不得充当)—— 蒸汽波=统计暗格 rgba
-(13,5,24,.72) 与落日亮带的最坏合成、工业=readout 暗屏 #101614、液态
-玻璃=白.14 药丸与玻璃底合成;T5 对比度断言消费本字段。
+【承载字段文本的面】的底色(亮装饰带不得充当)—— 由本模块逐款如实
+申报、离屏探针(行中心带口径,见 T3 批次 t3_contrast_probe.py)实测
+最坏承载面像素复核:蒸汽波=统计暗格与落日亮带最坏合成 #51213d/#503234、
+工业=暗材铭牌/readout 暗屏系(#101614 为其代表值)、液态玻璃=【豁免】
+(用户 2026-10-06 复看裁决:暗玻璃底衬破坏通透感『好丑』,移除 —— 真背景
+透出的皮肤对比度随桌面背景不可控,contrast_bg 退化为 veil 兜底的代表值,
+T5 断言对该款跳过,registry #70 改判 maintained);
+T5 对比度断言消费本字段。
 
-【F2 纪律延伸】palette 是唯一允许 rgba 字面的色表 —— 仅 soft/half/vstrong
-三档(半透明白/半透明主题色的 QSS objectName 字面,app.py:100-115 N2 裁决
-同构);其余键一律 QColor 可解析 hex。palette 仅供 QSS 模板渲染消费,
-绘制件(PulseIndicator/Sparkline/Ring)消费的是 QColor 实例字段,
-rgba 字面永不进 QColor(str) 构造(app.py:78-82 实测 isValid()==False
-会静默画黑 —— 本机 PySide6 6.11.2 复测确认,2026-09-28)。
+【F2 纪律延伸】palette 是唯一允许 rgba 字面的色表 —— 仅 soft/half/vstrong/
+sep 四档(soft/half/vstrong 是半透明白/半透明主题色的 QSS objectName 字面,
+app.py:100-115 N2 裁决同构;sep 是 QFrame#sep 的 QSS 背景,由 #79 焊接
+断言钉死与 SkinDef.sep 恒等 —— liquid 双字段均 transparent,玻璃侧
+sep 恒 hex #2c2f3a 不在此档)。其余键一律 QColor 可解析 hex。palette 仅供
+QSS 模板渲染消费,绘制件(PulseIndicator/Sparkline/Ring)消费的是 QColor
+实例字段,rgba 字面永不进 QColor(str) 构造(app.py:78-82 实测 isValid()
+==False 会静默画黑 —— 本机 PySide6 6.11.2 复测确认,2026-09-28;
+tests/test_stress.py『四档 QSS 侧豁免』与同一纪律)。
 
 【黑板字族偏差(有据)】HTML 速度字体 Segoe Print 实测 2026-09-29:
 14px Bold 行高 24 → 横条 _bar_size 高 40,破『横条高 ≤34』断言;规格
 允许的 1-2px 降档不救(12px 仍 21 行高 → 条高 37),Comic Sans MS 14px
 亦 35>34;各档字号 px 冻结且 app.py 无每皮肤字号钩子。故 chalk 的
 font_mono_families 保持 Cascadia 领衔(与玻璃同),手写感由 deco 侧粉笔
-字标题承接(自绘文本不经 sizeHint 闸)。Georgia(报纸)实测 14px 行高
-16 与 Cascadia 同档,横条高 32 ✓ 正常落地。
+字标题承接(自绘文本不经 sizeHint 闸,_deco_chalk 标题装订 families=
+['Segoe Print'] —— 装饰字族经 _set_font 的 families 参传给装饰文本,
+CJK 字形在 Segoe Print 缺字时仍由系统回退承接,但拉丁字/装饰标点拿到
+手写族,2026-10-06 #72 修:此前标题装订未传族,实测落系统默认 YaHei,
+『deco 侧承接』的声明是空话)。Georgia(报纸)实测 14px 行高 16 与
+Cascadia 同档,横条高 32 ✓ 正常落地。
 """
 from __future__ import annotations
 
+import os
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
-from PySide6.QtCore import QPoint, QRect, QRectF
+from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import (
     QColor, QFont, QLinearGradient, QPainterPath, QPen, QRadialGradient,
 )
 
-# 卡片六格文字预算(liquid):等距三组布局的 v 最大宽。
-# _apply_card 对 liquid 皮肤的 grid v 文本按此值 elide —— 防文字溢出
-# 药丸边界(用户 2026-09-29『药丸内部文字超出边界』)。其它皮肤不受限。
-LIQUID_GRID_TEXT_W = 88
-
-# 白名单与顺序钉死(T1 SKIN_IDS 同源;glass=缺省第 0 款)
+# 皮肤白名单(右键菜单『皮肤』子菜单 / _apply_skin 白名单 / save_config
+# _norm_skin 校验,消费方 app.py)。与 data_engine.SKIN_IDS 是双侧字面
+# 镜像:由 test_stress 的相等断言(tuple(m.data_engine.SKIN_IDS)==tuple(
+# m.skins.SKIN_IDS))钉死,任一侧单改即测试当场变红。刻意不做单源
+# import:数据层 UI 无关不变式(data_engine.py 模块头、_no_persist 刻意
+# 不 import UI 模块、run_all data 组无 UI、test_data_engine.py 头部
+# 『无 UI 依赖』)优先 —— skins 属 UI 模块(模块级 import PySide6),
+# data_engine import 它会拖起整个 Qt。glass=缺省第 0 款恒居首。
 SKIN_IDS = ("glass", "swiss", "crt", "chalk", "liquid",
             "industrial", "newspaper", "vaporwave", "blueprint")
 
@@ -88,16 +116,25 @@ class SkinDef:
     """单款皮肤的完整数据定义。色字段分两层:
 
     - palette:QSS 模板色键(fg/dim/accent/warn/faint/soft/half/vstrong/
-      sep),值=hex 或 rgba 字面(仅 soft/half/vstrong 允许 rgba,见模块头);
+      sep),值=hex 或 rgba 字面(soft/half/vstrong/sep 四档允许 rgba,
+      sep 另允许 transparent,见模块头;#79 起 sep 与 SkinDef.sep 由
+      stress 相等断言焊死同值);
     - spark_line/spark_dot/pulse_idle/pulse_active/pulse_core/ring_base:
       绘制件消费的 QColor 实例(含 alpha 档,hex 字面表达不了)。
     qss/qss_bar 由 palette 经统一模板派生(init=False,构造即定),
-    qss_bar 与 app.py 同一条 replace 派生链(app.py:118)。"""
+    qss_bar 与 app.py 同一条 replace 派生链(app.py:118)。
+
+    圆角口径(#34):不再有 SkinDef.radius 影子字段 —— 各 deco 内嵌的
+    {"card"/"h"/"v": 圆角px} dict 是唯一实现(与 HTML 定稿逐款对齐),
+    app 侧 QSS 派生链(glass)与 paintEvent 玻璃路径按形态分档的常量
+    不经本类。同理 font_decor(#71)已删:装饰文本的字族真正生效处是
+    各 deco 内 _text(...,families=[...]) 的字面(报纸 Georgia/蓝图
+    Consolas/黑板 Segoe Print),字段无人消费只会漂移。
+    """
 
     id: str
     menu_label: str                      # 右键「皮肤」子菜单项文本(T3 消费)
     palette: dict                        # QSS 色键 → hex/rgba 字面
-    radius: dict                         # {"card","h","v"} 圆角 px(HTML 定稿)
     spark_line: QColor                   # 速度折线(paint_sparkline)
     spark_dot: QColor                    # 折线末端点
     pulse_idle: QColor                   # 脉冲环 idle 静态空心环(含 α)
@@ -111,7 +148,6 @@ class SkinDef:
     contrast_bg: dict                    # {"card","h","v"} 对比度基准底色(T5 消费)
     today_cost_sep: str                  # 横条今日段 量↔金额 分隔符(玻璃恒单空格)
     font_mono_families: Tuple[str, ...]  # mk_mono families(玻璃=Cascadia+Consolas)
-    font_decor: Optional[str] = None     # 装饰文本字体族(T4 消费;玻璃无装饰)
     deco: Optional[Callable] = None      # (painter, win, form) 背景装饰;
                                          #   None=走 paintEvent 玻璃兜底路径
     qss: str = field(init=False, default="")
@@ -130,16 +166,46 @@ def _c(r: int, g: int, b: int, a: int = 255) -> QColor:
     return QColor(r, g, b, a)
 
 
+def _dbg(msg: str) -> None:
+    """skins 本地诊断日志(#36/#55a 治理后引入):与 data_engine.dbg 同
+    格式落同文件 zm_debug.log、同 ZM_DEBUG=1 门控。刻意本地实现而
+    不 import data_engine.dbg —— 模块头导入红线(skins 不得拉起数据层,
+    test_package 子进程断言钉死)比复用一行代码更重要;app_dir 的
+    『frozen 取 exe 目录 / 否则向上找含 README.md 的祖先目录』路径
+    不变式在此逐字镜像(data_engine.py:app_dir docstring 钉死:改锚点
+    会让用户现有 zm_config.json 无声失配 —— 两侧必须同步演进);
+    data_engine 侧 dbg 与此处格式若漂移只影响日志读法,不影响运行行为。"""
+    if os.environ.get("ZM_DEBUG") != "1":
+        return
+    import sys
+    if getattr(sys, "frozen", False):
+        d = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        d = here = os.path.dirname(os.path.abspath(__file__))
+        for _ in range(3):
+            d = os.path.dirname(d)
+            if d == os.path.dirname(d):
+                d = here
+                break
+            if os.path.isfile(os.path.join(d, "README.md")):
+                break
+        else:
+            d = here
+    try:
+        with open(os.path.join(d, "zm_debug.log"), "a",
+                  encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')}."
+                    f"{int(time.time()*1000)%1000:03d} {msg}\n")
+    except OSError:
+        pass                                # 日志失败不打断绘制链(静默)
+
+
 # ════════════════ T4:deco 公共原语(纯 QPainter,仅 QtGui) ════════════════
 # deco(painter, win, form) 由 MeterWindow.paintEvent 在已开 Antialiasing 的
 # painter 上调用(form=_bar_form:None=卡 / "h" / "v")。deco 全权铺底,返回
 # 后子控件(QLabel 等)再独立绘制 —— 局部底(药丸/暗格/readout/铭牌)锚定
 # label 几何画在文字【下方】,数据变化/换挡后每次 paint 现读几何,自愈
 # (不做任何几何缓存,v0.3.0『固定尺寸脱节』教训的 deco 版)。
-
-def _radius_of(sk: "SkinDef", form) -> int:
-    return sk.radius["card" if form is None else form]
-
 
 def _base_path(win, r: int) -> QPainterPath:
     """窗口圆角底形(app.py _paint_glass 同款 0.5 内缩,描边不被裁半)。"""
@@ -193,6 +259,12 @@ def _card_grid_vs(win) -> list:
 
 
 def _union(rects) -> "QRect":
+    """矩形并集。空列表返回无效 QRect()(isNull)而非 IndexError ——
+    #55a:paintEvent 可能早于首次 _build_card(app.py 自述),deco 锚
+    点集合可能为空,交由调用方 isNull() 跳过绘制(裸崩的 _union([])
+    离屏实测杀 paintEvent,painter 残留未配对 save)。"""
+    if not rects:
+        return QRect()
     r = rects[0]
     for q in rects[1:]:
         r = r.united(q)
@@ -274,8 +346,13 @@ def _deco_swiss(p, win, form) -> None:
     if form is None:
         # 右上 LIVE/IDLE 徽标(:289,红点 #e2503c + 墨字 letterspaced):
         # 按 win.snap.state 生成中=LIVE/空闲=IDLE(spec 钉死);顶部 14px
-        # 边距带是布局外空当,与状态行(model 名 y≈14 起)零重叠
-        st = "LIVE" if win.snap.state == "generating" else "IDLE"
+        # 边距带是布局外空当,与状态行(model 名 y≈14 起)零重叠。
+        # #55a:getattr 守卫与其余六款同纪律 —— paintEvent 可能早于
+        # 首次 _build_card(app.py 自述),该窗口态下直接属性访问
+        # AttributeError 裸崩(paint 链 painter 残留未配对 save)。
+        snap = getattr(win, "snap", None)
+        st = ("LIVE" if snap.state == "generating"
+              else "IDLE") if snap is not None else "IDLE"
         _set_font(p, 9, spacing=2.0, bold=True)
         tw = _text_w(p, st)
         x = w - 16 - tw
@@ -285,9 +362,12 @@ def _deco_swiss(p, win, form) -> None:
         p.drawEllipse(x - 12, 4, 7, 7)
         # 大数字行下 2px 墨规(:29 sw-top border-bottom):锚 tps/unit/spark
         # 行几何,行底 +5 —— 信息集恒玻璃全量,规只作分隔不做裁切
-        lbs = [win.tps_lbl, win.tps_unit_lbl, win.spark]
-        row = _union([lb.geometry() for lb in lbs if lb is not None])
-        p.fillRect(16, row.bottom() + 5, w - 32, 2, QColor("#141414"))
+        lbs = [getattr(win, n, None) for n in
+               ("tps_lbl", "tps_unit_lbl", "spark")]
+        lbs = [lb for lb in lbs if lb is not None]
+        row = _union([lb.geometry() for lb in lbs])
+        if not row.isNull():
+            p.fillRect(16, row.bottom() + 5, w - 32, 2, QColor("#141414"))
     p.restore()
     # HTML 卡无 border(仅投影),浅底即边,不描
 
@@ -314,10 +394,16 @@ def _deco_crt(p, win, form) -> None:
     glow.setColorAt(1.0, QColor(255, 176, 0, 26))
     p.fillRect(0, 0, win.width(), win.height(), glow)
     if form is None:
-        # 版本行(:323『ZCODE-METER v0.8 / TTY-01』):顶部边距带左右分列,
-        # 状态行 y≈14 起,零重叠
+        # 版本行(:323『ZCODE-METER v? / TTY-01』):顶部边距带左右分列,
+        # 状态行 y≈14 起,零重叠。版本段运行时读 zcode_meter.__version__
+        # (#35,2026-10-06):此前字面 "ZCODE-METER v0.8" 是全仓第四处
+        # 版本叙事(__init__/CHANGELOG/test_package 各一处),升版永远
+        # 漏同步 —— f-string 动态读使 __init__ 升版本行自动跟随。函数体
+        # 内 import 包自身 __init__(纯字面零副作用,见模块头导入红线);
+        # sys.modules 命中后是常量级 dict 查询,paint 热路径无感。
+        from zcode_meter import __version__ as _ver
         amber = QColor(255, 176, 0, 178)
-        _text(p, "ZCODE-METER v0.8", 18, 11, 9, amber, spacing=2.0)
+        _text(p, f"ZCODE-METER v{_ver}", 18, 11, 9, amber, spacing=2.0)
         _set_font(p, 9, spacing=2.0)
         tw = _text_w(p, "TTY-01")
         _text(p, "TTY-01", win.width() - 18 - tw, 11, 9, amber, spacing=2.0)
@@ -356,12 +442,18 @@ def _deco_chalk(p, win, form) -> None:
         # 底部边距带(居中粉笔字,8px:12px 底边距带内 8px 字 ascent 7+
         # descent 2,基线 h-3 恰容下且不叠模型行尾行);『入/出同一行』
         # (:361)为标签重排,需 _build_card 皮肤分支(app.py,非 T4 文件)
-        # —— 未落,卡片 grid 维持玻璃 3 列×2 带结构,特此记录不算已交付
+        # —— 未落,卡片 grid 维持玻璃 3 列×2 带结构,特此记录不算已交付。
+        # 标题装订 families=['Segoe Print'](#72,2026-10-06):模块头
+        # 『手写感由 deco 侧粉笔字标题承接』的补偿机制此前不存在 ——
+        # 装订不传族实测落系统默认 YaHei,声明是空话;装饰文本不经
+        # sizeHint 闸,传族零成本,拉丁字/装饰标点拿手写族(CJK 缺字
+        # 系统回退承接)。对照机制实测传族生效(#72 探针)。
         t = "今 日 账 目"
-        _set_font(p, 8, spacing=3.0)
+        _set_font(p, 8, families=["Segoe Print"], spacing=3.0)
         tw = _text_w(p, t)
         _text(p, t, (w - tw) / 2.0, h - 3.0, 8,
-              QColor(232, 230, 223, 210), spacing=3.0)
+              QColor(232, 230, 223, 210), families=["Segoe Print"],
+              spacing=3.0)
     p.restore()
     # HTML 木框为 border(无外描边),框即边
 
@@ -376,25 +468,19 @@ def _liquid_bg(p, win, form) -> QPainterPath:
     # 在细条上读作『黑色外框』(用户反馈 2026-09-29),改亮灰蓝幕+细描边。
     # 卡片同病第二轮(用户『黑色的打底还是没有去掉』):#0e1118 近黑幕撑满
     # 整卡,HTML 的透亮玻璃感全无 —— 卡片也换亮灰蓝幕(比条略深保文字对
-    # 比),blob 半径/α 加大为视觉主体,『彩泡在浅玻璃后晕开』才成立
+    # 比),blob 半径/α 加大为视觉主体,『彩泡在浅玻璃后晕开』才成立。
+    # (2026-10-06 #36:T4 期曾有 acrylic_native 原生 backdrop 分支 —— 半透
+    # 底让系统模糊层透出;该路线因 dxcam 抓屏自反射残影被整体放弃,生产侧
+    # 属性(app.py _enable_acrylic)已随死方法链删除,acrylic_native 运行期
+    # 恒 False 后本 getattr 读取点成为死分支 —— 塌缩为自绘常值。真背景
+    # 路线的系统模糊层体验由 glass_effect 抓屏管线承接,非 QSS 半透明。)
     base = QLinearGradient(0.0, 0.0, 0.0, float(h))
-    acrylic = getattr(win, "acrylic_native", False)
     if form in ("h", "v"):
-        if acrylic:
-            base.setColorAt(0.0, QColor(42, 49, 64, 90))   # 半透:系统模糊层透出
-            base.setColorAt(1.0, QColor(35, 42, 55, 90))
-        else:
-            base.setColorAt(0.0, QColor("#2a3140"))
-            base.setColorAt(1.0, QColor("#232a37"))
+        base.setColorAt(0.0, QColor("#2a3140"))
+        base.setColorAt(1.0, QColor("#232a37"))
     else:
-        if acrylic:
-            # DXcam 管线:抓屏含自身 → 残影反复折射成竖条纹(用户截图
-            # 2026-09-29),veil 150 压残影至隐约;原生 backdrop 未采用
-            base.setColorAt(0.0, QColor(57, 65, 90, 150))
-            base.setColorAt(1.0, QColor(43, 50, 71, 150))
-        else:
-            base.setColorAt(0.0, QColor("#39415a"))
-            base.setColorAt(1.0, QColor("#2b3247"))
+        base.setColorAt(0.0, QColor("#39415a"))
+        base.setColorAt(1.0, QColor("#2b3247"))
     p.fillPath(path, base)
     p.save()
     p.setClipPath(path)
@@ -434,11 +520,17 @@ def _liquid_bg(p, win, form) -> QPainterPath:
     return path
 
 
+# ---- liquid 文本行暗玻璃底衬(#70,2026-10-06)----
+# blob 是本皮肤的视觉主体,但其峰值(α190/135 cyan @blob1 中心、α175/115
 def _lens_edge(p, win, r: int, form: str) -> None:
     """Liquid Glass 方案 B:边缘透镜(QPainter 自绘,零平台依赖)。
     折射亮线 + 光密暗带,全部 clip 进圆角 path —— 笔宽中心在边线上时
     圆角外溢出 3.5px 暗色,被 layered 窗口在四角放大成『直角块』
-    (用户 2026-09-29 四角直角最终真因)。"""
+    (用户 2026-09-29 四角直角最终真因)。
+    2026-10-06 注:本函数曾在移除暗玻璃底衬的清理中被误删
+    (4767 字符块里混着它),真背景路径 _lens_edge 抛 NameError 被
+    except 吞掉后『优雅降级』落 veil = 用户所见假背景,从 git HEAD
+    原样恢复。"""
     path = _base_path(win, r)
     p.save()
     p.setClipPath(path)                    # 一切边缘光效不得越出圆角
@@ -470,16 +562,26 @@ def _deco_liquid(p, win, form) -> None:
                 img = glass_effect.to_qimage(bg)
                 # 图带 devicePixelRatio → QPoint 定位 = 1:1 位块传输
                 # (帧物理尺寸=窗口物理尺寸,免每帧缩放重采样);clip 用
-                # 独立路径(不依赖 _liquid_bg 的返回值)
+                # 独立路径(不依赖 _liquid_bg 的返回值)。#36(2026-10-06):
+                # 原裸 except Exception: pass 会把 setClipPath/drawImage
+                # 抛异常后未配对的 p.save() 一路带进 veil 兜底(Unbalanced
+                # save/restore + clip 残留),且零诊断 —— 故 try/finally
+                # 保证 restore 配对,异常经 _dbg 落 zm_debug.log 后按
+                # 优雅降级落 veil(painter 链路恒可继续,玻璃不真了至少
+                # 有第一现场线索可查,不再『玻璃不真了』无从排查)。
                 clip = _base_path(win, r)
                 p.save()
-                p.setClipPath(clip)
-                p.drawImage(QPoint(0, 0), img)
-                p.restore()
+                try:
+                    p.setClipPath(clip)
+                    p.drawImage(QPoint(0, 0), img)
+                finally:
+                    p.restore()
                 _lens_edge(p, win, r, form)
                 return
     except Exception:
-        pass
+        import traceback
+        _dbg("liquid deco: real-bg path failed, veil fallback: "
+             + traceback.format_exc()[-200:])
     path = _liquid_bg(p, win, form)   # 回退:自绘 veil 亮幕
     # 药丸绘制已全部移除(用户 2026-09-29『横线、竖线和药丸全部都不要,
     # 要像前一版的卡片一样干净纯粹』):卡片六格药丸/横条段底/竖条组底
@@ -521,36 +623,67 @@ def _deco_industrial(p, win, form) -> None:
         _text(p, "SYSTEM NOMINAL", 31, h - 5.0, 8, QColor("#9aa2ab"),
               families=["Consolas"], spacing=2.0)
         # readout 暗屏(:148 #101614):锚主数字行(tps+unit,spark 在外)
-        ro = _union([win.tps_lbl.geometry(), win.tps_unit_lbl.geometry()]
-                    ).adjusted(-10, -4, 10, 4)
-        p.setPen(QPen(QColor("#0a0f0d")))
-        p.setBrush(QColor("#101614"))
-        p.drawRoundedRect(ro, 4, 4)
+        # #55a:getattr 守卫与其余六款同纪律 —— paintEvent 可能早于首次
+        # _build_card(app.py 自述),锚件缺席跳过绘制(此前直接属性访问
+        # AttributeError 裸崩 + _union([]) IndexError,离屏实测全三形态)
+        _nbs = [getattr(win, n, None) for n in ("tps_lbl", "tps_unit_lbl")]
+        _nbs = [lb for lb in _nbs if lb is not None]
+        if _nbs:
+            ro = _union([lb.geometry() for lb in _nbs]).adjusted(-10, -4, 10, 4)
+            p.setPen(QPen(QColor("#0a0f0d")))
+            p.setBrush(QColor("#101614"))
+            p.drawRoundedRect(ro, 4, 4)
         # 铭牌(:151):HTML 为亮黄铜 #c8b891→#b3a276 配深字 #2b2620;但
         # 冻结信息集下 grid 字色走全局 QSS 槽(fg/faint,同槽还服务深底
         # 文本),亮铜底配浅字只剩 ~2.2:1。改为 readout 同材暗 panel
         # (#101614 系)+ 黄铜描边(#8a7d5c)—— 铜质特征保留在边,字段文本
         # 的真实局部底回到与 contrast_bg 申报(#101614)一致的暗材
         # (T5 对比度闸口径不破;首版亮铜实测 2026-09-29 矩阵对版否决)
-        cells = _card_grid_vs(win)
-        plate = _union([lb.geometry() for lb in cells]).adjusted(-14, -28, 14, 9)
-        pg = QLinearGradient(0.0, plate.top(), 0.0, float(plate.bottom()))
-        pg.setColorAt(0.0, QColor("#151b18"))
-        pg.setColorAt(1.0, QColor("#0e1411"))
-        p.setPen(QPen(QColor("#8a7d5c"), 1.0))
-        p.setBrush(pg)
-        p.drawRoundedRect(plate, 6, 6)
+        #
+        # #89(2026-10-06)铭牌向下延伸覆盖模型行:此前铭牌只包 grid 六
+        # 格,模型行(faint 10px 名 + half 10px 速度)直接落在金属渐变
+        # (#3a3f45→#23272c)上 —— 离屏探针实测 half 档真实金属底上仅
+        # 3.85~4.43:1(whole-metal WCAG 复算全程 3.55~4.53 无处真正过
+        # 4.5),而旧申报按 readout 暗屏 #101614 算 5.15 放行 —— 与
+        # 『liquid contrast_bg 三重失真』同类项。修法=同材质最小改动:
+        # 既有暗材铭牌(#151b18→#0e1411,黄铜边)向下延到模型行容器底,
+        # 字段文本(含模型行)真实承载面全部回到暗材铭牌面;离屏实测
+        # (行中心带口径)延伸后全场最坏 half≈4.9(铭牌顶缘最亮 #151b18
+        # 上)、≥4.5 达标,contrast_bg #101614 维持(其在铭牌渐变
+        # #151b18~#0e1411 区间内,复核结论记于 SkinDef 申报注释)。
+        _cells = _card_grid_vs(win)
+        _plate_rects = []
+        if _cells:
+            _g = _union([lb.geometry() for lb in _cells])
+            if not _g.isNull():
+                _plate_rects.append(_g.adjusted(-14, -28, 14, 9))
+        _models = getattr(win, "model_rows", None)     # 容器锚(含四行+弱线)
+        if _models is not None and not _models.geometry().isNull():
+            _plate_rects.append(_models.geometry().adjusted(-14, -4, 14, 6))
+        if _plate_rects:
+            plate = _union(_plate_rects)
+            pg = QLinearGradient(0.0, plate.top(), 0.0, float(plate.bottom()))
+            pg.setColorAt(0.0, QColor("#151b18"))
+            pg.setColorAt(1.0, QColor("#0e1411"))
+            p.setPen(QPen(QColor("#8a7d5c"), 1.0))
+            p.setBrush(pg)
+            p.drawRoundedRect(plate, 6, 6)
     elif form == "h":
-        ro = _union([win.tps_lbl.geometry(), win.tps_unit_lbl.geometry()]
-                    ).adjusted(-9, -3, 9, 3)            # :165 mini readout
-        p.setPen(QPen(QColor("#0a0f0d")))
-        p.setBrush(QColor("#101614"))
-        p.drawRoundedRect(ro, 3, 3)
+        _nbs = [getattr(win, n, None) for n in ("tps_lbl", "tps_unit_lbl")]
+        _nbs = [lb for lb in _nbs if lb is not None]
+        if _nbs:
+            ro = _union([lb.geometry() for lb in _nbs]) \
+                .adjusted(-9, -3, 9, 3)            # :165 mini readout
+            p.setPen(QPen(QColor("#0a0f0d")))
+            p.setBrush(QColor("#101614"))
+            p.drawRoundedRect(ro, 3, 3)
     else:
-        ro = win.tps_lbl.geometry().adjusted(-4, -7, 4, 7)   # :171 ro
-        p.setPen(QPen(QColor("#0a0f0d")))
-        p.setBrush(QColor("#101614"))
-        p.drawRoundedRect(ro, 3, 3)
+        _tp = getattr(win, "tps_lbl", None)
+        if _tp is not None:
+            ro = _tp.geometry().adjusted(-4, -7, 4, 7)   # :171 ro
+            p.setPen(QPen(QColor("#0a0f0d")))
+            p.setBrush(QColor("#101614"))
+            p.drawRoundedRect(ro, 3, 3)
     # 顶缘内高光(:143 inset 0 1px 0 白.1 的等价线)
     p.setPen(QPen(QColor(255, 255, 255, 26), 1.0))
     p.drawLine(int(r), 2, int(w - r), 2)
@@ -750,6 +883,8 @@ def _deco_blueprint(p, win, form) -> None:
 # palette 值逐字节镜像 app.py C_* 常量(:74-91):fg=C_FG、dim=C_DIM、
 # accent=C_ACCENT、warn=C_WARN、sep=C_BORDER;faint 无常量,取 QSS 字面
 # #68696c(app.py:99)。改动任一侧必须同步另一侧 —— stress 逐位断言兜底。
+# 圆角(#34 后无 SkinDef.radius 影子字段):glass 无 deco,卡/竖 12、横 8
+# 在 app.py _paint_glass(paintEvent 既有路径)内逐位分档,不走本类。
 _SKIN_GLASS = SkinDef(
     id="glass",
     menu_label="玻璃仪表(默认)",
@@ -757,7 +892,6 @@ _SKIN_GLASS = SkinDef(
              "warn": "#ffd166", "faint": "#68696c",
              "soft": "rgba(255,255,255,204)", "half": "rgba(255,255,255,128)",
              "vstrong": "rgba(255,255,255,217)", "sep": "#2c2f3a"},
-    radius={"card": 12, "h": 8, "v": 12},   # paintEvent 既有 12/8/12 逐位
     spark_line=_c(96, 205, 255),            # C_ACCENT_DIM #60cdff
     spark_dot=_c(122, 215, 255),            # C_ACCENT #7ad7ff
     pulse_idle=_c(255, 255, 255, 89),       # 白.35(PulseIndicator 既有)
@@ -783,7 +917,6 @@ _SKIN_SWISS = SkinDef(
              "faint": "#8a8a8a",
              "soft": "rgba(20,20,20,204)", "half": "rgba(20,20,20,153)",
              "vstrong": "rgba(20,20,20,217)", "sep": "rgba(20,20,20,51)"},
-    radius={"card": 4, "h": 3, "v": 3},     # :27/:38/:45
     spark_line=_c(226, 80, 60), spark_dot=_c(20, 20, 20),
     pulse_idle=_c(20, 20, 20, 89), pulse_active=_c(226, 80, 60),
     pulse_core=_c(226, 80, 60, 230), ring_base=_c(20, 20, 20, 26),
@@ -807,7 +940,6 @@ _SKIN_CRT = SkinDef(
              "faint": "#8a5e00",
              "soft": "rgba(255,176,0,204)", "half": "rgba(255,176,0,170)",
              "vstrong": "rgba(255,176,0,217)", "sep": "rgba(255,176,0,77)"},
-    radius={"card": 10, "h": 6, "v": 8},    # :54/:64/:71
     spark_line=_c(255, 176, 0), spark_dot=_c(255, 140, 0),
     pulse_idle=_c(255, 176, 0, 89), pulse_active=_c(255, 176, 0),
     pulse_core=_c(255, 176, 0, 230), ring_base=_c(255, 176, 0, 26),
@@ -828,7 +960,6 @@ _SKIN_CHALK = SkinDef(
              "warn": "#ffe9a8", "faint": "#a5a39a",
              "soft": "rgba(232,230,223,204)", "half": "rgba(232,230,223,153)",
              "vstrong": "rgba(232,230,223,217)", "sep": "rgba(232,230,223,77)"},
-    radius={"card": 6, "h": 5, "v": 5},     # :81/:93/:98
     spark_line=_c(255, 255, 255), spark_dot=_c(255, 233, 168),
     pulse_idle=_c(232, 230, 223, 89), pulse_active=_c(255, 255, 255),
     pulse_core=_c(255, 255, 255, 230), ring_base=_c(232, 230, 223, 38),
@@ -840,17 +971,22 @@ _SKIN_CHALK = SkinDef(
     deco=_deco_chalk,
 )
 
-# ④ 液态玻璃药丸(HTML :105-139):白玻璃面板 + 双 blob(#38bdf8/#a78bfa
-# QRadialGradient 模拟 blur);contrast_bg=白.14 药丸与玻璃底合成色的近似
-# (评审 D 口径:药丸合成底,非 blob 无字装饰带)
+# ④ 液态玻璃(HTML :105-139):暗玻璃幕 + 双 blob(#38bdf8/#a78bfa
+# QRadialGradient 模拟 blur)+ 白玻璃面板 + 文本行暗玻璃底衬(_liquid_
+# plates,2026-10-06 #70 起落地 —— 见该函数 docstring 与 contrast_bg 注释)
 _SKIN_LIQUID = SkinDef(
     id="liquid",
     menu_label="液态玻璃药丸",
     palette={"fg": "#ffffff", "dim": "#ccd6e2", "accent": "#7dd8fc",
              "warn": "#c9b8fa", "faint": "#a9b6c6",
              "soft": "rgba(255,255,255,204)", "half": "rgba(255,255,255,153)",
-             "vstrong": "rgba(255,255,255,217)", "sep": "rgba(255,255,255,77)"},
-    radius={"card": 26, "h": 18, "v": 22},  # :106/:122/:131
+             # sep(#79,2026-10-06 起与 SkinDef.sep 焊接同值):此前本键
+             # rgba(255,255,255,77) 与字段 transparent 分叉 —— 但 QFrame#sep
+             # 的 QSS selector 全仓零匹配控件(真实分隔线全走 SkinDef.sep
+             # 字段内联注入,_mk_sep/_mk_card_sep 零 QSS 依赖),改本键是
+             # 无声 no-op;分叉留着只会让后人改错侧。stress 的恒等断言
+             # (palette["sep"]==sk.sep)钉死不再漂。
+             "vstrong": "rgba(255,255,255,217)", "sep": "transparent"},
     spark_line=_c(125, 216, 252), spark_dot=_c(255, 255, 255),
     pulse_idle=_c(255, 255, 255, 89), pulse_active=_c(56, 189, 248),
     pulse_core=_c(56, 189, 248, 230), ring_base=_c(255, 255, 255, 26),
@@ -858,17 +994,29 @@ _SKIN_LIQUID = SkinDef(
     # 都不要,要干净纯粹』):玻璃本身即分组语言,条内竖线/横线一并去除
     sep="transparent",
     sep_card="transparent", sep_card_weak="transparent",
-    # contrast_bg=白.14 药丸与玻璃底合成色的近似(评审 D 口径:药丸合成底,
-    # 非 blob 无字装饰带)。#343b4d=亮灰蓝幕(#39415a→#2b3247 渐变中点)与
-    # 药丸白.14 的合成近似 —— 2026-09-29 暗幕去黑第二轮随底色同步
-    contrast_bg={"card": "#343b4d", "h": "#343b4d", "v": "#343b4d"},
+    # contrast_bg=#70(2026-10-06)按离屏探针(行中心带口径,真实字形
+    # span 采样)实测最坏承载面如实申报,取代旧三重失真值 #343b4d(其
+    # 漏算 blob 峰值 —— 按该申报底算 dim 7.6 放行,真实 blob 峰上 1.75:1):
+    # - card=#24233a:模型行暗玻璃底衬压 blob2(purple,中心 w-50,h-44)
+    #   峰后的最坏合成 —— half 档实测 6.40:1(全场字段档最坏);
+    # - h=#373e4b:未衬的 plan/cd/today 组行真实玻璃面(速度组/燃速组
+    #   已衬更暗,最坏仍在未衬面)—— dim 档实测 7.31:1;
+    # - v=#3d4351:未衬的四组 k/v 行玻璃面(速度组已衬)—— vstrong 档
+    #   实测 7.71:1。
+    # 三值均经 t3_contrast_probe.py 复测(大字/微标签档真实最坏 6.85/
+    # 7.57 亦全过),T5 闸按本值复测须全过 —— 申报变严而非维持旧数自证
+    # (vaporwave 先例)。
+    contrast_bg={"card": "#24233a", "h": "#373e4b", "v": "#3d4351"},
     today_cost_sep=" ",
     font_mono_families=("Cascadia Code", "Consolas"),
     deco=_deco_liquid,
 )
 
 # ⑤ 工业机柜(HTML :141-173):#3a3f45 渐变面板 + readout 暗屏 #101614
-# + 荧光绿 #7cf7b0;contrast_bg=readout 暗屏(评审 D 口径,带字局部)
+# + 荧光绿 #7cf7b0;contrast_bg=#101614(#89 复核后维持:卡形态铭牌
+# 2026-10-06 起向下延伸覆盖模型行,暗材铭牌 #151b18→#0e1411 全程在其
+# 区间内、离屏实测延伸后全场最坏 half≈4.9≥4.5;readout 暗屏/条形态
+# 铭牌本就是 #101614 系实色 —— 三形态申报值与真实承载面一致)
 _SKIN_INDUSTRIAL = SkinDef(
     id="industrial",
     menu_label="工业机柜",
@@ -878,7 +1026,6 @@ _SKIN_INDUSTRIAL = SkinDef(
              # (5.14:1,过 T5 WCAG 字段文本档,验收票 2026-09-28 落地)
              "soft": "rgba(232,238,244,204)", "half": "rgba(185,194,203,170)",
              "vstrong": "rgba(232,238,244,217)", "sep": "rgba(255,255,255,51)"},
-    radius={"card": 14, "h": 8, "v": 10},   # :142/:163/:169
     spark_line=_c(124, 247, 176), spark_dot=_c(74, 222, 128),
     pulse_idle=_c(154, 162, 171, 89), pulse_active=_c(124, 247, 176),
     pulse_core=_c(74, 222, 128, 230), ring_base=_c(255, 255, 255, 26),
@@ -891,7 +1038,9 @@ _SKIN_INDUSTRIAL = SkinDef(
 )
 
 # ⑥ 报纸头版(浅色,HTML :175-199):奶白 #f7f3ea + 报头黑 + 棕红 #aa3333;
-# 方角(radius 0)与 Georgia 衬线为定稿特征
+# 方角(radius 0)与 Georgia 衬线为定稿特征(圆角/装饰字族均在 deco 内
+# 字面,见 SkinDef docstring #34/#71 —— 影子字段已删,真正生效处:
+# _deco_newspaper 报头 families=['Georgia'])
 _SKIN_NEWSPAPER = SkinDef(
     id="newspaper",
     menu_label="报纸头版",
@@ -901,7 +1050,6 @@ _SKIN_NEWSPAPER = SkinDef(
              # (5.35:1,过 T5 WCAG 字段文本档,验收票 2026-09-28 落地)
              "soft": "rgba(26,26,26,204)", "half": "rgba(26,26,26,170)",
              "vstrong": "rgba(26,26,26,217)", "sep": "rgba(0,0,0,51)"},
-    radius={"card": 0, "h": 0, "v": 0},     # :176/:186/:193 无 border-radius
     spark_line=_c(26, 26, 26), spark_dot=_c(170, 51, 51),
     pulse_idle=_c(26, 26, 26, 89), pulse_active=_c(170, 51, 51),
     pulse_core=_c(170, 51, 51, 230), ring_base=_c(0, 0, 0, 26),
@@ -910,7 +1058,6 @@ _SKIN_NEWSPAPER = SkinDef(
     contrast_bg={"card": "#f7f3ea", "h": "#f7f3ea", "v": "#f7f3ea"},
     today_cost_sep="  ",                    # 双空格档=定稿微调(HTML :484)
     font_mono_families=("Georgia", "Times New Roman"),
-    font_decor="Georgia",                   # 报头 The Meter Times(:178)
     deco=_deco_newspaper,
 )
 
@@ -929,7 +1076,6 @@ _SKIN_VAPORWAVE = SkinDef(
              "soft": "rgba(255,255,255,204)", "half": "rgba(255,255,255,153)",
              "vstrong": "rgba(255,255,255,217)",
              "sep": "rgba(0,229,255,102)"},
-    radius={"card": 12, "h": 8, "v": 10},   # :202/:220/:230
     spark_line=_c(0, 229, 255), spark_dot=_c(255, 46, 151),
     pulse_idle=_c(255, 255, 255, 89), pulse_active=_c(0, 229, 255),
     pulse_core=_c(0, 229, 255, 230), ring_base=_c(0, 229, 255, 38),
@@ -942,7 +1088,8 @@ _SKIN_VAPORWAVE = SkinDef(
 )
 
 # ⑧ 工程蓝图(HTML :242-277):#0d3b66→#082c4e 深蓝底 + 19-20px 双向网格
-# (QPainter 直绘)+ 制图白 #dcecff
+# (QPainter 直绘)+ 制图白 #dcecff(圆角与图签字族均在 deco 内字面,
+# 见 SkinDef docstring #34/#71)
 _SKIN_BLUEPRINT = SkinDef(
     id="blueprint",
     menu_label="工程蓝图",
@@ -953,7 +1100,6 @@ _SKIN_BLUEPRINT = SkinDef(
              "soft": "rgba(220,236,255,204)", "half": "rgba(220,236,255,170)",
              "vstrong": "rgba(220,236,255,217)",
              "sep": "rgba(220,236,255,102)"},
-    radius={"card": 4, "h": 3, "v": 4},     # :243-247/:260/:269
     spark_line=_c(159, 216, 255), spark_dot=_c(220, 236, 255),
     pulse_idle=_c(220, 236, 255, 89), pulse_active=_c(159, 216, 255),
     pulse_core=_c(159, 216, 255, 230), ring_base=_c(220, 236, 255, 38),
@@ -962,7 +1108,6 @@ _SKIN_BLUEPRINT = SkinDef(
     contrast_bg={"card": "#0d3b66", "h": "#0d3b66", "v": "#0d3b66"},
     today_cost_sep=" ",
     font_mono_families=("Cascadia Code", "Consolas"),
-    font_decor="Consolas",                  # 图签 THROUGHPUT/FIG. 08-B(:543-544)
     deco=_deco_blueprint,
 )
 

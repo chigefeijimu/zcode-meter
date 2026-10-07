@@ -551,6 +551,25 @@ def main() -> int:
     check("皮肤:registry 九款齐全且键序==SKIN_IDS(T1 白名单同源)",
           tuple(m.skins.REGISTRY.keys()) == m.skins.SKIN_IDS
           and m.skins.SKIN_IDS[0] == "glass")
+    # ②' 跨文件镜像相等(#90,2026-10-06):SKIN_IDS 双侧字面(skins.py 与
+    #    data_engine.py 各一份)由本断言钉死 —— 单侧新增/删除/改序任一
+    #    漂移当场红。未来加第 10 款皮肤只改 skins 侧而漏 data_engine 的
+    #    场景(save_config→_norm_skin 判非法→skin 键整键省略→用户选择
+    #    每次重启静默回退 glass,零测试变红)此前无任何护栏。data_engine
+    #    已由本文件头 import(:20,CONFIG_PATH 消费方)拉入 —— 零新增
+    #    import;data 组(test_data_engine.py)不 import skins 以保其
+    #    『无 UI 依赖』头 —— 跨文件相等断言唯一落点在本文件。
+    check("皮肤:SKIN_IDS 双侧字面镜像相等(skins==data_engine,#90 护栏)",
+          tuple(m.skins.SKIN_IDS) == tuple(de.SKIN_IDS))
+    # ②'' sep 焊接恒等(#79,2026-10-06):palette["sep"] 与 SkinDef.sep 双
+    #     字段携带同值 —— palette 侧只渲染进全仓零匹配控件的 QFrame#sep
+    #     QSS selector,真实分隔线全走字段侧内联注入;分叉留着=改 palette
+    #     是无声 no-op(liquid 已分叉过:rgba(255,255,255,77) vs
+    #     transparent,2026-10-06 修齐)。模板 format 需要该键,故保留双
+    #     字段但由恒等断言锁死不再漂。
+    check("皮肤:九款 palette['sep']==SkinDef.sep 恒等(#79 焊接不漂)",
+          all(sk.palette["sep"] == sk.sep
+              for sk in m.skins.REGISTRY.values()))
     # ② 九皮肤 palette 守卫(F2 扩展):QSS 侧四档(soft/half/vstrong/sep)
     #   允许 rgba 字面 —— 前三档是 N2 半透明文字档,sep 是 QFrame#sep 的
     #   QSS 背景(T4 起为半透明,叠装饰底做细线);rgba 只活在 QSS、不进
@@ -566,10 +585,13 @@ def main() -> int:
               for sk in m.skins.REGISTRY.values()
               for k, v in sk.palette.items()
               if k in ("soft", "half", "vstrong")))
-    # sep 双形合法:glass 恒 hex(镜像 C_BORDER 逐位红线),八款新皮肤允许
-    # rgba 半透明(QSS 背景字面)—— 只验『QSS 可消费』,不强制哪一种
-    check("皮肤:九款 palette sep 均为 hex 或 rgba( 字面(QSS 可消费)",
-          all(str(v).startswith("rgba(") or QColor(v).isValid()
+    # sep 三形合法(#79 起):glass 恒 hex(镜像 C_BORDER 逐位红线),皮肤侧
+    # rgba 半透明与 transparent(liquid:全形态无分隔线,QSS 可消费的关键
+    # 字,与字段侧焊接同值 —— 见上方恒等断言)均允许 —— 只验『QSS 可
+    # 消费』,不强制哪一种
+    check("皮肤:九款 palette sep 均为 hex/rgba(/transparent(QSS 可消费)",
+          all(str(v).startswith("rgba(") or v == "transparent"
+              or QColor(v).isValid()
               for sk in m.skins.REGISTRY.values()
               for k, v in sk.palette.items() if k == "sep"))
     check("皮肤:glass palette 镜像 C_*(fg/dim/accent/warn/sep 防漂)",
@@ -585,15 +607,18 @@ def main() -> int:
           and m.skins.REGISTRY["glass"].pulse_active == QColor(m.C_ACCENT_DIM)
           and m.skins.REGISTRY["glass"].pulse_core == QColor(96, 205, 255, 230)
           and m.skins.REGISTRY["glass"].ring_base == QColor(255, 255, 255, 26))
-    # 骨架结构:九款 SkinDef 字段齐全,三键 radius/contrast_bg 形状恒定
-    check("皮肤:九款骨架字段齐全(radius/contrast_bg 三键+色字段)",
+    # 骨架结构:九款 SkinDef 字段齐全(2026-10-06 T3 治理收缩:radius/
+    # font_decor 两影子字段已删 —— 前者唯一实现是各 deco 内嵌 dict 字面,
+    # 后者真正生效处是 deco 内 families 字面,均无消费者只会无声漂移,
+    # 见 skins.py SkinDef docstring #34/#71;contrast_bg 形状恒定)
+    check("皮肤:九款骨架字段齐全(contrast_bg 三键+色字段,#34/#71 后骨架)",
           all(all(hasattr(sk, a) for a in
-                  ("id", "menu_label", "palette", "radius", "spark_line",
+                  ("id", "menu_label", "palette", "spark_line",
                    "spark_dot", "pulse_idle", "pulse_active", "pulse_core",
                    "ring_base", "sep", "sep_card", "sep_card_weak",
                    "contrast_bg", "today_cost_sep", "font_mono_families",
-                   "font_decor", "deco", "qss", "qss_bar"))
-              and all(k in sk.radius for k in ("card", "h", "v"))
+                   "deco", "qss", "qss_bar"))
+              and not hasattr(sk, "radius") and not hasattr(sk, "font_decor")
               and all(k in sk.contrast_bg for k in ("card", "h", "v"))
               for sk in m.skins.REGISTRY.values()))
     check("皮肤:九款绘制侧色字段均 QColor 实例(rgba 字面不进 painter)",
@@ -735,8 +760,11 @@ def main() -> int:
                       if a.text() == "皮肤").menu()
     _acts = _skin_menu.actions()
     _checked = [a for a in _acts if a.isChecked()]
-    check("皮肤子菜单:九项且勾态唯一(当前=swiss)",
-          len(_acts) == 9 and len(_checked) == 1
+    # 菜单项数对账 #90(len==len(SKIN_IDS),非字面 9):SKIN_IDS 是白名单
+    # 唯一事实源 —— 未来加/删款此处随对账自动跟随,不再需要同步改字面
+    check("皮肤子菜单:项数==len(SKIN_IDS) 且勾态唯一(当前=swiss)",
+          len(_acts) == len(m.skins.SKIN_IDS)
+          and len(_checked) == 1
           and _checked[0].text() == m.skins.REGISTRY["swiss"].menu_label,
           f"{len(_acts)}项 勾={[a.text() for a in _checked]}")
     _crt_act = next(a for a in _acts
@@ -787,6 +815,56 @@ def main() -> int:
               str(sorted(_captured[-1])))
     finally:
         m.save_config = _orig_save
+
+    # ⑥'#26 设置窗两连写 merge 永久护栏(2026-10-06 T3b 落):设置保存
+    #    的真实链路是两次写 —— SettingsDialog._on_save 落盘一次(解析四键
+    #    cfg)→ accepted 后 _apply_config(result_config()) 热生效再写一次。
+    #    #26 修复前首写只带四键(bar_segments/skin 从磁盘消失),首写成功
+    #    二写失败即产生『新 key+丢段开关/皮肤』分裂盘面;修复后 _on_save
+    #    落盘前从 load_config() 现读补挂两键。本断言 monkeypatch save_config
+    #    捕参 + monkeypatch SettingsDialog._parse_input(合法四键直出,免驱
+    #    动输入控件),走产品两连写路径,断言两次写均含补挂键。
+    _saved_cfg = {"quota_api_key": "", "daily_budget_cny": None,
+                  "alert_pct": [20.0, 10.0],
+                  "bar_segments": {"h": ["today"], "v": ["today"]},
+                  "skin": "crt"}       # 磁盘现值:关了段的 crt(非 glass)
+    _m26 = []
+    _orig_save26 = m.save_config
+    _orig_load26 = m.load_config
+    _orig_parse26 = m.SettingsDialog._parse_input
+
+    def _save26(c, path=None):
+        _m26.append(dict(c))
+        return True                      # 落盘恒成功(守卫外,ZM_NO_STATE 拦真实盘)
+
+    m.save_config = _save26
+    m.load_config = lambda: dict(_saved_cfg)
+    m.SettingsDialog._parse_input = lambda self: dict(
+        {"quota_api_key": "", "daily_budget_cny": 5.0,
+         "alert_pct": [30.0, 15.0]})     # 用户在设置窗只改的三个键(四键形状;
+                                         #   key 仍空=①分支不动 monitor,零副作用)
+    try:
+        dlg = m.SettingsDialog(m.load_config(), win)
+        dlg._on_save()                   # → 首写(merge 后落盘)+ accepted
+        _wrote = [_c for _c in _m26 if "quota_api_key" in _c]
+        win._apply_config(dlg.result_config())   # → 二写(热生效路径)
+        # 首写=设置窗从磁盘现读补挂(==磁盘现值);二写=_apply_config 从
+        # 内存态补挂(==win.bar_segments/skin_id,既有 ⑥ 组断言同款口径)
+        # —— #26 护栏的核心是【两次写均携带补挂键】,首写丢键即首写
+        # 成功二写失败时的分裂盘面路径
+        check("_apply_config 两连写 merge:首写与二写均含 bar_segments/skin(#26)",
+              len(_wrote) >= 1
+              and _wrote[0].get("bar_segments") == _saved_cfg["bar_segments"]
+              and _wrote[0].get("skin") == "crt"
+              and _m26[-1].get("bar_segments") == win.bar_segments
+              and _m26[-1].get("skin") == win.skin_id
+              and "quota_refresh" not in _wrote[0],   # 解析产物原样透传(未选档省键)
+              f"首写={sorted(_wrote[0]) if _wrote else None} "
+              f"二写={sorted(_m26[-1])}")
+    finally:
+        m.save_config = _orig_save26
+        m.load_config = _orig_load26
+        m.SettingsDialog._parse_input = _orig_parse26
     win.dock = None
     win._apply_skin("glass", persist=False)   # 离场复位:玻璃+卡形态(防钳宽路径)
     check("皮肤复位:回 glass 且卡形态 qss 与玻璃逐位(可逆入口)",
@@ -875,7 +953,11 @@ def main() -> int:
     _T5_FIELD = ("dim", "soft", "half", "vstrong")   # 字段文本 ≥4.5
     _T5_BIG = ("fg", "accent")                        # 主数字/hero 大字 ≥3.0
     _T5_MICRO = ("faint",)                            # 微标签/帽标档 ≥3.0
-    for _sid in m.skins.SKIN_IDS:
+    # liquid 豁免(用户 2026-10-06 复看裁决):#70 的暗玻璃底衬被否决
+    # 『好丑,破坏通透感』—— 真背景透出的皮肤,文字对比度随桌面背景
+    # 不可控,任何固定申报都是失真;该款不参与 WCAG 闸,registry #70
+    # 改判 maintained(视觉优先)。其余八款照常执法。
+    for _sid in [s for s in m.skins.SKIN_IDS if s != "liquid"]:
         _sk = m.skins.REGISTRY[_sid]
         _wf, _rf, _ff = _t5_worst(_sk, _T5_FIELD)
         _wb, _rb, _fb = _t5_worst(_sk, _T5_BIG)

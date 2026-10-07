@@ -1,7 +1,7 @@
 """zcode-meter 数据层:日志 tail + SQLite 轮询 + 流式估算(UI 无关,tk/Qt 共用)。
 
 v0.4.0 起另含:价格表/金额估算、多用量源(Claude 只读解析)、quota 刷新线程、
-预算告警状态机、5h 计费块聚合 —— 但 QuotaMonitor 只由 zcode_meter_qt.
+预算告警状态机、5h 计费块聚合 —— 但 QuotaMonitor 只由 app.
 MeterWindow 实例化(见各类 docstring 的启动位置钉死说明)。
 v0.5.1 起 quota 由 300s 盲轮询改为事件驱动+节流(见 quota_fetch_decision)。
 用量源已迁 sources/ 包(Provider 配置化):UsageSource/ZCodeSource/ClaudeSource
@@ -11,8 +11,6 @@ v0.5.1 起 quota 由 300s 盲轮询改为事件驱动+节流(见 quota_fetch_dec
 from __future__ import annotations
 
 import calendar
-import ctypes
-import ctypes.wintypes as wt
 import datetime as dt
 import faulthandler
 import json
@@ -24,19 +22,28 @@ import sys
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # ---- 用量源包(sources/,Provider 配置化)----
 # UsageSource/ZCodeSource/ClaudeSource 与 ZCODE_DIR/DB_PATH/connect_ro/today0_ms
 # 的唯一定义都在 sources/(base.py/zcode.py/claude.py);此处模块级 re-import 是
 # 兼容契约:tests 与外部脚本沿用 from zcode_meter.data_engine import DB_PATH /
 # de.today0_ms() 等全部旧导入路径,一个都不能断(test_package 的 hasattr 同理)。
+# 单点 patch 契约(#41/#62):本 re-export 是名字绑定而非别名 ——
+# - DB_PATH 是 import 时刻的值拷贝:对 de.DB_PATH 赋值/monkeypatch 静默无效
+#   (connect_ro 读的是 zsrc 命名空间自己的模块全局),测试必须 patch
+#   zcode_meter.sources.zcode.DB_PATH 这唯一定义点;
+# - connect_ro/today0_ms 是函数对象共享:rebind zsrc.connect_ro 能影响引擎调用
+#   (引擎经本模块名字解析),但打 de.connect_ro 不影响 ZCodeSource 内部调用;
+#   反之 de.today0_ms 打假时钟也不影响 ZCodeSource.today_usage(zsrc 侧仍用
+#   真实天界)。既有的既有测试先例 = 双 patch(zsrc.DB_PATH + de.DB_PATH)。
 # sources 包内严禁反向 import data_engine —— 循环导入会让本模块加载成两个
 # 实例、QuotaMonitor 与缓存身份分裂(v0.6.0 双路径 import 红线)。
 from .sources import (UsageSource, ZCodeSource,  # noqa: F401  纯 re-export
                       ClaudeSource, discover_sources)
 from .sources.zcode import (ZCODE_DIR, DB_PATH,  # noqa: F401  DB_PATH 为纯 re-export
-                            connect_ro, today0_ms)
+                            connect_ro, today0_ms,
+                            MAX_SCAN_ROWS)       # noqa: F401  #22 起唯一定义在源包
 
 
 def app_dir() -> str:
@@ -84,16 +91,13 @@ def dbg(msg: str):
             f.write(f"{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} {msg}\n")
 
 
-# 历史聚合防御上限:历史图表四查询(fetch_daily_usage / fetch_daily_usage_cost /
-# fetch_billing_blocks / fetch_session_usage)只统计最近 MAX_SCAN_ROWS 行
-# (rowid 下限),防库无限增长后聚合查询随历史线性变慢。实测库约 3.95 万
-# completed 行/31 天、日增约 1.3k,100k ≈ 当前 78 天用量,对现有数据零影响;
-# 今日轮询(_poll_stats / ZCodeSource.today_usage / Claude 扫描)刻意不设此闸
-# (今日口径是命根子,不做任何窗口裁剪)。超出上限的更早记录不计入历史图表,
-# 属预期行为而非『图表变小』bug(README 口径表已加注)。四函数在调用时读本
-# 常量并以 SQL 占位符参数传入(禁字符串内插),单测 monkeypatch 本常量即可
-# 调整窗口 —— 参数绑定是可 patch 性的证据。
-MAX_SCAN_ROWS = 100_000
+# 历史聚合防御上限 MAX_SCAN_ROWS:唯一定义已随 #22 下沉 sources/zcode.py
+# (ZCodeSource.daily_usage 镜像 fetch_daily_usage 的 rowid floor 需要它,
+# 而 sources 包严禁反向 import data_engine —— 单源定义只能放在源包侧),
+# 此处经顶部 re-import 保住旧导入路径(from zcode_meter.data_engine
+# import MAX_SCAN_ROWS / de.MAX_SCAN_ROWS patch 均照旧生效,值拷贝语义
+# 同 DB_PATH:patch 必须打消费方所在命名空间)。常量语义与取值依据的
+# 完整注释见 sources/zcode.py。
 
 
 # ---------------------------------------------------- 配置/价格/守卫(v0.4.0) ---
@@ -131,7 +135,7 @@ ALERTS_PATH = os.path.join(app_dir(), "zm_alerts.json")
 
 
 def _no_persist() -> bool:
-    """数据层自备的状态守卫:与 zcode_meter_qt._state_guard 同语义,但刻意
+    """数据层自备的状态守卫:与 app._state_guard 同语义,但刻意
     不 import UI 模块(反向依赖会让数据层测试拖起整个 Qt)。为真时:
     QuotaMonitor 不启动、zm_alerts.json 不写 —— 回归测试(--verify 自检或
     ZM_NO_STATE=1 注入)绝不发真实网络请求、绝不出测试污染文件。"""
@@ -165,7 +169,12 @@ def _norm_quota_refresh(v):
 # 皮肤白名单(9 款):glass=缺省(现玻璃仪表),其余 8 款视觉见
 # design/skins-8x3.html 定稿。数据层只管配置键的合法性白名单;渲染与未实现
 # id 的回退在 UI 层(skins.py registry 缺项回退玻璃)—— 白名单先行钉死
-# 全部 9 个 id,手改文件指向尚未实现的皮肤也不在配置层报错
+# 全部 9 个 id,手改文件指向尚未实现的皮肤也不在配置层报错。
+# 注意(#90):与 skins.SKIN_IDS 是双侧字面镜像,由 test_stress 的相等断言
+# 钉死(任一侧单改即测试变红)。刻意不做单源 import:数据层 UI 无关不变式
+# (本模块头注释、_no_persist 刻意不 import UI 模块、run_all data 组无 UI、
+# test_data_engine 头部『无 UI 依赖』)优先 —— skins 属 UI 模块(模块级
+# import PySide6),data_engine import 它会拖起整个 Qt。
 SKIN_IDS = ("glass", "swiss", "crt", "chalk", "liquid",
             "industrial", "newspaper", "vaporwave", "blueprint")
 
@@ -187,11 +196,13 @@ def load_config() -> dict:
     "glass",见 _norm_skin)。
     缺文件/坏 JSON/字段类型不对一律回退默认,不抛错。任何日志与调试路径
     都不得打印 key 明文(泄漏面专查项)。"""
-    # skin 放默认 dict 而非仅函数末尾:缺文件/坏 JSON 的早退路径返回的也是
-    # 这份 dict —— 恒含 "glass" 才算『消费方免 .get 兜底』,否则早退路径
-    # 仍是无 skin 键形状,恒含就是半截承诺
+    # skin/bar_segments 放默认 dict 而非仅函数末尾:缺文件/坏 JSON/非 dict
+    # 三条早退路径返回的也是这份 dict —— 恒含这两个键才算『消费方免 .get
+    # 兜底』,否则早退路径仍是无键形状,恒含就是半截承诺(skin 先修过同款
+    # 缺口,bar_segments 曾漏:registry#9)
     cfg = {"quota_api_key": "", "daily_budget_cny": None, "alert_pct": [20.0, 10.0],
-           "skin": "glass"}
+           "skin": "glass",
+           "bar_segments": _norm_bar_segments(None)}
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             obj = json.load(f)
@@ -711,7 +722,7 @@ class QuotaMonitor(threading.Thread):
     下原子,run() 每 tick 现读,最坏 1s 后生效;不重启线程,重启反而丢
     _last_fetch_ts 频率记账、换档立即重查一次白耗请求。
 
-    启动位置钉死(评审必改#1):类定义在本模块,但只由 zcode_meter_qt 的
+    启动位置钉死(评审必改#1):类定义在本模块,但只由 app 的
     MeterWindow 实例化与启动;DataEngine.__init__/run() 及一切测试路径永不
     触碰 —— 否则源码目录放着带 key 的 zm_config.json 时,回归测试会发真实
     网络请求。解析失败首跑把响应体片段(不含 key)截断落 zm_debug.log 便于
@@ -859,8 +870,10 @@ class Snapshot:
                                         # 燃速 0 → None(活跃不足 60min 会低估)
     today_by_source: list = None        # [(源名, 今日token)] 聚合展示;今日用量
                                         # 本体 today_tokens 仍钉死 ZCode-DB-only
-    plan_remaining_pct: float | None = None  # quota 轨 5h 窗剩余%,由 UI 线程
-                                             # 从 QuotaMonitor 回填(引擎不触碰)
+    plan_remaining_pct: float | None = None  # deprecated(#75):引擎不写不读,
+                                             # 仅构造兼容保留(套餐%渲染全走
+                                             # UI 侧 _plan_pct;字段删除会破坏
+                                             # 既有构造传参,预置裁决=保留)
     last_ttft: float | None = None      # 最近完成请求的首字等待(s)
     last_duration: float | None = None  # 最近完成请求的整体耗时(s)
     session_in: int = 0                 # 总输入(input_tokens 已含缓存命中,勿再加 cache)
@@ -912,13 +925,23 @@ class DataEngine(threading.Thread):
     # 刷新而已);不设 watchdog 的代价是修复前的永久卡死。
     GEN_WATCHDOG_S = 2 * 3600.0
 
-    def __init__(self, out: "queue.Queue[Snapshot]"):
+    def __init__(self, out: "queue.Queue[Snapshot]", boot_queries: bool = True):
+        """boot_queries(#84):False 时跳过构造期的 _latest_session/
+        _max_usage_rowid/_max_completed_rowid 三查询与 DB 缺失回退的
+        ROLL_DIR 全目录扫描 —— 三值的消费者全在引擎线程,CLI 这类一次性
+        只读查询方(fetch_*)白付这笔冷启开销(实测 init 连接 3 次,
+        DB 缺失时 _latest_session 兜底再扫全 rollout 目录)。跳过后由
+        run() 序幕的 _ensure_boot_state 补齐,GUI(默认 True)行为不变;
+        三值缺省 ""/0/0(水位=0 会把存量行当『新完成』,故 boot_queries=
+        False 的引擎必须走 run() 或手动 _ensure_boot_state 后才进轮询语义,
+        CLI 不 start 即不受影响)。"""
         super().__init__(daemon=True)
         self.out = out
         self.stop_flag = threading.Event()
         self.snap_lock = threading.RLock()         # 可重入:保护 snap 读写一致(多线程)
         self.manual_session: str | None = None     # 手动固定统计会话;None=自动跟随
-        self.session_id = self._latest_session()
+        self._boot_state_ready = boot_queries      # _ensure_boot_state 幂等闸
+        self.session_id = (self._latest_session() if boot_queries else "")
         self.snap = Snapshot()
         self._running = False
         self._gen_start = 0.0
@@ -990,20 +1013,37 @@ class DataEngine(threading.Thread):
         # 每拍重建,但 ZCode 分量取缓存、非 DB 分量(Claude)现调 —— 故
         # 刻意不把非 DB 分量装进缓存(装了也永不被读,白付一次调用)。
         self._src_today_cache: dict = {}
+        # ---- #17 源守卫:per-source 异常『每源仅首记』的 dbg 节流集(镜像
+        # QuotaMonitor._logged_parse_fail 的纪律)。第三方源的任意异常
+        # (NotImplementedError/AttributeError…)不得杀 _db_loop,也不得每秒
+        # 刷屏 zm_debug.log —— 集合元素 = 源名,首失败记一条,后续静默跳过。
+        # 不持久化、不清理:源恢复正常后残留的名字只影响『下次再失败时少
+        # 记一条 dbg』,无正确性后果。
+        self._src_guard_logged: set = set()
+        # ---- #87 手动切换延迟化:UI 线程(engine.is_alive() 时)只投递意图,
+        # 引擎 _db_tick 头部消费并执行 _switch_session(SQL 批留在引擎线程,
+        # UI 线程不再跑百毫秒级会话聚合)。值 = (kind, sid):kind ∈
+        # {"switch"(指定会话), "switch_auto"(清固定并对齐最新会话)};每次
+        # UI 调用整体覆盖(最新操作胜),None=无待处理。
+        self._pending_manual: "tuple | None" = None
         # 变化即 push 的『易变字段』指纹(上拍值);None=尚无基线。
         self._push_fp: "tuple | None" = None
-        self._prev_max_rowid = self._max_usage_rowid()
+        self._prev_max_rowid = (self._max_usage_rowid() if boot_queries else 0)
         # ---- v0.5.1:quota 活动信号。水位 = completed 行最大 rowid(全
         # 会话全 query_source,含 subagent —— 与今日用量同宽,子代理消耗
         # 同样算『有消耗』,刻意设计);构造时对齐现值,存量行不触发。
         # on_activity 由 UI 接到 QuotaMonitor.notify_activity;未接线(一切
         # 测试路径)时 _check_activity 对 None 短路,行为与旧版逐位一致 ----
         self.on_activity = None
-        self._act_rowid = self._max_completed_rowid()
+        self._act_rowid = (self._max_completed_rowid() if boot_queries else 0)
         # ---- v0.4.0:金额/燃速/多源。全部本地只读,不触网络不落盘,
         # QuotaMonitor 仍只由 MeterWindow 实例化(启动位置钉死,评审#1) ----
         cfg = load_config()
         self.prices = load_prices()
+        # #48 价格表热刷新的闸门指纹(与 db/wal 同族,见 _db_tick):签名变了
+        # → 重载 prices 并强制开闸一拍(今日金额/燃速¥随 db 冻结,不重开闸
+        # 新价要等下次 db 变化才生效)。构造期先立基线,首拍不多一次重载。
+        self._gate_prices_sig: "tuple | None" = self._stat_sig(PRICES_PATH, None)
         self.daily_budget_cny = cfg["daily_budget_cny"]
         # discover_sources() 自动发现 sources/ 包内源并按 order 排序(现 =
         # ZCode(0)、Claude(10)),与迁移前硬编码 [ZCodeSource(), ClaudeSource()]
@@ -1025,12 +1065,14 @@ class DataEngine(threading.Thread):
         会把统计劫持到子代理头上。"""
         try:
             con = self._connect()
-            (sid,) = con.execute(
-                "SELECT session_id FROM part"
-                " WHERE session_id NOT LIKE 'sess_subagent%'"
-                "   AND session_id NOT LIKE 'sess_dwf-%'"
-                " ORDER BY rowid DESC LIMIT 1").fetchone()
-            con.close()
+            try:
+                (sid,) = con.execute(
+                    "SELECT session_id FROM part"
+                    " WHERE session_id NOT LIKE 'sess_subagent%'"
+                    "   AND session_id NOT LIKE 'sess_dwf-%'"
+                    " ORDER BY rowid DESC LIMIT 1").fetchone()
+            finally:
+                con.close()     # 先查后关:execute 抛错也关(连接生命周期纪律)
             return sid or ""
         except (sqlite3.Error, TypeError):
             # 兜底:part 不可用时退回 rollout mtime。兜底必须沿用主路径的
@@ -1061,8 +1103,11 @@ class DataEngine(threading.Thread):
     def _max_usage_rowid(self) -> int:
         try:
             con = self._connect()
-            (n,) = con.execute("SELECT COALESCE(MAX(rowid),0) FROM model_usage").fetchone()
-            con.close()
+            try:
+                (n,) = con.execute(
+                    "SELECT COALESCE(MAX(rowid),0) FROM model_usage").fetchone()
+            finally:
+                con.close()
             return n
         except sqlite3.Error:
             return 0
@@ -1073,10 +1118,12 @@ class DataEngine(threading.Thread):
         实测 ~0.004ms,_db_loop 每秒一查可忽略。"""
         try:
             con = self._connect()
-            (n,) = con.execute(
-                "SELECT COALESCE(MAX(rowid),0) FROM model_usage"
-                " WHERE status='completed'").fetchone()
-            con.close()
+            try:
+                (n,) = con.execute(
+                    "SELECT COALESCE(MAX(rowid),0) FROM model_usage"
+                    " WHERE status='completed'").fetchone()
+            finally:
+                con.close()
             return n
         except sqlite3.Error:
             return 0
@@ -1099,6 +1146,19 @@ class DataEngine(threading.Thread):
         except Exception:
             pass
 
+    def _ensure_boot_state(self):
+        """boot_queries=False 时补齐构造期跳过的三个查询(#84):session_id/
+        _prev_max_rowid/_act_rowid 的消费者全在引擎线程,run() 序幕(进入
+        主循环、起子线程之前)调用本方法,保证轮询语义与缺省构造完全一致;
+        幂等 —— boot_queries=True(缺省,GUI 路径)或已补齐时零查询直接返回。
+        刻意不放进 __init__:那正是 CLI 要跳过的开销点。"""
+        if self._boot_state_ready:
+            return
+        self._boot_state_ready = True
+        self.session_id = self._latest_session()
+        self._prev_max_rowid = self._max_usage_rowid()
+        self._act_rowid = self._max_completed_rowid()
+
     # ---- 日志 tail ----
     def _tail_loop(self):
         path = self._log_path()
@@ -1119,6 +1179,19 @@ class DataEngine(threading.Thread):
                 line = f.readline()
                 if not line:
                     time.sleep(0.25); continue
+                # 残行防线(#86,镜像 claude._read_new_rows 的『未终止残行不
+                # 越过』纪律):写者按块缓冲冲刷,一次 flush 边界可能落在行
+                # 中间,readline() 在 EOF 返回无 \n 的半行 —— 若按完整行消费
+                # (pos=f.tell() 无条件越过它),该行 JSONDecodeError 静默丢弃、
+                # 补全的后半段也独立解析失败,一条生命周期事件被永久拆丢
+                # (丢 completed/failed 时 _running 卡 True,只能等下一请求或
+                # 2h watchdog)。seek 回本行起点不消费,下一轮从同一起点重读,
+                # 写者补全后自然按完整行计入。0.05s 短睡:残行通常在 ms 级
+                # 补全,又要防写者长期滞留时的紧密轮询(20 次/s 上限)。
+                if not line.endswith("\n"):
+                    f.seek(pos)
+                    time.sleep(0.05)
+                    continue
                 pos = f.tell()
                 self._handle_log_line(line)
             except OSError:
@@ -1131,7 +1204,22 @@ class DataEngine(threading.Thread):
     def _handle_log_line(self, line: str):
         try:
             obj = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
+            # 完整行解析失败:残行防线(#86)保证到这里的一定是 \n 终止的
+            # 完整行,失败即真坏行 —— 静默丢弃前留一条 dbg(近 7 天 31 万+
+            # 真实行零触发,出现即结构异常的第一现场线索;不每行计数防刷屏)
+            # RecursionError(#93 同族,2026-10-07):深嵌套行(如 '['*10 万)
+            # 在 json.loads 内栈溢出,非 JSONDecodeError 子类 —— 外层
+            # _tail_loop 唯一兜底只捕 OSError,曾让整条 tail 线程死掉:
+            # generating 状态机/tps_est/失败家族复位全停摆,死时 _running
+            # 卡 True 只能等 2h watchdog 收场。claude._parse_line 已修同款,
+            # 本文件这个同族 json.loads 站点补齐。毒行按坏行同款丢弃。
+            dbg("tail line: JSONDecodeError dropped (complete line)")
+            return
+        # #10:合法 JSON 但非对象(数组/数字/字符串)曾会 AttributeError 打死
+        # _tail_loop(外层只捕 OSError)—— 生命周期事件必须是 JSON 对象,
+        # 非对象行静默丢弃,generating 状态机不因一行怪日志陪葬。
+        if not isinstance(obj, dict):
             return
         ev = obj.get("event", "")
         # 白名单 = 驱动 generating 状态机的生命周期事件。失败家族
@@ -1205,13 +1293,14 @@ class DataEngine(threading.Thread):
             return prev
 
     def _db_tick(self, woken: bool):
-        """_db_loop 单轮:闸门判定 → SQL 段/尾段 → 变化即 push。
+        """_db_loop 单轮:手动切换消费(#87)→ 闸门判定 → SQL 段/尾段 →
+        变化即 push(#76:含关门拍)。
 
         闸门管辖段(B4' 清单,db 未变 ⇒ 全部可跳过且无损)= 本 tick 内经
         _connect 发出的全部 ZCode DB SQL:_poll_stats 闸门段(会话 sums/
         speed 分组/rlast/today/cost/burn + _refresh_completed_rows 换行 +
-        _global_part_tps 水位走读/定点探针)+ ZCodeSource.today_usage 分量
-        (经 _src_today_cache 刷新)+ _check_activity(_max_completed_rowid
+        _global_part_tps 水位走读/定点探针)+ ZCode 源今日分量(#20 起随
+        today SQL 值双用,不再现调源)+ _check_activity(_max_completed_rowid
         水位:db 未变 ⇔ 水位必不变,quota 活动信号无损)+ _poll_new_
         completed(db 未变 ⇔ _prev_max_rowid 基线必不变)。
         尾段(_poll_stats 闸门段之后)每 tick 照跑:today_by_source 非 DB
@@ -1223,8 +1312,24 @@ class DataEngine(threading.Thread):
         note4:_switch_session/_refresh_session/_on_request_done/图表 fetch_*
         等事件路径全量执行不受闸门管辖(它们直调 _poll_stats(),缺省开闸;
         _refresh_session→_latest_session 每 0.5s 一条既存查询同样豁免)。"""
+        # #87 手动切换延迟化:UI 线程 set/clear_manual_session 在引擎活着时
+        # 只投递 _pending_manual + _wake.set()(投递在 snap_lock 内,零 SQL,
+        # 微秒级);这里在 snap_lock 内消费并执行真正的 _switch_session
+        # (含 _poll_stats 全量 SQL 批)。锁与切换语义同旧同步路径逐字。
+        # 守卫在锁外:无 pending 的空闲拍零持锁(N6 空闲 0-SQL/0 持锁的组成;
+        # 单引用读 GIL 原子,投递方还会 _wake.set() 兜底下一拍必达)。
+        if self._pending_manual is not None:
+            with self.snap_lock:
+                pend = self._pending_manual
+                if pend is not None:
+                    self._pending_manual = None   # 先清后执行:期间的再投递不丢
+                    kind, sid = pend
+                    if kind == "switch_auto":     # 清固定:最新会话在引擎线程解析
+                        sid = self._latest_session() or self.session_id
+                    self._switch_session(sid)
         db_sig = self._stat_sig(DB_PATH, self._gate_db_sig)
         wal_sig = self._stat_sig(DB_PATH + "-wal", self._gate_wal_sig)
+        prices_sig = self._stat_sig(PRICES_PATH, self._gate_prices_sig)
         today0 = today0_ms()
         # 两文件均未变才关门;-shm 不进闸门(读者也会更新它,纯假阳性)。
         # B1' 时间闸:today0_ms() 较上次开闸拍变化(跨午夜)→ 强制视为开闸
@@ -1232,10 +1337,17 @@ class DataEngine(threading.Thread):
         # 随本地天界变』的必须重算,午夜清零口径才保得住;顺带修复现状
         # 『空闲期跨午夜 UI 今日数不刷新』的潜伏缺口(重算后易变字段有变
         # 即触发下方 push)。
+        # #48 价格闸:zm_prices.json 签名变了 → 重载 prices 且强制开闸一拍
+        # (today_cost/burn_cny 是 prices 的派生值,db 冻结时也要随新价重算,
+        # 否则手改价格表要等下次 db 变化才生效 —— 与 daily_budget 的热生效
+        # 对齐)。
+        if prices_sig != self._gate_prices_sig:
+            self.prices = load_prices()
         gate_open = (not self._gate_ready
                      or db_sig != self._gate_db_sig
                      or wal_sig != self._gate_wal_sig
-                     or today0 != self._gate_today0)
+                     or today0 != self._gate_today0
+                     or prices_sig != self._gate_prices_sig)
         self._poll_stats(gate_open=gate_open)
         if gate_open:
             self._check_activity()      # v0.5.1:水位前进 → quota 活动信号
@@ -1247,14 +1359,20 @@ class DataEngine(threading.Thread):
             self._gate_ready = True
             self._gate_db_sig, self._gate_wal_sig = db_sig, wal_sig
             self._gate_today0 = today0
-        # 变化即 push:事件唤醒轮(watcher 刚报 Claude jsonl 有变,数字应
-        # 尽快落地)直接 push;开闸/时间闸轮易变字段较上拍有变才 push,
-        # 值未变不 push;关门轮永不 push —— 空闲期 UI 显示旧值本就是现状
-        # 语义(空闲期无 push),与 B1' 燃速冻结容忍同一家族。
+            self._gate_prices_sig = prices_sig
+        # 变化即 push(#76 修订):事件唤醒轮(watcher 刚报 Claude jsonl
+        # 有变)直接 push;其余轮次易变字段指纹较【上次真实 push 的基线】
+        # 有变才 push —— 注意 _push_fp 仅在真实 push 后推进。旧语义『关门轮
+        # 永不 push』会把关门拍尾段专门重算的 global_tps 衰减(其 docstring
+        # 自述『衰减照推不冻结』)永不送达 UI:独立仿真证明衰减 100→0 全程
+        # push=0 次,UI 速度数字永久冻结在旧值(依赖 _push 推活引用的越权
+        # 读取才偶然可见;#28 改推拷贝后彻底不可见)。新语义:衰减值有变
+        # → push(每拍衰减期推送,衰减归稳后 fp 稳定自然停推),空闲稳态
+        # 仍是 0 push。
         fp = self._volatile_fp()
-        if woken or (gate_open and fp != self._push_fp):
+        if woken or fp != self._push_fp:
             self._push()
-        self._push_fp = fp
+            self._push_fp = fp
 
     def _poll_stats(self, gate_open: bool = True):
         """今日统计一轮(T4 拆两段,闸门只管 ZCode DB SQL 段)。
@@ -1266,82 +1384,86 @@ class DataEngine(threading.Thread):
         跳过 ZCode SQL 段,snap 的 ZCode 派生字段保持上次开闸值(燃速滑窗
         冻结容忍+活动自愈,B1')。尾段每 tick 照跑(_poll_stats_tail)。
         异常语义与拆分前一致:sqlite3.Error 一律吞掉不穿透。"""
-        part_tps = 0.0
+        part_tps, part_by_sid = 0.0, {}
         if gate_open:
-            part_tps = self._poll_stats_gated()
-        self._poll_stats_tail(part_tps)
+            part_tps, part_by_sid = self._poll_stats_gated()
+        self._poll_stats_tail(part_tps, part_by_sid)
 
-    def _poll_stats_gated(self) -> float:
+    def _poll_stats_gated(self):
         """闸门管辖段:本 tick 内全部 ZCode DB SQL(拆分前的整段原样移入,
-        SQL 一字未动),持 snap_lock 与会话切换互斥。返回 part 流式贡献供
-        尾段求和;sqlite3.Error → 吞掉返回 0.0(拆分前同吞法,part 贡献
-        该拍作 0.0)。"""
+        SQL 一字未动),持 snap_lock 与会话切换互斥。返回 (part 流式总贡献,
+        per-session 本拍贡献 dict):后者供尾段做 #12 完成拍同拍去重(完成
+        瞬间 part 增长与 completed 重叠对同一批输出双计 ≈2×,按会话扣减)
+        —— dict 与总量同源同一差分循环产出,零额外查询。sqlite3.Error →
+        吞掉返回 (0.0, {})(拆分前同吞法,part 贡献该拍作 0.0)。"""
         try:
             with self.snap_lock:                    # 与会话切换互斥,防半更新快照
                 con = self._connect()
-                sums = con.execute(
-                    "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(cache_read_input_tokens),0),"
-                    " COALESCE(SUM(output_tokens),0)"
-                    " FROM model_usage WHERE status='completed' AND session_id=?"
-                    " AND query_source='main_turn'",
-                    (self.session_id,)).fetchone()
-                # 按 提供商+模型 分组的均速(Σ输出token ÷ Σ净生成时长),按总用量降序
-                speed_rows = con.execute(
-                    "SELECT provider_id, model_id, SUM(output_tokens),"
-                    " COALESCE(SUM(MAX(duration_ms - COALESCE(time_to_first_token_ms,0), 1)),0),"
-                    " COALESCE(SUM(input_tokens),0)"
-                    " FROM model_usage WHERE status='completed' AND session_id=?"
-                    " AND query_source='main_turn' AND duration_ms IS NOT NULL"
-                    " GROUP BY provider_id, model_id"
-                    " ORDER BY SUM(input_tokens)+SUM(output_tokens) DESC",
-                    (self.session_id,)).fetchall()
-                speed_by_model = [
-                    (p, m, (o / (d / 1000)) if o and d else None, o)
-                    for p, m, o, d, _i in speed_rows]
-                # 瞬时燃速 = 最近一次完成请求的吞吐(单请求 in+out/净生成),
-                # 体现"此刻"消耗;预算告警仍用 60min 窗口值(告警不该被抖动触发)
-                rlast = con.execute(
-                    "SELECT COALESCE(input_tokens,0)+COALESCE(output_tokens,0),"
-                    " COALESCE(duration_ms,0) - COALESCE(time_to_first_token_ms,0)"
-                    " FROM model_usage WHERE status='completed' AND session_id=?"
-                    " AND query_source='main_turn' AND duration_ms IS NOT NULL"
-                    " ORDER BY rowid DESC LIMIT 1", (self.session_id,)).fetchone()
-                if rlast and rlast[0] and rlast[1] > 0:
-                    self.snap.burn_instant_per_hour = rlast[0] / (rlast[1] / 3_600_000)
-                else:
-                    self.snap.burn_instant_per_hour = None
-                # 会话平均燃速 = Σ(in+out)/Σ净生成时长(实时燃速的 in+out
-                # 口径 × tps_avg 的会话时长口径 —— 两个既有口径的自然组合)
-                tot_tok = sum((r[4] or 0) + (r[2] or 0) for r in speed_rows)
-                tot_gen_ms = sum(r[3] or 0 for r in speed_rows)
-                self.snap.burn_avg_tokens_per_hour = (
-                    tot_tok / (tot_gen_ms / 3_600_000)) if tot_gen_ms else None
-                today0 = today0_ms()
-                # 今日用量=全部真实消耗(main_turn+subagent 等所有来源),
-                # 与 ZCode 自身统计口径一致;cancelled 请求 token 为 0 无影响
-                (today,) = con.execute(
-                    "SELECT COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
-                    " FROM model_usage WHERE status='completed' AND started_at>=?",
-                    (today0,)).fetchone()
-                # ---- v0.4.0 追加 SQL(上方三条原样不动):金额按 提供商+模型
-                # 分组计价(与 today_tokens 完全同 WHERE 同天界);燃速取
-                # trailing 60 分钟窗口(同 WHERE)。金额口径钉死 ZCode-DB-only:
-                # Claude 等其他源只进 today_by_source,绝不进金额与燃速
-                # (DEFAULT_PRICES 无 Claude 模型,计入会永久点亮 ≈)。----
-                cost_rows = con.execute(
-                    "SELECT provider_id, model_id, SUM(input_tokens),"
-                    " SUM(cache_read_input_tokens), SUM(output_tokens)"
-                    " FROM model_usage WHERE status='completed' AND started_at>=?"
-                    " GROUP BY provider_id, model_id",
-                    (today0,)).fetchall()
-                win0 = int(time.time() * 1000) - 3_600_000
-                burn_rows = con.execute(
-                    "SELECT provider_id, model_id, SUM(input_tokens),"
-                    " SUM(cache_read_input_tokens), SUM(output_tokens)"
-                    " FROM model_usage WHERE status='completed' AND started_at>=?"
-                    " GROUP BY provider_id, model_id",
-                    (win0,)).fetchall()
-                con.close()
+                try:
+                    sums = con.execute(
+                        "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(cache_read_input_tokens),0),"
+                        " COALESCE(SUM(output_tokens),0)"
+                        " FROM model_usage WHERE status='completed' AND session_id=?"
+                        " AND query_source='main_turn'",
+                        (self.session_id,)).fetchone()
+                    # 按 提供商+模型 分组的均速(Σ输出token ÷ Σ净生成时长),按总用量降序
+                    speed_rows = con.execute(
+                        "SELECT provider_id, model_id, SUM(output_tokens),"
+                        " COALESCE(SUM(MAX(duration_ms - COALESCE(time_to_first_token_ms,0), 1)),0),"
+                        " COALESCE(SUM(input_tokens),0)"
+                        " FROM model_usage WHERE status='completed' AND session_id=?"
+                        " AND query_source='main_turn' AND duration_ms IS NOT NULL"
+                        " GROUP BY provider_id, model_id"
+                        " ORDER BY SUM(input_tokens)+SUM(output_tokens) DESC",
+                        (self.session_id,)).fetchall()
+                    speed_by_model = [
+                        (p, m, (o / (d / 1000)) if o and d else None, o)
+                        for p, m, o, d, _i in speed_rows]
+                    # 瞬时燃速 = 最近一次完成请求的吞吐(单请求 in+out/净生成),
+                    # 体现"此刻"消耗;预算告警仍用 60min 窗口值(告警不该被抖动触发)
+                    rlast = con.execute(
+                        "SELECT COALESCE(input_tokens,0)+COALESCE(output_tokens,0),"
+                        " COALESCE(duration_ms,0) - COALESCE(time_to_first_token_ms,0)"
+                        " FROM model_usage WHERE status='completed' AND session_id=?"
+                        " AND query_source='main_turn' AND duration_ms IS NOT NULL"
+                        " ORDER BY rowid DESC LIMIT 1", (self.session_id,)).fetchone()
+                    if rlast and rlast[0] and rlast[1] > 0:
+                        self.snap.burn_instant_per_hour = rlast[0] / (rlast[1] / 3_600_000)
+                    else:
+                        self.snap.burn_instant_per_hour = None
+                    # 会话平均燃速 = Σ(in+out)/Σ净生成时长(实时燃速的 in+out
+                    # 口径 × tps_avg 的会话时长口径 —— 两个既有口径的自然组合)
+                    tot_tok = sum((r[4] or 0) + (r[2] or 0) for r in speed_rows)
+                    tot_gen_ms = sum(r[3] or 0 for r in speed_rows)
+                    self.snap.burn_avg_tokens_per_hour = (
+                        tot_tok / (tot_gen_ms / 3_600_000)) if tot_gen_ms else None
+                    today0 = today0_ms()
+                    # 今日用量=全部真实消耗(main_turn+subagent 等所有来源),
+                    # 与 ZCode 自身统计口径一致;cancelled 请求 token 为 0 无影响
+                    (today,) = con.execute(
+                        "SELECT COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
+                        " FROM model_usage WHERE status='completed' AND started_at>=?",
+                        (today0,)).fetchone()
+                    # ---- v0.4.0 追加 SQL(上方三条原样不动):金额按 提供商+模型
+                    # 分组计价(与 today_tokens 完全同 WHERE 同天界);燃速取
+                    # trailing 60 分钟窗口(同 WHERE)。金额口径钉死 ZCode-DB-only:
+                    # Claude 等其他源只进 today_by_source,绝不进金额与燃速
+                    # (DEFAULT_PRICES 无 Claude 模型,计入会永久点亮 ≈)。----
+                    cost_rows = con.execute(
+                        "SELECT provider_id, model_id, SUM(input_tokens),"
+                        " SUM(cache_read_input_tokens), SUM(output_tokens)"
+                        " FROM model_usage WHERE status='completed' AND started_at>=?"
+                        " GROUP BY provider_id, model_id",
+                        (today0,)).fetchall()
+                    win0 = int(time.time() * 1000) - 3_600_000
+                    burn_rows = con.execute(
+                        "SELECT provider_id, model_id, SUM(input_tokens),"
+                        " SUM(cache_read_input_tokens), SUM(output_tokens)"
+                        " FROM model_usage WHERE status='completed' AND started_at>=?"
+                        " GROUP BY provider_id, model_id",
+                        (win0,)).fetchall()
+                finally:
+                    con.close()     # #21/#49:先查后关,execute 抛错也关连接
                 cost_cny, cost_partial = 0.0, False
                 for _prov, model, i_, c_, o_ in cost_rows:
                     v_, p_ = cost_of(self.prices, model, i_ or 0, o_ or 0, c_ or 0)
@@ -1371,16 +1493,33 @@ class DataEngine(threading.Thread):
                 now_t = time.time()
                 self._refresh_completed_rows(
                     int((now_t - self.THROUGHPUT_WINDOW_S) * 1000))
-                part_tps = self._global_part_tps(now_t)
+                part_tps, part_by_sid = self._global_part_tps(now_t)
                 # T4:per-source today 值缓存开闸拍刷新,且只装闸门管辖的
-                # ZCode 源分量 —— ZCodeSource.today_usage 的 SQL 属闸门管辖段
-                # (db 未变 ⇔ 今日分量必不变),关门拍由尾段取缓存构建列表;
-                # 非 DB 分量(Claude)尾段每拍现调,不进缓存(装了也永不被
-                # 读,白付一次调用)。_switch_session 重建 Snapshot 后经
-                # _poll_stats(全量)立即补全不闪空。
-                self._src_today_cache = {
-                    s.name: s.today_usage() for s in self.sources
-                    if isinstance(s, ZCodeSource) and s.is_available()}
+                # ZCode 源分量 —— 关门拍由尾段取缓存构建列表;非 DB 分量
+                # (Claude)尾段每拍现调,不进缓存(装了也永不被读,白付一次
+                # 调用)。_switch_session 重建 Snapshot 后经 _poll_stats(全量)
+                # 立即补全不闪空。
+                # #20 单查询双用:不再对 ZCode 源现调 today_usage(改前与上方
+                # today SQL 同 tick 同 WHERE 双跑,每开闸拍白付 1 查询+1 连接
+                # 开关)—— 直接用刚算出的 today 值填缓存。两者恒等:
+                # ZCodeSource.today_usage 的 SQL(zcode.py)与本段 today SQL
+                # 逐字同文同参数(单测 test_today_by_source 双值对账钉死),
+                # 复用即无损。#17 守卫:per-source 的 is_available 任意异常
+                # (第三方子类化源)只跳过该源本拍并保留缓存旧值,绝不杀
+                # _db_loop;dbg 每源仅首记(_src_guard_logged 节流)。
+                new_cache = {}
+                for s in self.sources:
+                    if not isinstance(s, ZCodeSource):
+                        continue
+                    try:
+                        if s.is_available():
+                            new_cache[s.name] = today
+                    except Exception as exc:
+                        self._src_guard_note(s, exc)
+                        name = getattr(s, "name", None)   # name 读取本身也可能抛
+                        if isinstance(name, str) and name in self._src_today_cache:
+                            new_cache[name] = self._src_today_cache[name]
+                self._src_today_cache = new_cache
                 self.snap.session_in, self.snap.session_cache, self.snap.session_out = sums
                 self.snap.speed_by_model = speed_by_model
                 self.snap.tps_avg = speed_by_model[0][2] if speed_by_model else None
@@ -1390,11 +1529,24 @@ class DataEngine(threading.Thread):
                                         if self.snap.session_in else 0.0)
                 if speed_by_model:
                     self.snap.model = speed_by_model[0][1]
-                return part_tps
+                return part_tps, part_by_sid
         except sqlite3.Error:
-            return 0.0
+            return 0.0, {}
 
-    def _poll_stats_tail(self, part_tps: float) -> None:
+    def _src_guard_note(self, s, exc) -> None:
+        """#17 源守卫的 dbg 节流:每源仅首记(镜像 QuotaMonitor.
+        _logged_parse_fail 的纪律 —— 引擎 1s 一轮,第三方源持续抛异常时
+        每秒一条 dbg 会把 zm_debug.log 刷成源异常流水,首记即足够定位)。
+        判定集合按源名:同名的两个源实例共享一次首记,可接受(名字本就是
+        卡片行名,#81 起同名源直接 raise,见 discover_sources)。"""
+        name = getattr(s, "name", None) or type(s).__name__
+        if name in self._src_guard_logged:
+            return
+        self._src_guard_logged.add(name)
+        dbg(f"source guard: {name!r} {type(exc).__name__}: {exc}; "
+            "source skipped/maintained (logged once)")
+
+    def _poll_stats_tail(self, part_tps: float, part_by_sid: dict = None) -> None:
         """T4 尾段:闸门无关,每 tick 照跑(开闸拍在 SQL 段之后、关门拍独自
         执行)。刻意不持 snap_lock —— 空闲期 0 持锁(N6:尾段是空闲期唯一
         还在跑的引擎工作),字段写遵循 _poll_new_completed/run() 主循环的
@@ -1407,23 +1559,57 @@ class DataEngine(threading.Thread):
         期无 push,UI 本就显示旧值;T7 CHANGELOG 声明该语义)。global_tps
         的完成分量靠 T2 缓存 + 当前 now 重算,衰减照推不冻结;part 分量在
         关门拍为 0(冻结的 db 无流式增长,查询亦得 0,等价;重开首拍的
-        Δt 稀释见 _db_tick note1)。"""
+        Δt 稀释见 _db_tick note1)。
+
+        #12 完成拍同拍去重(默认裁决):请求完成的瞬间,该请求的输出同时
+        以『part 尾部增长』(流式尾巴最后一拍仍被差分到)与『completed 行
+        区间与窗口的重叠加权』两路计入 global_tps —— 同一批 token 双计,
+        完成拍 ≈2× 尖峰(与 _global_completed_tps『不重不漏』声明不符)。
+        扣减:对 completed_at≥now−2×POLL_DB 的新鲜完成行(缓存行集已带
+        session_id),从 part 总贡献里减去该会话本拍 part 贡献(钳 0,防
+        数据异常时把其它会话的真实流式贡献扣成负)。权重公式/窗口 10s/
+        校准公式一字不动,只消完成瞬间的同拍双计;『新鲜』窗口取 2×
+        POLL_DB:完成行落库到本拍缓存可见至多差一拍,过宽的窗口会把正常
+        的 part 流式贡献误扣(该会话完成请求之后又开始了新一轮流式)。
+
+        #17 守卫:today_by_source 推导的全部 per-source 现调(is_available/
+        today_usage)各套 try/except Exception —— 第三方源的任意异常只跳过
+        该源本拍(行消失一轮),绝不杀 _db_loop(改前 NotImplementedError
+        会穿透唯一的 except sqlite3.Error,daemon 线程无声永久死亡)。"""
+        part_by_sid = part_by_sid or {}
         try:
             now_t = time.time()
-            self.snap.global_tps = (part_tps + self._global_completed_tps(
-                now_t, self.THROUGHPUT_WINDOW_S))
+            completed_tps = self._global_completed_tps(
+                now_t, self.THROUGHPUT_WINDOW_S)
+            # #12:新鲜完成行(含本拍)→ 扣减该会话本拍 part 贡献(钳 0)
+            fresh_cut_ms = (now_t - 2 * self.POLL_DB) * 1000
+            fresh_sids = {sid for _o, _f, c, sid in self._completed_rows
+                          if sid and c is not None and c >= fresh_cut_ms}
+            if fresh_sids:
+                deduct = sum(part_by_sid.get(sid, 0.0) for sid in fresh_sids)
+                part_tps = max(part_tps - deduct, 0.0)
+            self.snap.global_tps = part_tps + completed_tps
             self._gtps_hist.append(self.snap.global_tps)
             self.snap.recent_speeds = list(self._gtps_hist)
             # today_by_source 列表每 tick 重建:ZCode 分量取开闸拍缓存(关门拍
             # 绝不发 ZCode SQL —— 空闲 0-SQL 的组成之一),非 DB 分量(Claude
-            # 等)现调(源内部 TTL 缓存,现调代价 O(新增字节))。缓存缺项只
-            # 可能出现在『从未开闸』的异常调用序,兜底现调保口径不缺行(正常
-            # _db_loop 路径首拍必开闸,缺项不可达)。
-            self.snap.today_by_source = [
-                (s.name, self._src_today_cache[s.name]
-                 if isinstance(s, ZCodeSource) and s.name in self._src_today_cache
-                 else s.today_usage())
-                for s in self.sources if s.is_available()]
+            # 等)现调(源内部 TTL 缓存,现调代价 O(新增字节))。is_available
+            # 先于缓存判定(拆分前同序):db 缺席时 ZCode 行整行消失,不拿
+            # 陈旧缓存冒充现值。缓存缺项只可能出现在『从未开闸』的异常调用序,
+            # 兜底现调保口径不缺行(正常 _db_loop 路径首拍必开闸,缺项不可达)。
+            rows = []
+            for s in self.sources:
+                try:
+                    if not s.is_available():
+                        continue
+                    rows.append((s.name,
+                                 self._src_today_cache[s.name]
+                                 if isinstance(s, ZCodeSource)
+                                 and s.name in self._src_today_cache
+                                 else s.today_usage()))
+                except Exception as exc:      # noqa: BLE001 #17:任意源异常跳过
+                    self._src_guard_note(s, exc)
+            self.snap.today_by_source = rows
         except sqlite3.Error:
             pass
 
@@ -1465,12 +1651,15 @@ class DataEngine(threading.Thread):
     def _poll_new_completed(self):
         try:
             con = self._connect()
-            rows = con.execute(
-                "SELECT rowid, output_tokens, duration_ms, time_to_first_token_ms"
-                " FROM model_usage WHERE status='completed' AND session_id=?"
-                " AND query_source='main_turn' AND rowid>?"
-                " ORDER BY rowid", (self.session_id, self._prev_max_rowid)).fetchall()
-            con.close()
+            try:
+                rows = con.execute(
+                    "SELECT rowid, output_tokens, duration_ms, time_to_first_token_ms"
+                    " FROM model_usage WHERE status='completed' AND session_id=?"
+                    " AND query_source='main_turn' AND rowid>?"
+                    " ORDER BY rowid",
+                    (self.session_id, self._prev_max_rowid)).fetchall()
+            finally:
+                con.close()
         except sqlite3.Error:
             return
         for rid, out_tok, dur_ms, ttft_ms in rows:
@@ -1482,8 +1671,10 @@ class DataEngine(threading.Thread):
                 self.snap.last_duration = (dur_ms or 0) / 1000
 
     # ---- 全局瞬时吞吐(2026-09-28,速度语义『当前会话』→『机器全部会话』) ----
-    def _global_part_tps(self, now: float) -> float:
+    def _global_part_tps(self, now: float):
         """流式贡献:所有会话最新 text part 行的长度增长之和 ÷ 字符token比。
+        返回 (总贡献, {session_id: 本拍贡献}):后者与总量同源同一差分循环
+        产出(#12 完成拍去重按会话扣减的原料),零额外查询。
 
         part 表每个会话都在流式写入(子代理/工作流同样),取每会话最新 text
         part 行长度,与上次采样差分 —— 增长即输出速率;行切换(新一轮开始,
@@ -1516,14 +1707,14 @@ class DataEngine(threading.Thread):
         try:
             con = self._connect()
         except sqlite3.Error:
-            return 0.0
+            return 0.0, {}
         try:
             # ① 水位探测(O(1) 尾读)。失败=维持旧水位,本拍贡献 0.0
             try:
                 (mx,) = con.execute(
                     "SELECT COALESCE(MAX(rowid),0) FROM part").fetchone()
             except sqlite3.Error:
-                return 0.0
+                return 0.0, {}
             wm = self._part_watermark
             if wm is None or mx < wm:
                 # 首拍建基线 / MAX(rowid) 回退(删顶行/VACUUM):双基线全量重建
@@ -1533,7 +1724,7 @@ class DataEngine(threading.Thread):
                 # 水位下拍整体重试;重建拍基线刚重置,贡献恒 0.0
                 if self._rebuild_part_baselines(now, con):
                     self._part_watermark = mx
-                return 0.0
+                return 0.0, {}
             walk_sids = set()
             if mx > wm:
                 # ② 发现走读:只读水位之后的新行。任何类型行喂 _session_last_
@@ -1546,7 +1737,7 @@ class DataEngine(threading.Thread):
                         " FROM part WHERE rowid>? ORDER BY rowid",
                         (wm,)).fetchall()
                 except sqlite3.Error:
-                    return 0.0
+                    return 0.0, {}
                 new_last = {}   # T3:本拍新行先积累,循环后一次 _session_lock 换入
                 for rid, sid, _ln, prefix in rows:
                     if not sid:
@@ -1575,7 +1766,7 @@ class DataEngine(threading.Thread):
             # SQLite 变量数上限(旧版默认 999;seen+64 裁剪后常态几十键,分块是
             # 突发并发的防御 —— 单条 IN 打爆变量上限会被 except 吞成整拍 0.0)
             if not self._sid_text_rowid:
-                return 0.0
+                return 0.0, {}
             try:
                 lens = {}
                 rids = list(self._sid_text_rowid.values())
@@ -1586,11 +1777,12 @@ class DataEngine(threading.Thread):
                     for rid, ln in con.execute(q, chunk).fetchall():
                         lens[rid] = ln
             except sqlite3.Error:
-                return 0.0        # 探针失败:基线维持,该拍贡献 0.0(不裁剪)
+                return 0.0, {}  # 探针失败:基线维持,该拍贡献 0.0(不裁剪)
             # ④ 差分:与旧实现逐字同式 —— 增长才计贡献,行切换只重置基线不计
             # 负;基线对全部探针命中会话刷新时刻(静默会话也前移 t,长暂停后
             # 恢复增长不因 dt 跨多拍被稀释,与旧窗口 SQL 每拍全量重读同语义)
             tps = 0.0
+            by_sid = {}          # #12:per-session 本拍贡献(与 tps 同循环同源)
             seen = set()
             dropped = []
             for sid, rid in self._sid_text_rowid.items():
@@ -1613,7 +1805,9 @@ class DataEngine(threading.Thread):
                     seen.add(sid)
                 if prev is not None and ln > prev[0]:
                     dt = max(now - prev[1], 1e-3)
-                    tps += (ln - prev[0]) / dt / self._chars_per_token
+                    c = (ln - prev[0]) / dt / self._chars_per_token
+                    tps += c
+                    by_sid[sid] = by_sid.get(sid, 0.0) + c
                 self._gpart_last[sid] = (ln, now)
             for sid in dropped:
                 self._sid_text_rowid.pop(sid, None)
@@ -1628,7 +1822,7 @@ class DataEngine(threading.Thread):
             if len(self._sid_text_rowid) > len(seen) + 64:
                 self._sid_text_rowid = {k: v for k, v in self._sid_text_rowid.items()
                                         if k in seen}
-            return tps
+            return tps, by_sid
         finally:
             con.close()
 
@@ -1672,7 +1866,8 @@ class DataEngine(threading.Thread):
         return True
 
     def _refresh_completed_rows(self, cut_ms: int) -> None:
-        """completed 行缓存整批换行(T2 取数/加权拆分的取数侧)。
+        """completed 行缓存整批换行(T2 取数/加权拆分的取数侧;#12 起行集
+        增选 session_id,供尾段完成拍同拍去重按会话扣减 part 贡献)。
 
         与主查询同一 started_at 前置换行:`started_at>=cut-COMPLETED_
         LOOKBACK_MS AND completed_at>=cut` —— started_at 前缀命中
@@ -1691,7 +1886,8 @@ class DataEngine(threading.Thread):
             con = self._connect()
             try:
                 rows = con.execute(
-                    "SELECT output_tokens, first_token_at, completed_at"
+                    "SELECT output_tokens, first_token_at, completed_at,"
+                    " session_id"
                     " FROM model_usage WHERE status='completed'"
                     " AND started_at>=? AND completed_at>=?"
                     " AND output_tokens>0 AND first_token_at IS NOT NULL",
@@ -1712,6 +1908,8 @@ class DataEngine(threading.Thread):
         尖峰;流式请求完成后由 part 增长无缝切换到本项(不重不漏)。
         加权循环与拆分前逐字同式(窗口/加权语义一字不动)。
 
+        行集为 (output_tokens, first_token_at, completed_at, session_id)
+        四元组(#12:session_id 供尾段完成拍去重,加权侧不消费)。
         T2 取数与加权拆分:行集来自 _completed_rows 缓存(由 _poll_stats 每拍
         调 _refresh_completed_rows 换行;本函数仅在从未取数时兜底取一次),
         每拍用缓存+当前 now 重算重叠 —— T4 闸门关闭期缓存冻结、衰减照推:
@@ -1727,7 +1925,7 @@ class DataEngine(threading.Thread):
         win = max(window_s, 1e-3)
         now_ms = now * 1000.0
         tps = 0.0
-        for out_tok, ft, c in self._completed_rows:
+        for out_tok, ft, c, _sid in self._completed_rows:
             gen_s = max((c - ft) / 1000.0, 1e-3)
             ov_ms = min(c, now_ms) - max(ft, cut_ms)
             if ov_ms > 0:
@@ -1746,11 +1944,13 @@ class DataEngine(threading.Thread):
     def _poll_part(self):
         try:
             con = self._connect()
-            row = con.execute(
-                "SELECT length(data) FROM part"
-                " WHERE session_id=? AND data LIKE '{\"type\":\"text\"%'"
-                " ORDER BY rowid DESC LIMIT 1", (self.session_id,)).fetchone()
-            con.close()
+            try:
+                row = con.execute(
+                    "SELECT length(data) FROM part"
+                    " WHERE session_id=? AND data LIKE '{\"type\":\"text\"%'"
+                    " ORDER BY rowid DESC LIMIT 1", (self.session_id,)).fetchone()
+            finally:
+                con.close()
         except sqlite3.Error:
             return
         if not row or row[0] is None:
@@ -1799,15 +1999,21 @@ class DataEngine(threading.Thread):
             # 覆盖,期间 tps_est 与全局 part tps 都除以它)。加下界后 STALE 拍
             # 查不到新行 → 本轮跳过校准(保持旧校准值才是正确侧),
             # tps_exact/last_ttft/last_duration 由 _poll_new_completed 在 ~1 个
-            # POLL_DB 内照常补上(旧行为也只是短暂污染后自纠)。缺
-            # query_source 过滤是另一 open 项,此处刻意只加下界不动口径。
-            row = con.execute(
-                "SELECT rowid, output_tokens, duration_ms, time_to_first_token_ms"
-                " FROM model_usage"
-                " WHERE status='completed' AND session_id=? AND rowid>?"
-                " ORDER BY rowid DESC LIMIT 1",
-                (self.session_id, self._prev_max_rowid)).fetchone()
-            con.close()
+            # POLL_DB 内照常补上(旧行为也只是短暂污染后自纠)。
+            # #11:补 query_source='main_turn' —— 与同文件 8 处会话口径查询
+            # 对齐(此前是唯一漏网):compact/workflow_child 行会覆盖
+            # tps_exact/last_ttft/last_duration 并用错分母污染 chars/token
+            # 校准。下界语义保留不动(见上)。
+            try:
+                row = con.execute(
+                    "SELECT rowid, output_tokens, duration_ms, time_to_first_token_ms"
+                    " FROM model_usage"
+                    " WHERE status='completed' AND session_id=?"
+                    " AND query_source='main_turn' AND rowid>?"
+                    " ORDER BY rowid DESC LIMIT 1",
+                    (self.session_id, self._prev_max_rowid)).fetchone()
+            finally:
+                con.close()
             if row and row[1]:
                 rid, out_tok, dur_ms, ttft_ms = row
                 gen_ms = max((dur_ms or 0) - (ttft_ms or 0), 1)
@@ -1847,6 +2053,10 @@ class DataEngine(threading.Thread):
         - 先重建 Snapshot:防数据线程读到半更新快照(v0.2.0 修过的老 bug)
         - _last_len=None:否则用两会话 part 长度差算出错误 tps_est
         - _prev_max_rowid 重置:否则旧会话基线带进新会话,漏读/重读完成请求
+        - _exact_out_chars=0(#14):与 _last_len 同步重置 —— 只重 _last_len
+          会让旧会话的流式字符数残留,切换后首个未被 part 轮询采到的快速
+          请求(_on_request_done 时 _last_len 恰有值)用旧会话字符数 ÷
+          新会话 token 数污染 chars/token 校准
 
         刻意【不】在这里复位 _running/_gen_start(2026-10-04 P1 复核裁定):
         _running 是跨主会话的全局标志(事件层按『全部非排除会话』驱动),
@@ -1861,6 +2071,7 @@ class DataEngine(threading.Thread):
                                  tps_exact=self.snap.tps_exact,
                                  manual=bool(self.manual_session))
             self._last_len = None
+            self._exact_out_chars = 0
             self._prev_max_rowid = self._max_usage_rowid()
             self.snap.title = self._session_title()
             self._poll_stats()
@@ -1870,17 +2081,35 @@ class DataEngine(threading.Thread):
     # ---- 手动固定 / 恢复自动(UI 线程调用) ----
     def set_manual_session(self, sid: str):
         """固定统计对象为 sid。与当前相同的会话也走完整切换:snap.manual
-        标记(📌)必须随重建生效。"""
+        标记(📌)必须随重建生效。
+
+        #87 延迟化:引擎活着(is_alive)时 UI 线程只投递 _pending_manual +
+        _wake.set()(锁内零 SQL,微秒级)—— 真正的 _switch_session(含
+        _poll_stats 全量 SQL 批,会话聚合段实测 55~122ms 随库波动)由引擎
+        _db_tick 头部在 snap_lock 内执行,右键菜单切换不再卡 UI 线程百毫秒
+        级,也不再与引擎每秒 tick 争锁。未 start(全部单测路径)保持现行
+        同步执行,行为不变。"""
         with self.snap_lock:
             if not sid:
                 return
             self.manual_session = sid
+            if self.is_alive():
+                self._pending_manual = ("switch", sid)
+                self._wake.set()
+                return
             self._switch_session(sid)
 
     def clear_manual_session(self):
-        """恢复自动跟随,并立即对齐当前最新活跃会话。"""
+        """恢复自动跟随,并立即对齐当前最新活跃会话。
+
+        #87:延迟化同 set_manual_session —— 最新会话的解析(_latest_session
+        查询)也挪进引擎线程的切换执行点,UI 线程全程零 SQL。"""
         with self.snap_lock:
             self.manual_session = None
+            if self.is_alive():
+                self._pending_manual = ("switch_auto", None)
+                self._wake.set()
+                return
             self._switch_session(self._latest_session() or self.session_id)
 
     # ---- UI 侧查询(右键会话菜单 / 历史图表窗口,均只读独立连接) ----
@@ -1920,14 +2149,16 @@ class DataEngine(threading.Thread):
         一拍),行为与改前逐字一致就是回退语义的全部要求。"""
         try:
             con = connect_ro()
-            rows = con.execute(
-                "SELECT p.session_id, s.title FROM"
-                " (SELECT session_id, MAX(rowid) AS mr FROM part"
-                "  WHERE session_id NOT LIKE 'sess_subagent%'"
-                "    AND session_id NOT LIKE 'sess_dwf-%' GROUP BY session_id) p"
-                " LEFT JOIN session s ON s.id = p.session_id"
-                " ORDER BY p.mr DESC LIMIT ?", (limit,)).fetchall()
-            con.close()
+            try:
+                rows = con.execute(
+                    "SELECT p.session_id, s.title FROM"
+                    " (SELECT session_id, MAX(rowid) AS mr FROM part"
+                    "  WHERE session_id NOT LIKE 'sess_subagent%'"
+                    "    AND session_id NOT LIKE 'sess_dwf-%' GROUP BY session_id) p"
+                    " LEFT JOIN session s ON s.id = p.session_id"
+                    " ORDER BY p.mr DESC LIMIT ?", (limit,)).fetchall()
+            finally:
+                con.close()
             return [(sid, (title or "").strip()[:16]) for sid, title in rows]
         except sqlite3.Error:
             return []
@@ -2017,14 +2248,16 @@ class DataEngine(threading.Thread):
         记录不计(防库增长后查询线性变慢,详见常量处注释)。"""
         try:
             con = connect_ro()
-            rows = con.execute(
-                "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
-                " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
-                " FROM model_usage WHERE status='completed' AND started_at>=?"
-                " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
-                " GROUP BY d ORDER BY d",
-                (today0_ms() - (days - 1) * 86_400_000, MAX_SCAN_ROWS)).fetchall()
-            con.close()
+            try:
+                rows = con.execute(
+                    "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
+                    " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
+                    " FROM model_usage WHERE status='completed' AND started_at>=?"
+                    " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
+                    " GROUP BY d ORDER BY d",
+                    (today0_ms() - (days - 1) * 86_400_000, MAX_SCAN_ROWS)).fetchall()
+            finally:
+                con.close()
             return rows
         except sqlite3.Error:
             return []
@@ -2036,13 +2269,15 @@ class DataEngine(threading.Thread):
         的分组 SUM 为毫秒级,一年后仍可接受。金额为刊例价下限(同今日口径)。"""
         try:
             con = connect_ro()
-            rows = con.execute(
-                "SELECT model_id, COALESCE(SUM(input_tokens),0),"
-                " COALESCE(SUM(cache_read_input_tokens),0),"
-                " COALESCE(SUM(output_tokens),0)"
-                " FROM model_usage WHERE status='completed'"
-                " GROUP BY model_id").fetchall()
-            con.close()
+            try:
+                rows = con.execute(
+                    "SELECT model_id, COALESCE(SUM(input_tokens),0),"
+                    " COALESCE(SUM(cache_read_input_tokens),0),"
+                    " COALESCE(SUM(output_tokens),0)"
+                    " FROM model_usage WHERE status='completed'"
+                    " GROUP BY model_id").fetchall()
+            finally:
+                con.close()
         except sqlite3.Error:
             return (0, 0.0, False)
         tok_total, cny_total, partial = 0, 0.0, False
@@ -2064,16 +2299,18 @@ class DataEngine(threading.Thread):
         仅统计最近 N 行,更早记录不计。"""
         try:
             con = connect_ro()
-            rows = con.execute(
-                "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
-                " model_id, COALESCE(SUM(input_tokens),0),"
-                " COALESCE(SUM(cache_read_input_tokens),0),"
-                " COALESCE(SUM(output_tokens),0)"
-                " FROM model_usage WHERE status='completed' AND started_at>=?"
-                " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
-                " GROUP BY d, model_id ORDER BY d",
-                (today0_ms() - (days - 1) * 86_400_000, MAX_SCAN_ROWS)).fetchall()
-            con.close()
+            try:
+                rows = con.execute(
+                    "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
+                    " model_id, COALESCE(SUM(input_tokens),0),"
+                    " COALESCE(SUM(cache_read_input_tokens),0),"
+                    " COALESCE(SUM(output_tokens),0)"
+                    " FROM model_usage WHERE status='completed' AND started_at>=?"
+                    " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
+                    " GROUP BY d, model_id ORDER BY d",
+                    (today0_ms() - (days - 1) * 86_400_000, MAX_SCAN_ROWS)).fetchall()
+            finally:
+                con.close()
         except sqlite3.Error:
             return []
         agg = {}
@@ -2083,7 +2320,8 @@ class DataEngine(threading.Thread):
             agg[d] = (tok + (i_ or 0) + (o_ or 0), cny + v)
         return [(d, t, round(c, 4)) for d, (t, c) in sorted(agg.items())]
 
-    def fetch_daily_model_usage(self, days: int = 30) -> list:
+    def fetch_daily_model_usage(self, days: int = 30,
+                                raise_on_error: bool = False) -> list:
         """按天×模型明细 [(date, model, in_tok, cache, out_tok, cny, partial)]:
         导出 CSV(右键菜单)与趋势外推的数据源。SQL 与 fetch_daily_usage_cost
         刻意保持同 WHERE 同 GROUP(completed 全部 query_source、本地午夜天界)
@@ -2092,20 +2330,27 @@ class DataEngine(threading.Thread):
         手写公式曾在此双计翻车一个数量级),未知模型行 ¥0+partial 由 cost_of
         语义透传。同 fetch_daily_usage_cost 一样刻意镜像而不合并:其三元组
         形状被单测与 HistoryWindow 依赖,本方法七元组形状是导出/外推专属。同受 MAX_SCAN_ROWS 行防御上限约束
-        (与 cost 版同 floor,库超上限后明细与图表一致截断)。"""
+        (与 cost 版同 floor,库超上限后明细与图表一致截断)。
+        #64:raise_on_error=True 时 sqlite3.Error 原样上抛 —— 供『导出 CSV』
+        一类消费方区分『DB 故障』与『真空窗』(缺省 False 维持吞错返 []
+        的引擎侧语义,历史图表/趋势外推等一切既有调用零改动)。"""
         try:
             con = connect_ro()
-            rows = con.execute(
-                "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
-                " model_id, COALESCE(SUM(input_tokens),0),"
-                " COALESCE(SUM(cache_read_input_tokens),0),"
-                " COALESCE(SUM(output_tokens),0)"
-                " FROM model_usage WHERE status='completed' AND started_at>=?"
-                " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
-                " GROUP BY d, model_id ORDER BY d, model_id",
-                (today0_ms() - (days - 1) * 86_400_000, MAX_SCAN_ROWS)).fetchall()
-            con.close()
+            try:
+                rows = con.execute(
+                    "SELECT date(started_at/1000, 'unixepoch', 'localtime') AS d,"
+                    " model_id, COALESCE(SUM(input_tokens),0),"
+                    " COALESCE(SUM(cache_read_input_tokens),0),"
+                    " COALESCE(SUM(output_tokens),0)"
+                    " FROM model_usage WHERE status='completed' AND started_at>=?"
+                    " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
+                    " GROUP BY d, model_id ORDER BY d, model_id",
+                    (today0_ms() - (days - 1) * 86_400_000, MAX_SCAN_ROWS)).fetchall()
+            finally:
+                con.close()
         except sqlite3.Error:
+            if raise_on_error:
+                raise
             return []
         out = []
         for d, model, i_, c_, o_ in rows:
@@ -2128,37 +2373,37 @@ class DataEngine(threading.Thread):
         MAX_SCAN_ROWS 行防御上限约束:仅统计最近 N 行,更早记录不计。"""
         try:
             con = connect_ro()
-            anchor = self.quota_hint
-            if not _is_num(anchor) or anchor <= 0:
-                row = con.execute(
-                    "SELECT MIN(started_at) FROM model_usage"
-                    " WHERE status='completed'"
-                    " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)",
-                    (MAX_SCAN_ROWS,)).fetchone()
-                anchor = row[0] if row and row[0] else None
-            if not _is_num(anchor) or anchor <= 0:
+            try:
+                anchor = self.quota_hint
+                if not _is_num(anchor) or anchor <= 0:
+                    row = con.execute(
+                        "SELECT MIN(started_at) FROM model_usage"
+                        " WHERE status='completed'"
+                        " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)",
+                        (MAX_SCAN_ROWS,)).fetchone()
+                    anchor = row[0] if row and row[0] else None
+                if not _is_num(anchor) or anchor <= 0:
+                    return []
+                anchor = int(anchor)
+                now_ms = int(time.time() * 1000)
+                # floor 除法:quota 锚点在未来时 now-anchor 为负,向负取整恰好把
+                # now 归入上一块(k=-1),与"当前块=[reset-5h, reset)"一致
+                k_cur = (now_ms - anchor) // self.BLOCK_MS
+                first = k_cur - blocks + 1
+                base = anchor + first * self.BLOCK_MS
+                if base < 0:
+                    return []
+                rows = con.execute(
+                    "SELECT (started_at-?)/? AS b,"
+                    " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
+                    " FROM model_usage WHERE status='completed' AND started_at>=?"
+                    " AND started_at<?"
+                    " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
+                    " GROUP BY b",
+                    (base, self.BLOCK_MS, base, base + blocks * self.BLOCK_MS,
+                     MAX_SCAN_ROWS)).fetchall()
+            finally:
                 con.close()
-                return []
-            anchor = int(anchor)
-            now_ms = int(time.time() * 1000)
-            # floor 除法:quota 锚点在未来时 now-anchor 为负,向负取整恰好把
-            # now 归入上一块(k=-1),与"当前块=[reset-5h, reset)"一致
-            k_cur = (now_ms - anchor) // self.BLOCK_MS
-            first = k_cur - blocks + 1
-            base = anchor + first * self.BLOCK_MS
-            if base < 0:
-                con.close()
-                return []
-            rows = con.execute(
-                "SELECT (started_at-?)/? AS b,"
-                " COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0)"
-                " FROM model_usage WHERE status='completed' AND started_at>=?"
-                " AND started_at<?"
-                " AND rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
-                " GROUP BY b",
-                (base, self.BLOCK_MS, base, base + blocks * self.BLOCK_MS,
-                 MAX_SCAN_ROWS)).fetchall()
-            con.close()
         except sqlite3.Error:
             return []
         buckets = {int(b): (t or 0) for b, t in rows}
@@ -2174,19 +2419,21 @@ class DataEngine(threading.Thread):
         仅统计最近 N 行,更早记录不计(含整会话被裁出结果集的形态)。"""
         try:
             con = connect_ro()
-            rows = con.execute(
-                "SELECT mu.session_id, COALESCE(s.title,''),"
-                " COALESCE(SUM(mu.input_tokens),0)+COALESCE(SUM(mu.output_tokens),0),"
-                " COUNT(*)"
-                " FROM model_usage mu LEFT JOIN session s ON s.id = mu.session_id"
-                " WHERE mu.status='completed' AND mu.query_source='main_turn'"
-                " AND mu.session_id NOT LIKE 'sess_subagent%'"
-                " AND mu.session_id NOT LIKE 'sess_dwf-%'"
-                " AND mu.rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
-                " GROUP BY mu.session_id"
-                " ORDER BY MAX(mu.started_at) DESC LIMIT ?",
-                (MAX_SCAN_ROWS, limit)).fetchall()
-            con.close()
+            try:
+                rows = con.execute(
+                    "SELECT mu.session_id, COALESCE(s.title,''),"
+                    " COALESCE(SUM(mu.input_tokens),0)+COALESCE(SUM(mu.output_tokens),0),"
+                    " COUNT(*)"
+                    " FROM model_usage mu LEFT JOIN session s ON s.id = mu.session_id"
+                    " WHERE mu.status='completed' AND mu.query_source='main_turn'"
+                    " AND mu.session_id NOT LIKE 'sess_subagent%'"
+                    " AND mu.session_id NOT LIKE 'sess_dwf-%'"
+                    " AND mu.rowid >= (SELECT COALESCE(MAX(rowid),0) - ? FROM model_usage)"
+                    " GROUP BY mu.session_id"
+                    " ORDER BY MAX(mu.started_at) DESC LIMIT ?",
+                    (MAX_SCAN_ROWS, limit)).fetchall()
+            finally:
+                con.close()
             return rows
         except sqlite3.Error:
             return []
@@ -2194,9 +2441,11 @@ class DataEngine(threading.Thread):
     def _session_title(self) -> str:
         try:
             con = self._connect()
-            row = con.execute("SELECT title FROM session WHERE id=?",
-                              (self.session_id,)).fetchone()
-            con.close()
+            try:
+                row = con.execute("SELECT title FROM session WHERE id=?",
+                                  (self.session_id,)).fetchone()
+            finally:
+                con.close()
             return (row[0] or "").strip()[:16] if row else ""
         except sqlite3.Error:
             return ""
@@ -2205,11 +2454,13 @@ class DataEngine(threading.Thread):
         """切到新会话时,用该会话最近一次完成请求的速度作为初始精确值。"""
         try:
             con = self._connect()
-            row = con.execute(
-                "SELECT output_tokens, duration_ms, time_to_first_token_ms FROM model_usage"
-                " WHERE status='completed' AND session_id=? AND query_source='main_turn'"
-                " ORDER BY rowid DESC LIMIT 1", (self.session_id,)).fetchone()
-            con.close()
+            try:
+                row = con.execute(
+                    "SELECT output_tokens, duration_ms, time_to_first_token_ms FROM model_usage"
+                    " WHERE status='completed' AND session_id=? AND query_source='main_turn'"
+                    " ORDER BY rowid DESC LIMIT 1", (self.session_id,)).fetchone()
+            finally:
+                con.close()
             if row and row[0]:
                 gen_ms = max((row[1] or 0) - (row[2] or 0), 1)
                 self.snap.tps_exact = row[0] / (gen_ms / 1000)
@@ -2374,6 +2625,7 @@ class DataEngine(threading.Thread):
         # 出现时经 _switch_session 完成自愈 —— 前提是循环活着,这就是本行
         # 存在的意义。
         self.snap.title = self._session_title()
+        self._ensure_boot_state()    # #84:boot_queries=False 时在此补三查询
         self._poll_stats()
         self._init_tps_for_session()
         self._push()
@@ -2399,13 +2651,19 @@ class DataEngine(threading.Thread):
                     and time.time() - self._gen_mark > self.GEN_WATCHDOG_S):
                 self._end_generate()
             state = "generating" if self._running else "idle"
-            if state != last_state:
-                last_state = state
-                self.snap.state = state
-                self._push()
-            if self._running:
-                self.snap.gen_elapsed = time.time() - self._gen_start
-                self._push()
+            # #13:state/gen_elapsed 写入与对应 _push 一并包进 snap_lock ——
+            # _switch_session 持锁整建新 Snapshot,主循环无锁写旧引用会在
+            # 切会话恰逢状态翻转时让新快照带过期 state、且 last_state 已
+            # 记账(丢更新竞态,UI 整轮显示错状态)。RLock 可重入,与
+            # _refresh_session/_switch_session 的持锁链天然兼容。
+            with self.snap_lock:
+                if state != last_state:
+                    last_state = state
+                    self.snap.state = state
+                    self._push()
+                if self._running:
+                    self.snap.gen_elapsed = time.time() - self._gen_start
+                    self._push()
             time.sleep(0.5)
 
     def _volatile_fp(self) -> tuple:
@@ -2427,9 +2685,15 @@ class DataEngine(threading.Thread):
                 tuple(tuple(r) for r in (s.speed_by_model or ())))
 
     def _push(self):
+        """#28:推浅拷贝(dataclasses.replace)而非活引用 —— 三个 worker 线程
+        无锁直写 snap 字段、UI 侧也回写 plan_remaining_pct(已 deprecated),
+        活引用进队列等于跨线程共享黑板,UI 单帧可读到跨 tick 的撕裂组合
+        (docstring『一份快照』名不副实)。浅拷即安全:列表字段
+        (speed_by_model/today_by_source/recent_speeds)本就每拍整体重赋值,
+        无人原地修改既有列表,拷贝后的引用与引擎后续重赋值互不干扰。"""
         self.snap.updated = time.time()
         try:
-            self.out.put_nowait(self.snap)
+            self.out.put_nowait(replace(self.snap))
         except queue.Full:
             pass
 

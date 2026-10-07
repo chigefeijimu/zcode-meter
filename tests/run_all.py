@@ -7,9 +7,13 @@
 
 组:
   data  数据层单测(口径/会话切换/subagent排除) —— 无 UI,快
-  pkg   包结构守卫(v0.6.0 src 布局:包可导入/版本号/app_dir 仓库根锚定/shim 链路)
+  pkg   包结构守卫(v0.6.0 src 布局:包可导入/版本号对账/零副作用红线/shim 链路)
   ui    界面自检(--verify 封装:渲染/绑定/贴边判定)
   stress 布局切换压力测试(横条<->竖条<->卡片 + 动态refit)
+  glass 玻璃管线单测(test_glass_effect:锁序/退避/纯逻辑,monkeypatch 注入,
+        不依赖 dxcam 安装与真实屏幕)
+  cli   CLI 单测(test_cli:故障通道 rc=1/显示宽度/≈注脚/boot_queries,
+        monkeypatch DB_PATH 指向 tmp,不触真实 ~/.zcode)
 """
 import os
 import subprocess
@@ -46,7 +50,9 @@ def run(name: str, cmd: list[str], timeout: int = 90,
 
 
 def main() -> int:
-    groups = sys.argv[1:] or ["data", "pkg", "ui", "stress"]
+    # v0.9.2:默认组扩到六条(data/pkg/ui/stress/glass/cli)—— glass/cli 两新
+    # 测试文件是本批新增回归面,不进默认组则「全绿」会静默漏跑(同 pkg 组教训)
+    groups = sys.argv[1:] or ["data", "pkg", "ui", "stress", "glass", "cli"]
     results = []
 
     if "data" in groups:
@@ -69,6 +75,18 @@ def main() -> int:
 
     if "stress" in groups:
         results.append(run("layout-stress", [sys.executable, str(ROOT / "tests" / "test_stress.py")],
+                           env=STATE_OFF))
+
+    if "glass" in groups:
+        # v0.9.2:玻璃管线单测进默认组 —— 全程 monkeypatch 注入,无 dxcam/
+        # 真实屏幕依赖,任何环境都可跑(测试文件自身保证,这里只负责注册)
+        results.append(run("glass-effect", [sys.executable, str(ROOT / "tests" / "test_glass_effect.py")],
+                           env=STATE_OFF))
+
+    if "cli" in groups:
+        # v0.9.2:CLI 单测进默认组 —— DB_PATH monkeypatch 指向 tmp 合成库,
+        # 不触真实 ~/.zcode;含故障通道 rc=1/boot_queries 连接计数等断言
+        results.append(run("cli", [sys.executable, str(ROOT / "tests" / "test_cli.py")],
                            env=STATE_OFF))
 
     print("\n" + "=" * 46)

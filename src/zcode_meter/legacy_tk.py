@@ -22,6 +22,7 @@ import datetime as dt
 import faulthandler
 import json
 import os
+import pathlib
 import queue
 import sqlite3
 import sys
@@ -101,7 +102,16 @@ class DataEngine(threading.Thread):
             return ""
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=2)
+        """只读连接。#42:与 sources/zcode.connect_ro 同形修复 —— 路径必须经
+        as_uri() 百分号编码后再拼查询串:原生路径直拼 file: URI 时,'#' 会被
+        SQLite 当 URI fragment 起点(截断到结尾连 ?mode=ro 一并卷走,只读
+        失效后在错误路径静默建空库);'%' 被当解码前缀。fixed 注册表的 URI
+        编码修复曾漏掉本文件这份同形代码,用户名/目录含这两个字符时旧版
+        静默清零。本文件是留档的旧 tkinter 版(UI 零改动),仅同步修复。"""
+        p = pathlib.Path(DB_PATH)
+        if not p.is_absolute():
+            p = pathlib.Path(os.path.abspath(p))
+        return sqlite3.connect(p.as_uri() + "?mode=ro", uri=True, timeout=2)
 
     def _max_usage_rowid(self) -> int:
         try:

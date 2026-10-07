@@ -21,6 +21,7 @@ import math
 import os
 import queue
 import re
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -495,6 +496,19 @@ class SettingsDialog(QDialog):
         cfg = self._parse_input()
         if cfg is None:
             return                            # 非法输入:红字报错,不落盘不关窗
+        # 落盘保活(#26):_parse_input 只造三/四键 cfg,save_config 白名单
+        # 重建只写输入携带的键 —— 直传会把用户已存的 bar_segments/skin
+        # 静默抹掉、重启即回默认(_apply_config 同款病,评审复现实证)。
+        # 设置窗无内存态可依,从磁盘现读补挂;与 _apply_config 的内存态
+        # 补挂产出同形两次写:首写成功二写失败不再产生『新 key+丢段开关/
+        # 皮肤』的分裂盘面。glass 沿数据层可选键纪律不写键(save_config
+        # 内建省略),load_config 恒含两键(bar_segments/skin 归一化后必在,
+        # data_engine load_config docstring 钉死)。
+        cur = load_config()
+        if "bar_segments" in cur:
+            cfg["bar_segments"] = cur["bar_segments"]
+        if cur.get("skin", "glass") != "glass":
+            cfg["skin"] = cur["skin"]
         if not save_config(cfg):
             # 落盘失败两类:守卫命中必须显式点名(否则用户以为改了实际没改,
             # 丢的还是最敏感的 key);否则按只读目录等 OSError 语义提示
@@ -764,19 +778,14 @@ class MeterWindow(QWidget):
     # ⏱首/总 95("0.8 / 12.4s"=86),合计 265+16+32=313 收敛。
     CARD_GRID_COL_W = (102, 68, 95)
     _bar_form = None              # 类级默认:paintEvent 可能早于首次 _build_card
-    _pill_geo = None              # 液态玻璃药丸几何缓存(事件循环下一拍量取)
-    acrylic_native = False        # Win11 原生 backdrop 生效中(deco 减透)
-    _pill_measure_pending = False # 防重复排程的量取闸
     _settle_timer = None          # 类级默认:moveEvent 可能早于 __init__ 定时器创建
     _in_prog_move = False         # 程序性移动(吸附/恢复)期间,moveEvent 不喂防抖
-    _dock_guard_until = 0.0       # 贴边保护期:吸附后的连锁 settle 判定直接跳过          # 逻辑像素(DIP),Qt 自动做 DPI 换算
-    BAR_H, BAR_V = 24, 38
+    _dock_guard_until = 0.0       # 贴边保护期:吸附后的连锁 settle 判定直接跳过
     # v0.8.0 T3/F1:竖条定宽 —— 全 spec 唯一明示的尺寸机制变更。宽度侧由
     # 『max_w 聚合 + min(...,100) cap』改为定宽常量(内容超宽按旧 cap 同款
     # 哲学硬截;竖条文案已钉死紧凑形,预期不触界);_bar_size 高度侧聚合与
     # 『跳过 hidden』机制、横向分支均一字不动。
     BAR_V_W = 100   # 116→104→100 用户两轮『再收窄』2026-09-28(内容 84;套餐行最坏 ~906.5M · 4h 59m=79px,倒计时受 5h 窗上限约束)
-    EDGE_NEAR = 30
 
     def __init__(self):
         super().__init__()
@@ -929,76 +938,26 @@ class MeterWindow(QWidget):
         """皮肤分派(v0.9 T2):deco 非 None 的皮肤交其自绘背景(painter/
         win/form),玻璃与 deco 未实现的皮肤走下方既有 渐变+光晕+描边 代码
         路径 —— 玻璃路径逐位不动(deco 恒 None),T2 骨架期九款全部落到
-        玻璃兜底(『registry 仅 glass 亦安全渲染』同性质)。
-        deco 前置 layout().activate():Qt 布局惰性激活(重建后几何要等
-        LayoutRequest 才落地),deco 在 paint 里现读 label.geometry(),
-        重建(贴边↔卡片)后的首帧 paint 若先于布局激活,读到的是旧形态
-        几何 —— 真机『3 个竖条药丸+横杠残影』的真因(2026-09-29,调研
-        SO:78795785);activate 幂等,已激活时零开销。"""
+        玻璃兜底(『registry 仅 glass 亦安全渲染』同性质)。"""
         deco = self._skin().deco
         if deco is not None:
-            # 药丸几何缓存未建(首帧/竞态)→ 排一拍后量(此时 Qt 事件循环
-            # 已自然完成布局激活,几何必然新鲜;--verify 无循环不触发,
-            # 天然守卫),本帧先画无药丸的干净底。
-            if (self._bar_form is None and self._pill_geo is None
-                    and not self._pill_measure_pending
-                    and self.isVisible()):
-                self._pill_measure_pending = True
-                QTimer.singleShot(0, self._measure_pill_geo)
             p = QPainter(self)
             p.setRenderHint(QPainter.Antialiasing)
-            deco(p, self, self._bar_form)
+            # 皮肤 deco 双保险(skins 侧 getattr 守卫是第一道):paint 链
+            # #55b 任意异常(paintEvent 早于 _build_card 的 AttributeError、
+            # _union([]) 的 IndexError 等)不再裸崩 —— 收 painter 后落玻璃
+            # 兜底 + dbg。p.end() 必须先于 _paint_glass 内的 QPainter(self):
+            # 同一 paint device 同时只允许一个活跃 painter。
+            try:
+                deco(p, self, self._bar_form)
+            except Exception:
+                import traceback
+                dbg("skin deco failed, glass fallback: "
+                    + traceback.format_exc()[-200:])
+                p.end()
+                self._paint_glass(ev)
             return
         self._paint_glass(ev)
-
-    def _measure_pill_geo(self):
-        """事件循环下一拍量六格 k/v 几何写 _pill_geo(此时布局激活必然
-        已完成,几何新鲜)。量不到(极少)再排一拍,最多 5 次。"""
-        self._pill_measure_pending = False
-        vs = skins._card_grid_vs(self)
-        ks = getattr(self, "_grid_k_labels", None)
-        if (len(vs) != 6 or not ks or len(ks) != 6
-                or self._bar_form is not None):
-            return
-        pairs = list(zip(ks, vs))     # 每丸 = 标题 label + 数值 label(同列)
-        try:
-            geos = [(kg.geometry(), vg.geometry()) for kg, vg in pairs]
-            ok = all(g.height() > 0 and g.top() > 0
-                     for kg, vg in geos for g in (kg, vg))
-        except RuntimeError:
-            ok = False
-        if not ok:
-            self._pill_retry = getattr(self, "_pill_retry", 0) + 1
-            if self._pill_retry <= 5:
-                QTimer.singleShot(0, self._measure_pill_geo)
-            return
-        self._pill_retry = 0
-        # 六丸定稿(用户 2026-09-29):每丸完整包住『标题+数值』两行,
-        # 宽 81(中线距 93 留 12 缝),高=标题顶-4 到数值底+3
-        # 统一形状终版(用户『6 丸大小形状一致』+『上下排要有间隔』):
-        # 宽 = min 中线距 89.5 − 缝 6 = 83.5 → 三缝全部 ≥6 且一致;
-        # 高 36(k 顶−2 到 v 底+2),排间缝 = 5−4 = 1px 不重叠。
-        # 六丸 83×37 全等。
-        # 高度不外扩(k 顶到 v 底原值):两排文字间只有 5px 空隙,±2 呼吸
-        # 会让药丸贴死/重叠(用户红圈 2026-09-29);紧凑丸排间净空 5px
-        # 第二排整体下移 3px(用户 2026-09-29『第二行的药丸整行往下移一点』
-        # —— 下排药丸底距模型分节线过近,下移拉开与上排的层次;丸高不变)
-        ROW2_SHIFT = 3.0
-        pills = []
-        for i, (kg, vg) in enumerate(geos):
-            cx = (kg.left() + kg.right() + vg.left() + vg.right()) / 4.0
-            y0 = float(min(kg.top(), vg.top()))
-            y1 = float(max(kg.bottom(), vg.bottom()))
-            if i >= 3:
-                y0 += ROW2_SHIFT
-                y1 += ROW2_SHIFT
-            pills.append((cx, y0, y1))
-        # 宽在循环外按中线距定:全部同宽
-        mids = [c for c, _, _ in pills]
-        gaps = [mids[1] - mids[0], mids[2] - mids[1]]
-        pill_w = min(gaps) - 6.0
-        pills = [(cx, y0, y1) for cx, y0, y1 in pills]
-        self._pill_geo = {"pill_w": float(pill_w), "pills": pills}
 
     def _paint_glass(self, ev):
         """玻璃皮肤背景(原 paintEvent 正文,v0.9 T2 原样下沉,逐位不动)。
@@ -1055,16 +1014,12 @@ class MeterWindow(QWidget):
     # 卡片下方窗口合成洞区(glass_effect.refresh_hole_below),主线程
     # 零参与、卡片全程不动 —— 本类不再有 idle blink 定时器。
 
-    def _try_acrylic_or_fallback(self):
-        """启动路径:亚克力优先,失败落 DXcam。"""
-        if not self._enable_acrylic():
-            self._ensure_glass_timer()
-
     def _ensure_glass_timer(self):
         """Liquid Glass 真背景管线节拍(66ms≈15fps):DXcam 抓窗口矩形
-        身后画面存 glass_effect.latest(),paint 只消费 —— 抓屏不能在
-        paintEvent 里同步做(paint 抓到的是合成中的上一帧,拖动时背景
-        冻结;后台节拍让拖动中背景实时流动)。"""
+        身后画面持续写入 glass_effect._CLEAN 时域干净缓冲,paint 经
+        glass_effect.view() 现场取景(窗口此刻位置的实时视图)—— 抓屏
+        不能在 paintEvent 里同步做(paint 抓到的是合成中的上一帧,拖动时
+        背景冻结;后台节拍让拖动中背景实时流动)。"""
         # 与 seed_full 同款 _state_guard 闸(--verify / ZM_NO_STATE):
         # 回归/stress 测试循环切皮肤时不应拉起真实 DXcam 抓屏线程
         # (2026-09-30 P1:此前只有 seed_full 有闸,测试经 _apply_skin
@@ -1118,48 +1073,12 @@ class MeterWindow(QWidget):
         glass_effect.set_region(g.left(), g.top(), self.width(),
                                 self.height(), self.devicePixelRatioF())
 
-    def _enable_acrylic(self):
-        """Liquid Glass 终极方案(2026-09-29 调研+实测定稿):ACCENT 亚克力
-        由 DWM 合成器渲染身后实时模糊 —— 120Hz 零 CPU、零抓取竞态、自动
-        排除自身窗口(自剔除问题在系统层不存在)。tint=亮幕主色 #39415a
-        (ABGR 0xA05A4139);DWMWCP_ROUND 系统圆角(角处亚克力近似方形,
-        由真玻璃材质自然收边)。失败(DWM 拒绝)→ 返回 False,deco 走
-        DXcam 管线兜底。"""
-        import ctypes
-        from ctypes import wintypes
-
-        class ACCENT_POLICY(ctypes.Structure):
-            _fields_ = [("AccentState", ctypes.c_int),
-                        ("AccentFlags", ctypes.c_int),
-                        ("GradientColor", wintypes.DWORD),
-                        ("AnimationId", ctypes.c_int)]
-
-        class WINCOMPATTRDATA(ctypes.Structure):
-            _fields_ = [("Attribute", ctypes.c_int),
-                        ("Data", ctypes.c_void_p),
-                        ("SizeOfData", ctypes.c_size_t)]
-
-        try:
-            hwnd = int(self.winId())
-            dwmapi = ctypes.windll.dwmapi
-            pref = ctypes.c_int(2)          # DWMWCP_ROUND
-            dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), 4)
-            accent = ACCENT_POLICY(4, 2, 0xA05A4139, 0)
-            data = WINCOMPATTRDATA(
-                19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
-                ctypes.sizeof(accent))
-            ok = bool(ctypes.windll.user32.SetWindowCompositionAttribute(
-                hwnd, ctypes.byref(data)))
-            self._acrylic_native = ok
-            self.acrylic_native = ok   # deco 消费:True=中心全透(DWM 是底)
-            return ok
-        except Exception:
-            self._acrylic_native = False
-            self.acrylic_native = False
-            return False
-
     def _disable_acrylic(self):
-        """关亚克力(ACCENT 0 恢复普通窗口)。"""
+        """关亚克力(ACCENT 0 恢复普通窗口):离开 liquid 皮肤时的 DWM
+        accent 卫生(_apply_skin 消费点)。历史上 ACCENT 亚克力启用路径
+        (_enable_acrylic/_try_acrylic_or_fallback 与 acrylic_native 开关
+        属性)已随亚克力方案整体退役删除 —— 本方法只做复位,不再有
+        开/关状态可写。"""
         import ctypes
         from ctypes import wintypes
 
@@ -1184,8 +1103,6 @@ class MeterWindow(QWidget):
                 hwnd, ctypes.byref(data))
         except Exception:
             pass
-        self._acrylic_native = False
-        self.acrylic_native = False
 
     def _win_polish(self):
         try:
@@ -1297,9 +1214,9 @@ class MeterWindow(QWidget):
         # repaint() 同步重绘(几何此时已新鲜,paintEvent 内会再 activate)
         self.repaint()
         # 亚克力时代的 SetWindowRgn 26px 圆角蒙版已整体移除(2026-10-02 P1):
-        # 守卫只查 skin_id=="liquid" 而不查 acrylic_native —— 亚克力路线
-        # 撤退后(见 _apply_skin 注释)acrylic_native 运行期恒 False,蒙版
-        # 却照套;且全仓只有这一处 SetWindowRgn(只设永不复),切形态/切
+        # 守卫只查 skin_id=="liquid" —— 亚克力路线撤退后(见 _apply_skin
+        # 注释)原生 backdrop 生效开关随死代码清理删除,蒙版却照套;且全仓
+        # 只有这一处 SetWindowRgn(只设永不复),切形态/切
         # 皮肤后旧尺寸蒙版残留,把新形态窗口裁成旧形状(实测卡片被条形
         # 蒙版裁成 40px 条带,region 外还点击穿透)。窗口圆角本就由
         # WA_TranslucentBackground + paintEvent 圆角 path 全权决定(见
@@ -1309,6 +1226,25 @@ class MeterWindow(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             QTimer.singleShot(90, self._settle)   # 保留双保险(release 到达时立即判定)
+
+    def hideEvent(self, ev):
+        """隐藏即停玻璃管线(#65):托盘收起(菜单『收起到托盘』=self.hide)
+        与托盘 toggle 的 hide 分支共用此路径 —— 隐藏期无任何视觉消费者,
+        66ms 节拍表 + DXcam 抓屏线程继续常驻复制屏幕属纯耗 CPU(与切离
+        liquid 皮肤的 _stop_glass_pipeline 同款卫生,补齐 hide 路径漏停)。
+        showEvent 对称恢复;退出路径的 aboutToQuit→_stop_glass_pipeline
+        不受影响(stop 幂等)。"""
+        super().hideEvent(ev)
+        if self.skin_id == "liquid":
+            self._stop_glass_pipeline()
+
+    def showEvent(self, ev):
+        """显示即恢复玻璃管线:showEvent 在 show()/showNormal()(启动、
+        托盘恢复、_activated 单击)时都会到达 —— _ensure_glass_timer 内建
+        双守卫(_state_guard 测试隔离 + skin_id!="liquid" 早退),非 liquid
+        皮肤与回归环境零副作用,无需在此重复判定。"""
+        super().showEvent(ev)
+        self._ensure_glass_timer()
 
     def _detach_to_pointer(self):
         pos = QCursor.pos()
@@ -1688,21 +1624,24 @@ class MeterWindow(QWidget):
         pairs = (("入 / 出", self.in_out_lbl), ("缓存命中", self.rate_lbl),
                  ("首 / 总", self.timing_lbl), ("燃速", self.burn_lbl),
                  ("均燃", self.avg_burn_lbl), ("均速", self.avg_lbl))
-        self._grid_k_labels = []
         if sk.id == "liquid":
-            # 液态玻璃:固定三等列(用户 2026-09-29 终版口径『每行数值间距
-            # 一样+上下两排左侧对齐+适当加宽防截断』)—— 列宽 88(容最宽
-            # 值 "446.4M / 541K"=84)+ 列距 8,合计 88×3+8×2=280≈内容宽
-            # 281;上下两排同列严格共线。k 恒与 v 同格左缘共线。
+            # 液态玻璃(用户 2026-09-29 终版口径『每行数值间距一样+上下两
+            # 排左侧对齐+适当加宽防截断』)。列宽不再覆写成 88:旧 88 字面
+            # 源自『最宽值 "446.4M / 541K"=84px』的误测(真机实测 99px),
+            # 而 _apply_card 的 elide 预算是 CARD_GRID_COL_W[0]=102 —— 列宽
+            # 88 与预算 102 脱节时,宽落 (88,102] 的值『预算内不 elide →
+            # 无省略号无 tooltip』却在 88px 列内被 QLabel 硬裁,读数尾部
+            # 静默丢失(P1,2026-10-07;#T4+T3 删 elide 特例分支后此脱节
+            # 失去最后补偿)。列宽必须与 elide 预算同源即 CARD_GRID_COL_W
+            # (102+68+95+8×2=281=内容宽,与其它皮肤同形),用户口径的
+            # 『防截断』反而由此才真正成立。上下两排同列严格共线、
+            # k 恒与 v 同格左缘共线不变。
             grid.setContentsMargins(0, 0, 0, 0)
             grid.setHorizontalSpacing(8)
-            for c in range(3):
-                grid.setColumnMinimumWidth(c, 88)
             for col, (k, v) in enumerate(pairs):
                 k_lb = self._mk_lbl(k, "faint", "Microsoft YaHei UI", 9)
                 grid.addWidget(k_lb, (col // 3) * 2, col % 3)
                 grid.addWidget(v, (col // 3) * 2 + 1, col % 3)
-                self._grid_k_labels.append(k_lb)
             root.addLayout(grid)
         else:
             # 玻璃/其它皮肤:固定三列 grid;末列(首/总、均速)值右对齐,
@@ -1718,7 +1657,6 @@ class MeterWindow(QWidget):
                     k_lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 grid.addWidget(k_lb, (col // 3) * 2, col % 3)
                 grid.addWidget(v, (col // 3) * 2 + 1, col % 3)
-                self._grid_k_labels.append(k_lb)
             root.addLayout(grid)
 
         # ⑥ 模型列表 rows[:4](预览 :187-190):容器+每行 HBox(名左 10pt
@@ -2080,6 +2018,13 @@ class MeterWindow(QWidget):
             if self.dock:
                 self._build_bar(vertical=self.dock in ("left", "right"))
                 self.setStyleSheet(self._skin_qss())   # 皮肤化(T2):qss_bar
+                # #63 布局激活先行(对齐 _apply_skin/_set_dock 同款纪律):
+                # _build_bar 换布局后 Qt 惰性激活,窗口 minimumSize 仍钉在
+                # 旧形态值 —— 跳过 activate 时 _apply_dock_geometry 的
+                # SetWindowPos 刚设好新条尺寸,事件循环恢复即被旧最小约束
+                # 顶回,段开关首拍出现『先弹回旧形态再收回』的瞬态回弹
+                # (三条重建路径独漏此处的病根)。
+                self.layout().activate()
                 self._apply_dock_geometry()
                 self._apply_snapshot(self.snap)
             self._save_config_segments()
@@ -2227,8 +2172,17 @@ class MeterWindow(QWidget):
                 hw.showNormal(), hw.raise_(), hw.activateWindow()))
         except Exception:
             import traceback
-            with open("zm_error.log", "a", encoding="utf-8") as f:
-                f.write(time.strftime("%H:%M:%S ") + traceback.format_exc())
+            # 落点锚定 app_dir()(与 zm_state/zm_usage_export 等六文件统一,
+            # 裸相对路径会随启动 cwd 漂移);open 自身再套守卫 —— except
+            # 块内的二次异常会吞掉上面的原始 traceback(排障线索丢失),
+            # 写不进日志时保底不打断调用链。
+            try:
+                with open(os.path.join(app_dir(), "zm_error.log"), "a",
+                          encoding="utf-8") as f:
+                    f.write(time.strftime("%H:%M:%S ")
+                            + traceback.format_exc())
+            except OSError:
+                pass
 
     # ---- 导出 CSV / 复制今日摘要(菜单在 _popup_menu『设置』之后) ----
     def _export_csv(self):
@@ -2238,10 +2192,19 @@ class MeterWindow(QWidget):
         缺席时 Windows 下 writer 的 \r\n 之上再叠一层 CRLF,Excel 里每行尾多
         出空行(验收项『列不错位』的一半坑在这)。行粒度=date×model 平铺、
         刻意不插合计行:partial 日合计与普通行混在同一文件里,读者在表格里
-        二次求和时会被当普通行重复加。OSError(exe 目录只读/文件被 Excel
-        占用)只气泡+dbg 不抛 —— 菜单槽内异常会被 Qt 静默吞掉,用户什么都
-        看不到反而像『点了没反应』。"""
-        rows = self.eng.fetch_daily_model_usage(30)
+        二次求和时会被当普通行重复加。两条故障通道都只气泡+dbg 不抛 ——
+        菜单槽内异常会被 Qt 静默吞掉,用户什么都看不到反而像『点了没反应』:
+        ① 查询侧(#64b)raise_on_error=True,坏库(占用/损坏)抛
+        sqlite3.Error 上抛而非静默空表 —— 否则坏库与空窗同为『已导出』
+        (空 CSV 假成功);② 写侧 OSError(exe 目录只读/文件被 Excel 占用)。"""
+        try:
+            rows = self.eng.fetch_daily_model_usage(30, raise_on_error=True)
+        except sqlite3.Error as e:
+            dbg(f"csv export query failed: {type(e).__name__}: {e}")
+            if self.tray is not None:
+                self.tray.notify("zcode-meter",
+                                 "导出失败:用量数据库不可读(占用/损坏)")
+            return
         try:
             with open(EXPORT_PATH, "w", encoding="utf-8-sig", newline="") as f:
                 w = csv.writer(f)
@@ -2301,8 +2264,17 @@ class MeterWindow(QWidget):
             QTimer.singleShot(0, _exec_and_apply)
         except Exception:
             import traceback
-            with open("zm_error.log", "a", encoding="utf-8") as f:
-                f.write(time.strftime("%H:%M:%S ") + traceback.format_exc())
+            # 落点锚定 app_dir()(与 zm_state/zm_usage_export 等六文件统一,
+            # 裸相对路径会随启动 cwd 漂移);open 自身再套守卫 —— except
+            # 块内的二次异常会吞掉上面的原始 traceback(排障线索丢失),
+            # 写不进日志时保底不打断调用链。
+            try:
+                with open(os.path.join(app_dir(), "zm_error.log"), "a",
+                          encoding="utf-8") as f:
+                    f.write(time.strftime("%H:%M:%S ")
+                            + traceback.format_exc())
+            except OSError:
+                pass
 
     def _apply_config(self, cfg: dict):
         """设置保存后的热生效(全部 UI 线程):先 save_config,失败即整体
@@ -2365,7 +2337,6 @@ class MeterWindow(QWidget):
             self._last_pct_seen = None
             self._last_win_tok_seen = None
             self._prev_quota = None   # 清 prev:残留旧号快照会让新号首查误报『额度已重置』(T8 重写须保留)
-            self.snap.plan_remaining_pct = None
             self.eng.quota_hint = None
             self.eng.on_activity = None
             if new and not _state_guard():  # ④换号:立即按新 key 重启,不停在 None
@@ -2408,8 +2379,10 @@ class MeterWindow(QWidget):
 
     def _update_quota(self):
         """quota 轨数据搬运(UI 线程):daemon 线程只产出普通 dict,这里取
-        拷贝渲染并回写引擎 —— plan_remaining_pct 引擎只写 None、UI 回填
-        (引擎从不读它,跨线程无竞态);nextResetTime 给计费块对齐块界用。
+        拷贝渲染并回写引擎(nextResetTime 给计费块对齐块界用)。套餐剩余%
+        的渲染载体是 UI 线程缓存 _plan_pct;snap.plan_remaining_pct 字段已
+        deprecated(#75:引擎不写不读、UI 不再回写,仅 Snapshot 构造兼容
+        保留),此处与清号分支的回写点已删。
         v0.5.1:同时缓存 fetched_at(渲染『N分钟前』新鲜度)与 next_reset_ms
         (倒计时每 200ms 渲染 tick 本地重算,零 API 请求)。
         重置通知:在覆盖 _prev_quota 前先比对快照检出 5h/cycle 重置(顺序
@@ -2454,7 +2427,6 @@ class MeterWindow(QWidget):
         pct = data.get("remaining_pct")
         if pct is not None:
             self._plan_pct = pct
-            self.snap.plan_remaining_pct = pct
             # 剩余量估算(两级):
             # ① 动态校准:相邻两次 quota 刷新的 pct 跳变 × 本地窗口 token
             #    增量 → ratio(1%=X token,EMA 平滑) → 剩余 = pct×ratio。
@@ -2673,7 +2645,8 @@ class MeterWindow(QWidget):
         吞吐(2026-09-28 语义切换,主数字不再用会话级 tps_est/exact)。"""
         # ① 状态行:elapsed 并入状态文本(idle『空闲』);会话标题降级为窗口
         # tooltip(F3 裁决:卡片行数减法由 tooltip+告警气泡补偿);模型名
-        # manual 前缀 📌、超宽 elide(固定 150px 钳宽,不反推撑宽卡片)
+        # manual 前缀 📌、超宽 elide(固定 190px 钳宽,不反推撑宽卡片;与
+        # 下方 elidedText(…,190) 生效值一致,纯 doc 漂移修正 #85)
         self.state_lbl.setText(
             f"生成中 {s.gen_elapsed:.0f}s" if generating else "空闲")
         self.setToolTip(("📌 " if s.manual else "") + (s.title or "当前会话"))
@@ -2768,19 +2741,15 @@ class MeterWindow(QWidget):
             lb.setToolTip(text if el != text else "")
 
         cw = self.CARD_GRID_COL_W
-        # liquid 皮肤:药丸等宽 93、内留白 7×2,文字预算 79 —— 超宽截断
-        # 防溢出药丸边界(用户 2026-09-29);其它皮肤按列宽(elide 纪律不变)
-        liquid = (self.skin_id == "liquid")
-        text_w = (skins.LIQUID_GRID_TEXT_W if liquid else 0)
         in_out_txt = f"{fmt_k(s.session_in)} / {fmt_k(s.session_out)}"
-        _elide(self.in_out_lbl, in_out_txt, text_w or cw[0])
-        _elide(self.rate_lbl, f"{s.cache_rate:.2f}%", text_w or cw[1])
+        _elide(self.in_out_lbl, in_out_txt, cw[0])
+        _elide(self.rate_lbl, f"{s.cache_rate:.2f}%", cw[1])
         tt = f"{s.last_ttft:.1f}" if s.last_ttft is not None else "--"
         du = f"{s.last_duration:.1f}s" if s.last_duration is not None else "--"
-        _elide(self.timing_lbl, f"{tt} / {du}", text_w or cw[2])
+        _elide(self.timing_lbl, f"{tt} / {du}", cw[2])
         burn = s.burn_tokens_per_hour or 0.0
         burn_txt = f"{fmt_k(int(burn))}/h"
-        _elide(self.burn_lbl, burn_txt, text_w or cw[0])
+        _elide(self.burn_lbl, burn_txt, cw[0])
         if s.est_hours_left is not None:
             self.burn_lbl.setToolTip(
                 burn_txt + (" · 预算已超支" if s.est_hours_left <= 0
@@ -2790,9 +2759,9 @@ class MeterWindow(QWidget):
         ab = s.burn_avg_tokens_per_hour
         _elide(self.avg_burn_lbl,
                f"{fmt_k(int(ab))}/h" if ab is not None else "--",
-               text_w or cw[1])
+               cw[1])
         _elide(self.avg_lbl, f"{s.tps_avg:.1f} t/s" if s.tps_avg else "--",
-               text_w or cw[2])
+               cw[2])
         # ⑥ 模型列表 rows[:4]:首行不带『均』前缀(v0.7→v0.8 有意变更),
         # 行数不足隐藏(容器高度随可见行收缩)
         rows = (s.speed_by_model or [])[:4]
@@ -2811,18 +2780,6 @@ class MeterWindow(QWidget):
                 nm.setText(fmn.elidedText(f"{prov} / {model}",
                                           Qt.ElideRight, 215))
                 sp_lbl.setText(f"{tps_m:.1f} t/s" if tps_m else "-- t/s")
-        # 液态玻璃药丸几何缓存(第十轮):此处布局已可激活 —— 先 activate
-        # 落地几何,再量六格 k/v 顶底与列中线存 _pill_geo,paintEvent 的
-        # deco 只消费缓存不现读几何(布局惰性激活,现读在形态切换首帧
-        # 必读旧值 —— 真机『3 个竖条药丸+灰白遮罩』根因)。激活失败/竞态
-        # 首帧缓存放空,deco 跳过药丸只画底,下一帧补上,时序永远正确。
-        if self.skin_id == "liquid" and self._bar_form is None:
-            # activate 在 --verify 环境挂起(实测);几何量取退化为
-            # 『下轮 paint 前置 activate 后的 findChildren 现读』—— 改由
-            # paintEvent 侧首帧激活后回填缓存(pill_geo_cb)
-            pass
-        elif self._bar_form is not None:
-            self._pill_geo = None    # 条形态不消费;防切形态后用旧卡几何
 
     def _refit_dock(self):
         """条模式下数据文字变长时重算条尺寸(防截断);几何统一由

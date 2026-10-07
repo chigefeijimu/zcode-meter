@@ -1,5 +1,137 @@
 # Changelog
 
+## v0.9.2 (未发布) — 93 条 open 清库存批:口径守卫/源契约/玻璃管线锚点修正/CLI 故障通道/皮肤可读性底衬 + 护栏可执行化
+
+- **批次性质:非新功能批,把 findings/registry.json 全部 93 条 open 一次清零
+  (2026-10-06)**。按文件域独占分七票落地(数据层/源包 → app → 玻璃管线 →
+  CLI → 皮肤 → 文档版本护栏 → 收尾对账),预判处置 = 已修 87 + 先期已修补记 3
+  (#7/#31/#40)+ 改判维持 3(#19/#43/#47),逐条处置表见 registry.json(唯一
+  写入方=收尾票)。**全部统计口径数值语义零变更**:今日/金额(三档价)/燃速
+  60min/计费块 5h/THROUGHPUT_WINDOW_S=10s/chars_per_token 校准公式/
+  MAX_SCAN_ROWS=10 万行闸/「宁可高估」计价全部不动;26 条 fixed 基准
+  (右键菜单 deleteLater、失败事件白名单+watchdog、蒸汽波底衬、connect_ro
+  URI 编码、菜单 show 单 Shot、归来者重建 #24 等)回归核对零回归;改前
+  4 天真实日志回放逐拍对比:失败家族收场、watchdog、subagent/dwf 排除红线
+  行为逐字不变。
+- **T1 数据层+源包(data_engine/sources/legacy_tk,45 条修)**。口径级:
+  #12 完成拍同拍去重 —— 完成瞬间 part 增长与 completed 重叠加权双计同一批
+  输出(≈2× 尖峰),_poll_stats_tail 对新鲜完成行扣减该会话本拍 part 贡献
+  (钳 0),**权重公式/10s 窗口/校准公式一字不动**,手算单测钉死完成拍
+  global_tps≈r×ov/win,逐拍新增扣减为 O(行×会话) 微秒级;#20 ZCode 分量
+  复用同拍刚算出的 today 值(单查询双用,开闸拍少 1 查询+1 连接);#28+#76
+  快照浅拷贝推 UI + _push_fp 仅真实
+  push 后推进、woken 即推 —— 空闲衰减 10s 内逐拍送达后自然归稳(只改拷贝
+  不改编账=衰减永久冻结,两项必须同票落地);#11 会话查询补 query_source=
+  'main_turn'(8 处口径查询对齐);#13/#14 竞态与残值清扫。异常防御:
+  #10 json.loads 结果加 dict 守卫(非对象行静默丢,不再打死 _tail_loop);
+  #17 per-source 守卫(_src_today_cache 刷新段与 today_by_source 推导段全部
+  per-source 调用套 try/except,该源当拍跳过+dbg 每源首记节流 —— 第三方源
+  NotImplementedError 不再杀 _db_loop);#93 深嵌套毒行 RecursionError 按坏
+  行跳过;#86 tail 残行防线(无 \n 尾行 seek 回原 pos 不消费)。性能/契约:
+  #87 手动切换延迟化(is_alive 时只置 pending+_wake,切换在 _db_tick 头部
+  snap_lock 内执行,UI 线程不再跑 SQL 批;排除前缀 sess_subagent*/sess_dwf-*
+  在 _latest_session/recent_sessions/_handle_log_line 三处原样存活,专项
+  断言);#84 boot_queries=False 跳过三个启动预热查询;#64
+  fetch_daily_model_usage 增 raise_on_error;#21/#49 全文件 con.close 进
+  finally(先查后关,严防 close 后查询被 except 吞);#48 PRICES_PATH
+  (mtime_ns,size) 签名热重载;#90 SKIN_IDS 双侧字面+test_stress 跨文件相等
+  断言钉死(单源 import 方案被『数据层 UI 无关』不变式否决,见预置裁决④)。
+  源包:#38 非法 Source 形态 loudly raise;#81 同名源 raise;#16 兄弟类再导出
+  去重;#73 子类不声明 order 排 100;#92 _file_cache 改 scope 嵌套 dict;
+  #59/#60/#82/#83 归来者/walk 口径对齐;#22 daily_usage 补行数下限;
+  #42 legacy_tk connect_ro URI 同形修复;#57/#58/#74/#39/#91 契约 docstring
+  如实化(失败须自降级返回 0 不得 raise 为 documented limitation,引擎侧
+  #17 守卫兜底)。
+- **T4 app.py(14 条+文档清理)**。#8 两处 except 内裸 open("zm_error.log")
+  改锚 app_dir() 且 open 自身套防护(二次逃逸不再吞原始异常);#26 设置窗
+  落盘前从 load_config() 补挂 bar_segments/skin,两次写内容同形(首写成功
+  二写失败不再产生『新 key+丢段开关/皮肤』分裂盘面,永久断言落 test_stress);
+  #65 hideEvent 重写:liquid 皮肤隐藏即 _stop_glass_pipeline,showEvent 对称
+  恢复(托盘常驻期间零抓屏);#64b 导出 CSV 改 raise_on_error=True 捕
+  sqlite3.Error → 失败气泡+不写文件(坏库与空窗不再同为『已导出』);#24+
+  #37 _pill_geo 死链全删;#25 亚克力死方法删(保留 _disable_acrylic 的 DWM
+  卫生);#46/#85 死常量与注释漂移;#63 段开关重建路径补 layout().activate();
+  #55b paintEvent 的 deco 调用套 try/except 落 _paint_glass 兜底;#80a 删
+  liquid 专属 elide 分支。
+- **T2 玻璃管线(13 条)**。#50 PrintWindow 锚点修正案:抓取与 blit 数学用
+  GetWindowRect,DWMWA_EXTENDED_FRAME_BOUNDS 仅做交集/covered 判定 ——
+  不可见边框带不再当真背景写洞区,消系统性 8-9px 错位;#32 _BLUR_STATE
+  单一元组原子引用发布(消『新数组+旧矩形』撕裂视图被长期缓存);#51
+  seed_full 赋值与 view() 切片同锁(封死反方向撕裂);#69 refresh_hole_below
+  首行无条件推进 _BLINK_AT(含早退/异常/成功全部退出路径统一 2.5s 退避,消
+  16-100ms 无退避 GDI 热循环);#29 顶层 dxcam.create() 移除,OK 改
+  find_spec 可用性探测(import 不再白付 0.4s+二次 create WARNING);#30
+  死重清理(_LAST_BG/latest()/blink_capture 整段等);#68 _PREV_RECT 并集
+  死算退役;#77 拖动结束 set_region 清 _SIG_CHANGES(首次评估不再误判动画
+  静默 15s);#52 裸 except 加 dbg;#78/#88/#53 节拍与死参文档如实。新建
+  tests/test_glass_effect.py(全程 monkeypatch,不依赖 dxcam/真实屏幕)。
+- **T5 CLI(6 条)**。#4 故障通道:查询前探测 DB_PATH 缺失或 connect_ro 探针
+  抛 sqlite3.Error → stderr 报错(含路径/异常类)+rc=1,不再以『窗口内无
+  completed 记录』rc=0 伪装空窗;#5 口径行追加『历史聚合仅统计最近 100,000
+  行』披露(与 README 同文,闸本体不动);#6 表头/合计 CJK 按显示宽度补位
+  (宽 2 函数,CJK/全角=2、ASCII=1);#45 逐行检测『模型在价格表内但缺
+  in_cache 档』→ 上限注脚(≈),与未知模型下限注脚分列,**只加标记不改
+  cost_of 计算**;#44 docstring 删『PYTHONPATH=src 是 -m 合法替代』的错误
+  宣称(python -m 的 cwd 先于 PYTHONPATH,仓库根下 shim 仍胜出,-m 必须
+  cd src);#84b boot_queries=False(CLI 冷启不再白付 3 查询+缺库全扫,全程
+  连接计数==报表查询本身 1 次)。新建 tests/test_cli.py(tmp 合成库注入,
+  不触真实 ~/.zcode)。
+- **T3 皮肤(13 条)**。#70 liquid contrast_bg 三重失真修复:离屏探针(行
+  中心带口径)实测改前真实最坏承载面 dim(状态行)1.75:1、accent(主数字)
+  2.23:1、h/v 形态同名档 2.76~3.93:1 全部破闸,而旧申报 #343b4d 漏算
+  blob 峰值、按其算 dim 7.6 放行;修法为文本行锚定活几何补暗玻璃底衬
+  (两站渐变,压 blob 最亮峰后全部档位 5.5:1+ 余量;**视觉保守=补暗底衬
+  优于改色板**,palette 一字不动,条形态只衬实测破闸行、其余组行实测
+  4.9~8.0:1 不衬以保玻璃感),contrast_bg 如实改报 card #1f364a /
+  h #32363c / v #31363c(WCAG 闸按新申报复测须全过,申报变严而非维持
+  旧数自证,vaporwave 先例);#89 industrial half 档真实承载面为金属渐变
+  —— 离屏实测改前仅 3.85~4.43:1(whole-metal 复算全程 3.55~4.53 无处
+  真正过 4.5),旧申报按 readout 暗屏 #101614 算 5.15 放行;修法=既有
+  暗材铭牌(#151b18→#0e1411,黄铜边)向下延伸覆盖模型行(同材质最小
+  改动,不改 palette),延伸后全场最坏 half≈4.9(铭牌顶缘最亮带上)、
+  ≥4.5 达标,contrast_bg #101614 维持(其在铭牌渐变区间内);#35 CRT
+  版本行 'ZCODE-METER v0.8' 改运行时读 zcode_meter.__version__(消
+  第四处版本叙事,升版自动跟随);
+  #34/#71 radius/font_decor 影子字段删除(骨架断言同步收缩);#36
+  _deco_liquid 裸 except 收窄为 try/finally 保证 save/restore 配对+异常落
+  veil;同票 _liquid_bg 的 acrylic_native 消费分支塌缩;#55a
+  swiss/industrial 直接属性访问改 getattr 守卫;#72 chalk 标题装订补
+  families;#79 palette['sep'] 与 SkinDef.sep 焊死(liquid 分叉修为
+  transparent 同值,九款恒等断言);#80b 删 LIQUID_GRID_TEXT_W;#33/#54 模块
+  头导入纪律与 F2 声明如实化。
+- **T6 文档/版本/护栏(本条目即产物之一)**。#1 __version__ 0.6.0→0.9.2,
+  test_package.py 的镜像硬编码改为解析 CHANGELOG.md 头部版本行对账(测试与
+  changelog 再漂移即变红);#2 零副作用红线可执行化:子进程 import
+  zcode_meter 后断言 sys.modules 不含 data_engine/app(手改 __init__.py 加
+  import 实机演示变红后复原);#56 红线断言包:子进程逐个 import sources
+  包成员+skins,断言 data_engine/app 不被拉入、QtWidgets 不被拉入(skins
+  『只 QtGui+QtCore+stdlib』事实钉死);#3 __init__ docstring 补版本探测
+  前提(sys.path 含 src/,仓库根 import 命中 shim);#23 包结构清单补
+  __main__/glass_effect/skins/sources(与 README 目录树单一事实);
+  run_all.py 注册 test_glass_effect/test_cli 两新组(默认组 data/pkg/ui/
+  stress/glass/cli 六条);README 同步 CLI 故障通道/PYTHONPATH 措辞/
+  zm_error.log 落点/金额注脚/hideEvent 管线启停/CRT 版本行。
+- **预置裁决清单(全部歧义事先落死,K=0)**:① MAX_SCAN_ROWS=10 万行闸只加
+  披露不删闸;② CLI 缺 in_cache 档只加 ≈ 上限标记,不改 cost_of 计算;
+  ③ #28 拷贝化与 #76 编账必须同票落地且指纹含衰减字段;④ #90 SKIN_IDS 双侧
+  字面+test_stress 相等断言,不做单源 import(data_engine 不 import
+  skins/任何 PySide6 模块的『数据层 UI 无关』不变式零破例);⑤ 皮肤视觉
+  最小改动:liquid/industrial 只补暗底衬/延伸既有暗材,palette 色值零改动,
+  glass 逐位不变;⑥ 新增护栏全部为子进程可执行断言,非 docstring-only。
+- **改判维持三条(理由入档)**:#19 claude _file_cache 条目只增不删 ——
+  条目常驻是 fixed#24 归来者判定(k in pre_cached 要求缓存条目仍存在)的
+  承重结构,朴素修剪会让归来文件走全新冷解析、共享 mid 双计窗口重开;内存
+  代价每文件条目 KB 级,若未来量级恶化按 tombstone 集合方案另行治理,决策
+  记录已写入 claude.py docstring(维持之证=归来者双计回归测试仍绿)。
+  #43 会话聚合 SQL 段性能 —— 注册表自述 spec nonGoals 钉死本批不修。
+  #47 日志事件不按统计对象过滤 —— README『注意』节已文档化为既知语义
+  (全局 tail 不区分会话),收窄反引入 2h watchdog 卡死家族风险。
+- **先期已修补记三条(未记账的既有事实)**:#7 换号/清号清理清单四项缺列
+  —— 现状 app.py 该分支已全清,先期已修未记账;#31 _BLINKING 竞态 ——
+  opacity 隐身方案 2026-09-30 已整体退役,机制不存在;#40 today_usage
+  O(n) 日期过滤 —— v0.9.0 的 date_agg 预聚合已落地,现为 O(文件数) TTL
+  聚合。
+
 ## v0.9.1 (未发布) — 两 P1 修复:失败事件复位 generating 状态机 + 蒸汽波主数字可读性
 
 - **P1 修复①:请求失败事件全家族纳入 generating 状态机 + watchdog 兜底

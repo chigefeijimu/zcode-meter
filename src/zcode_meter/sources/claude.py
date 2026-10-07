@@ -1,8 +1,8 @@
 """Claude Code 用量源:~/.claude/projects/**/*.jsonl 只读解析。
 
 类与 _claude_ts_local 自 data_engine 原样迁移;v1 起增量偏移解析
-(registry#19):文件缓存条目 {mtime_ns,size,offset,entries,seen_mid,
-date_agg},追加只 seek(offset) 解析新增字节 —— 单文件成本从
+(registry#19):文件缓存条目 {mtime_ns,size,offset,entries,date_agg},
+追加只 seek(offset) 解析新增字节 —— 单文件成本从
 O(文件大小) 的整文件重解析降为 O(新增字节)。解析/跳过/补齐规则与
 去重顺序一字未动(test_claude_source_synthetic 钉死)。
 
@@ -51,6 +51,25 @@ def _norm_path(p: str) -> str:
     return os.path.normcase(os.path.normpath(p))
 
 
+def _rebuildable(path: str) -> bool:
+    """重建集存在性判据(#60 的判别收窄,P1 2026-10-07):仅
+    FileNotFoundError/NotADirectoryError(ENOENT/ENOTDIR,路径确已消亡)
+    返回 False —— 已删文件的陈旧条目不得在任何后续 reparse 事件中复活
+    重新 claim(#60 意图);其余 OSError(瞬锁/权限/IO 抖动)按『仍在盘』
+    保守返回 True。os.path.exists 把两类同判 False,曾把瞬锁的在盘文件
+    排除出 reparse 重建 → 共享 mid 归属翻给幸存文件、其 date_agg 未重导
+    → 同 mid 双计且无自愈点。放行侧零额外代价:_rebuild_scope 只读缓存
+    条目、绝不碰盘,与 _scan 侧重建集并入 errored(『漏并的话重建本身
+    就制造一次归属翻转』)同纪律。"""
+    try:
+        os.stat(path)
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+
+
 class ClaudeSource(UsageSource):
     """Claude Code 源:只读解析 ~/.claude/projects/**/*.jsonl。
     口径(实测 1921 条 assistant 行验证,自迁移起一字未动):
@@ -68,7 +87,21 @@ class ClaudeSource(UsageSource):
       _poll_stats 也调它,不节流会把 jsonl 目录扫成热点。watcher(T6,
       data_engine 侧线程)活体时走 note_changes 摄取并失效 TTL;
       watcher 死亡/缺位时 TTL 周期的 walk+stat 兜底 —— 数据永不错,
-      只是慢到 TTL。"""
+      只是慢到 TTL。
+
+    _file_cache 条目只增不删(#19 改判维持+文档化,评审阻断 2 裁决):
+    归来者判定靠 `k in pre_cached`(见 _scan)要求已删除文件的缓存条目
+    仍然存在 —— 朴素修剪会让归来文件(回收站还原/同卷 Ctrl+Z)走全新
+    冷解析、不再触发归属重建,共享 mid 双计窗口重开(fixed#24 实测修掉的
+    今日 666 vs 正确 116 家族)。内存代价每文件条目 KB 级(registry 自记
+    量级小);若未来量级恶化,按 tombstone 集合方案另行治理,不在此修剪。
+
+    #92 缓存按 scope 嵌套:_file_cache[scope][file_key](此前扁平
+    [file_key] 跨 scope 共享文件级 date_agg,而 mid 归属 _mid_owner 按
+    scope 分桶 —— 嵌套 projects_dir 双实例时,第二 scope 对共享文件命中
+    mtime+size 短路,直接复用另一 scope 归属下的 date_agg 值,同 mid 跨
+    文件双计或子目录清零且不自愈);三缓存(_file_cache/_mid_owner/
+    _scope_files)现在同以 scope 为首键,多实例互不串扰的自声明兑现。"""
 
     name = "Claude"
     # discover_sources 排序键:10 = 排在 ZCode(0)之后,与迁移前
@@ -83,13 +116,15 @@ class ClaudeSource(UsageSource):
     # 6 jsonl/11.4MB 实测 ~100ms 量级),此后尾读 O(新增字节),换来
     # watcher 线程 note_changes 与引擎线程 _scan 的零竞态,无需双检/重试。
     _lock = threading.Lock()
-    # 条目六字段:{mtime_ns,size}=上次摄取时的 stat(两者都未变即短路,
-    # mtime_ns 比 st_mtime 多 100ns 位,原地重写检测靠它);offset=已
-    # 消费字节数(只越过完整 \n 行);entries=该文件全部合格行(整文件
-    # 重解析重建归属的原料,含被抑制行 —— 重建要按完整行集重导,不能
-    # 只留归属行);seen_mid=本文件 claim 到的 mid;date_agg=本文件
-    # 归属行的 按本地天 in+out 之和。
-    _file_cache: dict = {}   # normpath -> {mtime_ns,size,offset,entries,seen_mid,date_agg}
+    # 条目五字段(#83 起 seen_mid 影子字段删除 —— 全仓零读取方,归属判定
+    # 实际全由类级 _mid_owner 独自承担,镜像冗余只付维护成本):
+    # {mtime_ns,size}=上次摄取时的 stat(两者都未变即短路,mtime_ns 比
+    # st_mtime 多 100ns 位,原地重写检测靠它);offset=已消费字节数(只
+    # 越过完整 \n 行);entries=该文件全部合格行(整文件重解析重建归属的
+    # 原料,含被抑制行 —— 重建要按完整行集重导,不能只留归属行);
+    # date_agg=本文件归属行的 按本地天 in+out 之和。
+    # 首键 = scope(#92:归一化 projects_dir),值 = {file_key: 条目}。
+    _file_cache: dict = {}   # scope -> {normpath(file) -> entry}
     # 全局 mid→owner_path 所有权映射(N1 裁决):tail 追加时首 claim
     # 者胜、后来者抑制 —— 与迁移前『每次 walk 一个 seen 集合、先到先得』
     # 同语义,只是把 seen 常驻化以支撑跨轮增量。按 projects_dir 作用域
@@ -103,8 +138,9 @@ class ClaudeSource(UsageSource):
     # 对齐。2026-10-03 起兼作『归来者』检测:上轮不在册而缓存有旧条目的
     # 键重新出现 ⇒ 消失轮的重建已动过归属,归来必须再重建一次重导归属
     # (见 _scan 的 returning 注释),否则原样恢复的旧 date_agg 与翻转后
-    # 的归属并存双计。(条目本身的只增不删是另一问题,registry open#18,
-    # 本批不修。)
+    # 的归属并存双计。(条目本身的只增不删是 #19 维持裁决,见类 docstring;
+    # #59 起 note_changes 摄取的新文件也记入本集,两次 walk 之间出生即死
+    # 的文件不再逃过 vanished 检测。)
     _scope_files: dict = {}  # scope -> set(normpath)
 
     def __init__(self, projects_dir: str | None = None):
@@ -130,13 +166,20 @@ class ClaudeSource(UsageSource):
         与迁移前 _parse_file 的整文件行迭代逐字相同,拆成逐行是为让
         初始全量与增量尾读共用同一份规则(两路解析规则漂移比慢更危险)。
         文本态按 \n 分行与迁移前一致:\n 不可能是多字节 UTF-8 序列的
-        组成字节,行边界在字节态与文本态完全重合。"""
+        组成字节,行边界在字节态与文本态完全重合。
+        #93:except 增补 RecursionError —— 深嵌套毒行(实测最小触发深度
+        16916 层,正常 Claude jsonl 嵌套个位数)在 json.loads 内抛
+        RecursionError(非 JSONDecodeError 子类),沿 _read_new_rows→
+        _ingest→_scan→today_usage 全链无 except 接住,引擎侧唯一护栏
+        _poll_stats_tail 只捕 sqlite3.Error → 杀 _db_loop 整卡冻结;
+        与 fixed 的 _claude_ts_local 异常面扫尾(fixed 2026-09-30)同族,
+        毒行按坏行返回 None 逐行跳过。"""
         line = line.strip()
         if not line:
             return None
         try:
             obj = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             return None
         if not isinstance(obj, dict) or obj.get("type") != "assistant":
             return None
@@ -163,8 +206,8 @@ class ClaudeSource(UsageSource):
                 vals["output_tokens"],
                 mid if isinstance(mid, str) else None)
 
-    @staticmethod
-    def _read_new_rows(path: str, offset: int):
+    @classmethod
+    def _read_new_rows(cls, path: str, offset: int):
         """从 offset 读到 EOF → (合格行列表, 新offset);OSError → None。
         行完整性以 \n 为准:未终止的尾部残行不解析、新 offset 不越过它
         (留在残行起点,下次尾读从残行起点读到 EOF,自然把补全后的整行
@@ -172,7 +215,11 @@ class ClaudeSource(UsageSource):
         两次』的窗口(v0.2.0 input 双计教训);jsonl 追加以完整行为单位,
         残行只可能是写了一半 —— 本机实测 6 个真实 jsonl 全部 \n 收尾,
         静态缺尾换行(写者崩溃在 JSON 边界)的极端情况接受延迟到补全
-        或整文件重解析,绝不吃双计。"""
+        或整文件重解析,绝不吃双计。
+        #61:经 cls 分派调 _parse_line(此前硬编码 ClaudeSource._parse_line,
+        data_engine 按 isinstance 识别『未来的 ClaudeSource 子类自然继承』,
+        硬编码会让子类覆写 _parse_line 被静默忽略,冷/增量两路解析规则
+        漂移)—— classmethod 化,子类覆写自然生效。"""
         try:
             with open(path, "rb") as f:
                 f.seek(offset)
@@ -183,7 +230,7 @@ class ClaudeSource(UsageSource):
         parts = chunk.split(b"\n")
         partial = parts.pop()          # 末段无 \n 即残行(恰在 \n 后则为空)
         for b in parts:
-            r = ClaudeSource._parse_line(b.decode("utf-8", "replace"))
+            r = cls._parse_line(b.decode("utf-8", "replace"))
             if r is not None:
                 rows.append(r)
         # 只越过完整行(各段 + 分隔符)的字节;残行留给下一次尾读
@@ -205,7 +252,6 @@ class ClaudeSource(UsageSource):
                 if mid in owner:
                     continue
                 owner[mid] = key
-                e["seen_mid"].add(mid)
             d = ts.date().isoformat()
             e["date_agg"][d] = e["date_agg"].get(d, 0) + i + o
 
@@ -217,19 +263,20 @@ class ClaudeSource(UsageSource):
         文件的旧条目而不全局重建的话,其他文件里因『mid 已被它 claim』
         而被抑制的行永远不会解禁。换 sorted 序属有意变更:迁移前的重解析
         归属序跟随 os.walk(跨平台/跨次运行不确定),钉死 sorted 才能让
-        『重解析结果 == 从零重建』成为可断言的性质。"""
+        『重解析结果 == 从零重建』成为可断言的性质。#92:条目取自本
+        scope 桶,不碰其他 scope。"""
         owner = {}
+        bucket = cls._file_cache.get(scope, {})
         for k in sorted(keys):
-            e = cls._file_cache.get(k)
+            e = bucket.get(k)
             if e is None:
                 continue
-            e["seen_mid"], e["date_agg"] = set(), {}
+            e["date_agg"] = {}
             for ts, i, o, mid in e["entries"]:
                 if mid is not None:
                     if mid in owner:
                         continue
                     owner[mid] = k
-                    e["seen_mid"].add(mid)
                 d = ts.date().isoformat()
                 e["date_agg"][d] = e["date_agg"].get(d, 0) + i + o
         cls._mid_owner[scope] = owner
@@ -250,8 +297,10 @@ class ClaudeSource(UsageSource):
         offset 同样意味着旧字节区已被改写 —— 当追加读会把新文件的旧字节
         再解析一遍,故一并归入重解析。size 增长时即使内容被整体轮转
         替换,与追加在 stat 层面不可区分,按追加处理(Claude Code 对
-        jsonl 只追加,这是既定事实;真轮转必然伴随收缩或原地重写)。"""
-        e = self._file_cache.get(key)
+        jsonl 只追加,这是既定事实;真轮转必然伴随收缩或原地重写)。
+        #92:条目读写都走本 scope 桶。"""
+        bucket = self._file_cache.setdefault(scope, {})
+        e = bucket.get(key)
         if e is not None and e["mtime_ns"] == st.st_mtime_ns \
                 and e["size"] == st.st_size:
             return "unchanged"
@@ -262,8 +311,8 @@ class ClaudeSource(UsageSource):
                 return "error"
             rows, off = res
             e = {"mtime_ns": st.st_mtime_ns, "size": st.st_size, "offset": off,
-                 "entries": [], "seen_mid": set(), "date_agg": {}}
-            self._file_cache[key] = e
+                 "entries": [], "date_agg": {}}
+            bucket[key] = e
             self._claim_rows(scope, key, e, rows)
             return "new"
         if st.st_size < e["size"] or (st.st_size == e["size"]
@@ -277,9 +326,9 @@ class ClaudeSource(UsageSource):
         rows, off = res
         e["mtime_ns"], e["size"], e["offset"] = st.st_mtime_ns, st.st_size, off
         if kind == "reparse":
-            # 作废旧贡献:三件套清空换新;归属与 date_agg 交由调用方
-            # 紧随的 _rebuild_scope 按确定性序统一重导(见 N1 注释)
-            e["entries"], e["seen_mid"], e["date_agg"] = [], set(), {}
+            # 作废旧贡献:entries/date_agg 清空换新;归属与 date_agg 交由
+            # 调用方紧随的 _rebuild_scope 按确定性序统一重导(见 N1 注释)
+            e["entries"], e["date_agg"] = [], {}
         self._claim_rows(scope, key, e, rows)
         return kind
 
@@ -293,22 +342,35 @@ class ClaudeSource(UsageSource):
         "error" 只说明『walk 见到但本轮读不动』(AV/备份/写者瞬锁是
         _ingest error 分支的自述动机),不等于文件消失 —— 失败文件的
         last-good 聚合与 mid 归属原样保留;真消失只认 walk 不再列出
-        (删除在 walk→锁间隙发生时同样被下一轮兜住)。"""
+        (删除在 walk→锁间隙发生时同样被下一轮兜住)。
+        #82 目录级瞬盲:os.walk 默认静默吞掉 scandir 错误(AV/OneDrive/
+        网络盘瞬锁子目录),部分列举曾被当『真消失』触发空集/部分重建,
+        今日聚合清零骤降。现在 onerror 收集:当轮有错 ⇒ 未被列出的已知
+        文件按 last-good 保守 —— 并回 present 与聚合键集(与文件级
+        errored 同纪律),vanished/returning 判定跳过一轮(下轮 walk
+        健康时再裁决:真删了照样触发,瞬盲则自愈,无窗口)。"""
         now = time.time()
         if self._entries is not None and now - self._scanned_at < self.SCAN_TTL:
             return self._entries
         walked = set()
-        for root, _dirs, files in os.walk(self.projects_dir):
+        walk_errs = []
+        for root, _dirs, files in os.walk(self.projects_dir,
+                                          onerror=walk_errs.append):
             for fn in files:
                 if fn.endswith(".jsonl"):
                     walked.add(_norm_path(os.path.join(root, fn)))
         scope = self._scope()
         agg: dict = {}
         with self._lock:
-            # 归来者判定的原料:本轮摄取『前』已在缓存的键。快照必须在摄取
-            # 循环之前取 —— 新文件的条目是循环里 _ingest 才建的,不先快照就
-            # 会把『全新文件』误判成『归来者』(见下方 returning 注释)。
-            pre_cached = set(self._file_cache)
+            # setdefault 取桶(而非 get):摄取循环里 _ingest 对新 scope 会
+            # setdefault 建桶,get 返回的分离空 dict 会让下方聚合循环读不到
+            # 本轮新建的条目
+            bucket = self._file_cache.setdefault(scope, {})
+            # 归来者判定的原料:本轮摄取『前』已在本 scope 缓存的键。快照
+            # 必须在摄取循环之前取 —— 新文件的条目是循环里 _ingest 才建的,
+            # 不先快照就会把『全新文件』误判成『归来者』(见下方 returning
+            # 注释)。
+            pre_cached = set(bucket)
             keys = []
             errored = set()
             reparse = False
@@ -327,12 +389,19 @@ class ClaudeSource(UsageSource):
                     keys.append(k)
             last = self._scope_files.get(scope)
             present = set(keys) | errored
-            # 消失判定只认 walk:上轮在册而本轮 walk 未列出才是真消失。
-            # 旧判据 not last.issubset(keys) 把瞬时失败也当消失:当轮聚合
-            # 丢 last-good 已违反 _ingest 的 error 契约,更糟的是用不含
-            # 它的 keys 重建 → 共享 mid 归属翻给幸存文件;它恢复后走
-            # unchanged 短路不再重建,同 mid 在两个文件的 date_agg 并存
-            # → 今日用量永久双计(input 双计教训家族,2026-10-02 P1)。
+            walk_blind = bool(walk_errs)
+            if walk_blind and last is not None:
+                # 目录级瞬盲:未被列出的已知文件按 last-good 保守并入
+                # present(聚合继续用其 date_agg;判定延后到健康轮)
+                present |= {k for k in last | set(bucket)
+                            if k not in present}
+            # 消失判定只认 walk(且本轮 walk 无瞬盲):上轮在册而本轮 walk
+            # 未列出才是真消失。旧判据 not last.issubset(keys) 把瞬时失败
+            # 也当消失:当轮聚合丢 last-good 已违反 _ingest 的 error 契约,
+            # 更糟的是用不含它的 keys 重建 → 共享 mid 归属翻给幸存文件;
+            # 它恢复后走 unchanged 短路不再重建,同 mid 在两个文件的
+            # date_agg 并存 → 今日用量永久双计(input 双计教训家族,
+            # 2026-10-02 P1)。
             #
             # 归来者重建(2026-10-03 P1):『上轮在册没有、缓存里却有旧条目、
             # 本轮 walk 又列出』= 消失被观察过、期间已触发把它的 mid 释放给
@@ -349,23 +418,19 @@ class ClaudeSource(UsageSource):
             # 归来(条目本轮才建,归属已由 _claim_rows 即时落定,重建是白工);
             # 仅被 note_changes 预摄取过、从未进过 scope_files 的文件会命中同
             # 判据 → 多一次无害重建(重建幂等,结果与冷扫一致),可接受。
-            returning = (last is not None
+            returning = (last is not None and not walk_blind
                          and any(k not in last and k in pre_cached
                                  for k in present))
             if reparse or returning \
-                    or (last is not None and not last.issubset(walked)):
+                    or (last is not None and not walk_blind
+                        and not last.issubset(walked)):
                 # 重建集并入瞬时失败文件(其条目未动,按完整行集重导
                 # 归属)——漏并的话重建本身就制造一次归属翻转
                 self._rebuild_scope(scope, present)
             self._scope_files[scope] = present
-            for k in keys:
-                for d, v in self._file_cache[k]["date_agg"].items():
-                    agg[d] = agg.get(d, 0) + v
-            for k in errored:
-                # 兑现 _ingest 的 error 契约:失败轮聚合用 last-good 而非
-                # 归零(冷路径失败无缓存条目,get 容缺自然跳过)
-                e = self._file_cache.get(k)
-                if e is not None:
+            for k in present:
+                e = bucket.get(k)
+                if e is not None:       # 冷失败无条目自然跳过(旧 errored 分支)
                     for d, v in e["date_agg"].items():
                         agg[d] = agg.get(d, 0) + v
             # TTL 字段写回也在锁内:与 note_changes 的失效互斥,杜绝
@@ -383,7 +448,17 @@ class ClaudeSource(UsageSource):
         只处理位于本源 projects_dir 之内的路径(watcher 只注册该子树,
         防御外来源);删除/改名事件(stat 失败)摄取无从谈起,但同样
         失效 TTL,让下一轮 walk 的 vanished 检测立即裁决。重解析事件
-        波及全局归属,按 sorted(path) 重建整个 scope(N1)。"""
+        波及全局归属,按 sorted(path) 重建整个 scope(N1)。
+        #59:摄取到的新文件(kind=="new")同步记入 _scope_files ——
+        整个生命周期落在两次 walk 之间的文件(经 watcher 摄取、又在下次
+        walk 前删除)此前永远逃过 vanished 检测,其独占 claim 的共享 mid
+        永久压制幸存文件同名行;记入后下次 walk 不列出它即触发重建解禁。
+        #60:重建集 rkeys 过滤已消亡路径 —— 陈旧条目在任何后续 reparse
+        事件中不再复活重新 claim。判据用 _rebuildable(仅 ENOENT/ENOTDIR
+        算消亡)而非 os.path.exists(对『瞬锁不可读』与『已删除』同判
+        False):瞬锁的在盘文件被排除出重建会让共享 mid 归属翻给幸存文件
+        → 双计,且此后 unchanged/append 均不触发重建、无自愈点(旧注释
+        称『由下次全量重建自愈』,该触发并无周期性保证,已证伪)。"""
         scope = self._scope()
         prefix = scope + os.sep
         norm = set()
@@ -394,7 +469,9 @@ class ClaudeSource(UsageSource):
         if not norm:
             return
         with self._lock:
+            bucket = self._file_cache.setdefault(scope, {})   # _scan 同款取桶
             touched = reparse = False
+            new_keys = set()
             for k in sorted(norm):       # 确定性序:同批多路径的去重顺序可复现
                 if not k.startswith(prefix):
                     continue
@@ -404,12 +481,18 @@ class ClaudeSource(UsageSource):
                     touched = True        # 删除/改名:失效 TTL,walk 侧裁决
                     continue
                 kind = self._ingest(scope, k, st)
+                if kind == "new":
+                    new_keys.add(k)       # #59:出生文件记入 scope 在册集
                 reparse = reparse or kind == "reparse"
                 touched = touched or kind in ("new", "append", "reparse")
+            if new_keys:
+                self._scope_files.setdefault(scope, set()).update(new_keys)
             if reparse:
-                # 重建集 = 缓存里本 scope 的全部键 + 本次触及的键
-                rkeys = {k for k in self._file_cache if k.startswith(prefix)}
-                rkeys.update(norm)
+                # 重建集 = 缓存里本 scope 仍存在的键 + 本次触及的键(#60;
+                # 『仍存在』按 _rebuildable 判:确已消亡才排除,瞬锁在盘
+                # 必须并入 —— 重建只读缓存条目,漏并即制造归属翻转双计)
+                rkeys = {k for k in bucket if _rebuildable(k)}
+                rkeys.update(k for k in norm if _rebuildable(k))
                 self._rebuild_scope(scope, rkeys)
             if touched or reparse:
                 # 失效必须在锁内且在摄取之后:引擎线程下一次调用必走

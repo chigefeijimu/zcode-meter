@@ -59,11 +59,12 @@ cd src && python -m zcode_meter cost --days 30     # 模块形态（cwd 必须�
 python src/zcode_meter/__main__.py cost --days 7   # 脚本直跑形态（仓库根即可）
 ```
 
-输出为按天文本表（日期 / tokens / ¥）+ 合计行；窗口含价格表未覆盖的模型时金额为下限并附注脚（`≈`），口径与按天图表完全一致（ZCode-DB-only、`completed` 全部 query_source、按刊例价估算）。
+输出为按天文本表（日期 / tokens / ¥）+ 合计行，口径与按天图表完全一致（ZCode-DB-only、`completed` 全部 query_source、按刊例价估算；口径行随表披露**历史聚合仅统计最近 100,000 行**的扫描闸，更早记录不计）。金额注脚有两种、分列打印：窗口含**价格表未覆盖的模型**时金额为**下限**（`≈`，未知模型计 ¥0）；窗口含**在价格表内但缺 `in_cache` 档**的模型时金额为**上限**（`≈`，cache_read 按输入全价计）—— 同沿 GUI 的「宁可高估」计价原则。
 
 - `--days` 默认 30，范围 1..366，超界自动截断；非法值（如非整数）打印错误并以退出码 2 结束
-- 本仓库无 `pyproject.toml`/`setup.py`（包在 `src/` 下），模块形态必须 `cd src` 或设 `PYTHONPATH=src`；在仓库根直接 `python -m zcode_meter` 会命中根目录兼容 shim `zcode_meter.py`（同名遮蔽，会转去启动 GUI 而非 CLI）
-- CLI 只做只读查询（读 `zm_config.json`/`zm_prices.json`，不写任何 zm_* 业务/状态文件；`import` 数据层既有的 faulthandler 追加 `zm_crash.log` 属全局行为，与 GUI 一致）
+- **故障通道**：查询前先探测 ZCode 数据库（`~/.zcode/cli/db/db.sqlite` 缺失，或 `connect_ro` 探针抛 `sqlite3.Error`）→ stderr 打印错误（含路径与异常类）并以**退出码 1** 结束 —— 库打不开与「窗口内无 completed 记录」不再同为 rc=0 的空报表，脚本化调用可据退出码区分故障与真空窗
+- 本仓库无 `pyproject.toml`/`setup.py`（包在 `src/` 下），**模块形态必须先 `cd src`**：`python -m` 会把 cwd 置于 `sys.path` 首位（先于 `PYTHONPATH`），在仓库根即使设了 `PYTHONPATH=src` 也会命中根目录兼容 shim `zcode_meter.py`（同名遮蔽，转去启动 GUI 而非 CLI）—— `PYTHONPATH` 不是 `-m` 形态的合法替代；脚本直跑形态（`python src/zcode_meter/__main__.py`）任意 cwd 皆可
+- CLI 只做只读查询（读 `zm_config.json`/`zm_prices.json`，不写任何 zm_* 业务/状态文件；`import` 数据层既有的 faulthandler 追加 `zm_crash.log` 属全局行为，与 GUI 一致）；冷启动跳过引擎的会话预热查询（`boot_queries=False`），坏库路径不再白付缺库回退扫描
 
 ## 交互
 
@@ -73,11 +74,11 @@ python src/zcode_meter/__main__.py cost --days 7   # 脚本直跑形态（仓库
 | 拖到屏幕边缘松手 | 变胶囊条（宽高恰好包住内容，沿边自动居中；判定按**鼠标触边**而非窗口侧边） |
 | 按住胶囊条拖离边缘 | 恢复卡片 |
 | 右键 → 贴边/恢复卡片 | 直达四边 / 恢复卡片（形态变化即时保存，重启恢复） |
-| 右键 → 皮肤 | 九款皮肤子菜单单选切换：玻璃仪表(默认) + 瑞士国际主义 / 琥珀 CRT 终端 / 黑板粉笔 / 液态玻璃药丸 / 工业机柜 / 报纸头版 / 蒸汽波落日 / 工程蓝图，当前项打勾；点击**即时生效**（卡片/横条/竖条三形态同语言换装，段开关与贴边几何机制不变）并写入 `zm_config.json` 持久化，重启恢复 |
+| 右键 → 皮肤 | 九款皮肤子菜单单选切换：玻璃仪表(默认) + 瑞士国际主义 / 琥珀 CRT 终端 / 黑板粉笔 / 液态玻璃药丸 / 工业机柜 / 报纸头版 / 蒸汽波落日 / 工程蓝图，当前项打勾；点击**即时生效**（卡片/横条/竖条三形态同语言换装，段开关与贴边几何机制不变）并写入 `zm_config.json` 持久化，重启恢复；琥珀 CRT 的铭牌版本行运行时读取包版本 `__version__`（如 `ZCODE-METER v0.9.2`），升版自动跟随、不构成第四处版本字面 |
 | 右键 → 会话 | 列出最近 8 个会话（按 part 最新写入倒序）手动固定统计对象（状态行模型名前缀 📌，完整会话标题见窗口悬停提示）；「自动跟随(最近活跃)」恢复自动 |
 | 右键 → 历史用量图表 | 打开独立窗口：按天(近30天，token+¥)/按会话(近20个)/计费块(5h) 三页签，可刷新；三图均为水平条（v0.5.2 起统一，左侧长标签按空间省略），**悬停显示完整标签与数值**；按天图另有近 7 天日均虚线与头部『本月预计 ¥』标注（近 7 天零用量时不显示） |
 | 右键 → 设置 | 打开设置窗：quota API Key（密码框，界面任何位置不回显明文）/日预算/告警阈值/quota 刷新间隔；保存即写入 `zm_config.json` 并热生效（套餐轨立即重启轮询、刷新档位就地热更、引擎与告警即时读新值），失败时窗内红字报错且不生效 |
-| 右键 → 收起到托盘 | 主窗隐藏到系统托盘（无托盘环境不显示此项）；托盘菜单 显示/隐藏、退出；单击托盘图标恢复 |
+| 右键 → 收起到托盘 | 主窗隐藏到系统托盘（无托盘环境不显示此项）；托盘菜单 显示/隐藏、退出；单击托盘图标恢复。**液态玻璃皮肤下隐藏即暂停抓屏管线**（`hideEvent` 停止后台截屏线程，恢复显示时自动重启）—— 托盘常驻期间零抓屏开销 |
 | 右键 → 退出 | 退出（退出时保存位置与形态，下次启动恢复） |
 
 蓝色脉冲环 = 生成中；速度带 `~` = 全局吞吐为估算值（流式+窗口加权）；模型名带 📌 = 统计对象已被手动固定（完整会话标题悬停窗口可见）；金额带 `≈` = 含价格表未覆盖的模型，金额为下限估算。
@@ -173,7 +174,7 @@ python src/zcode_meter/__main__.py cost --days 7   # 脚本直跑形态（仓库
 
 - `zm_config.json` / `zm_prices.json` / `zm_alerts.json` / `zm_state.json` / `zm_debug.log` / `zm_crash.log` —— 六个配置/状态/日志文件，均锚定 `app_dir()`（开发模式=仓库根，frozen=exe 同目录，见「配置」节的落点说明）；
 - `zm_usage_export.csv` —— 仅在右键「导出 CSV」时写出的用量明细（日期/模型/token/金额，无密钥），与上述六文件同锚 `app_dir()`，同样已加入 `.gitignore`（用户数据不进库）；
-- `zm_error.log` —— 仅两处 UI 异常兜底路径写入 traceback（不含密钥），落点相对启动时的工作目录（既有行为）；
+- `zm_error.log` —— 仅两处 UI 异常兜底路径写入 traceback（不含密钥），与上述六文件同锚 `app_dir()`（开发模式=仓库根，frozen=exe 同目录；open 自身再套防护，落盘失败不吞原始异常）；
 - 以上即本工具运行期写出的全部持久文件（配置保存的瞬态临时文件写完即原子改名，不残留）。
 
 ## 打包（单文件 exe）
@@ -229,10 +230,12 @@ zcode-meter/
 ├── zcode_meter.py       # 兼容 shim:旧命令转发到 src/zcode_meter/app.py(v0.6.0 过渡)
 ├── README.md / CHANGELOG.md / LICENSE / .gitignore
 └── tests/
-    ├── run_all.py            # 一键回归
+    ├── run_all.py            # 一键回归(六组:data/pkg/ui/stress/glass/cli)
     ├── test_data_engine.py   # 口径/切换/subagent 排除 + 金额/燃速/计费块/多源/quota/告警单测
-    ├── test_package.py       # src 布局守卫:包可导入/版本号/app_dir 落点/shim 链路
+    ├── test_package.py       # src 布局守卫:包可导入/版本号-CHANGELOG 对账/零副作用红线/shim 链路
     ├── test_stress.py        # 布局切换压力测试
+    ├── test_glass_effect.py  # 玻璃管线单测(monkeypatch 注入,不依赖 dxcam/真实屏幕)
+    ├── test_cli.py           # CLI 单测(故障通道 rc=1/显示宽度/≈注脚/boot_queries)
     └── debug/                # 历史调试工具(窗口定位/hit-test/注入拖动)
 ```
 
