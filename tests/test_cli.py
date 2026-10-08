@@ -433,12 +433,53 @@ def test_boot_queries_connection_count():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ========== ⑥ connect_ro URI 形态(2026-10-08 P1):'#'/'%' 编码防线 +
+# UNC 家目录授权改写 ==========
+
+def test_connect_ro_uri_forms():
+    """connect_ro 的两族 URI 语义回归:
+    - '#'/'%'(9b6d00a 家族):本地路径含两字符 → 照常打开读值,且不
+      在 '#' 截断出的错误路径落新空库(写副作用);
+    - UNC(P1 2026-10-08):USERPROFILE 为 \\\\server\\share\\... 时
+      as_uri() 产出 file://server/...,授权组件=主机名被 SQLite 解析期
+      拒收(invalid uri authority)→ 整源永远 0/[]。修复后改写为空授权
+      + 前导 // 形态,授权错误必须消失,让位给 VFS 级 unable to open
+      (真库端到端 \\localhost\\D$ 实测见修复探针;套件内用不可达服务
+      器钉『授权不再挡路』这一无环境依赖的断言面)。"""
+    tmp = Path(tempfile.mkdtemp(prefix="zm_uri_"))
+    t0 = zsrc.today0_ms()
+    try:
+        # ① '#'/'%':读值正确 + 无截断副作用
+        hash_dir = tmp / "a#b%c"
+        hash_dir.mkdir()
+        hash_db = make_db(hash_dir / "db.sqlite",
+                          [(t0, "GLM-5.3", "completed", "main_turn", 111, 0, 22)])
+        with _PatchedDB(hash_db):
+            con = zsrc.connect_ro()
+            (n,) = con.execute("SELECT COUNT(*) FROM model_usage").fetchone()
+            con.close()
+            check("uri:#/'%' 路径照常打开读值", n == 1, f"n={n}")
+            check("uri:'#' 截断路径无新空库落盘",
+                  not (hash_dir / "a").exists())
+        # ② UNC:不可达服务器 —— 错误不得是 invalid uri authority
+        with _PatchedDB(r"\\nonexistent-zm-server\share\db\db.sqlite"):
+            try:
+                zsrc.connect_ro()
+                check("uri:UNC 不可达应抛 OperationalError", False, "opened?")
+            except sqlite3.OperationalError as e:
+                check("uri:UNC 错误为 VFS 级而非授权级(authority 不再挡路)",
+                      "authority" not in str(e), str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     print("== test_fault_channel_rc1_vs_empty_window_rc0 =="); test_fault_channel_rc1_vs_empty_window_rc0()
     print("== test_display_width_and_alignment ==");             test_display_width_and_alignment()
     print("== test_cache_tier_upper_bound_footnote ==");         test_cache_tier_upper_bound_footnote()
     print("== test_scan_rows_disclosure_always_present ==");     test_scan_rows_disclosure_always_present()
     print("== test_boot_queries_connection_count ==");           test_boot_queries_connection_count()
+    print("== test_connect_ro_uri_forms ==");                    test_connect_ro_uri_forms()
     if FAILED:
         print(f"\nFAILED: {FAILED}")
         sys.exit(1)

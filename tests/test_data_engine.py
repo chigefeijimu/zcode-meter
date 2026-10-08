@@ -4599,6 +4599,139 @@ def test_claude_deep_nesting_poison():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_push_full_queue_drop_oldest():
+    """P1(2026-10-08):UI 队列满时 _push 丢最旧腾位而非静默丢自己,且
+    _push_fp 仅在真实入队后推进。旧缺陷链:拖动期 startSystemMove 模态
+    循环停摆 timer(app.py moveEvent 自述)→ 队列积压满 → _db_tick 的
+    push 被吞但基线照推进 → 满窗期最后变化且此后不再变的字段(state→idle
+    的 run() 单次 push 同被吞)对 UI 永久丢失。消费侧 _poll_queue 每
+    200ms 排干整队列末值胜出,丢最旧零损失。"""
+    import os as osmod
+    import shutil
+    import tempfile
+    from zcode_meter import data_engine as de
+    from zcode_meter.sources import zcode as zsrc
+    orig = zsrc.DB_PATH
+    tmp = tempfile.mkdtemp(prefix="zm_pushfull_")
+    try:
+        zsrc.DB_PATH = de.DB_PATH = osmod.path.join(tmp, "probe.db")
+        q = queue.Queue(maxsize=2)
+        e = de.DataEngine(q)
+        q.put("old1"); q.put("old2")            # 拖动期积压占位
+        e.snap.today_tokens = 222               # 满窗期最后一次易变字段变化
+        e._db_tick(woken=False)
+        items = list(q.queue)
+        check("满队列 tick:最旧被逐出、快照真实入队(222 在队尾)",
+              q.qsize() == 2 and items[0] == "old2"
+              and getattr(items[1], "today_tokens", None) == 222,
+              f"qsize={q.qsize()} items={items!r}")
+        check("满队列 tick:_push_fp 仅在真实 push 后推进",
+              e._push_fp is not None and 222 in e._push_fp, "")
+        while True:                             # 排水(拖动结束)
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                break
+        e._db_tick(woken=False)                 # 稳态拍:fp 未再变
+        check("排水后稳态拍 0 push(值未变不 push 不回归)",
+              q.qsize() == 0, f"qsize={q.qsize()}")
+        q3 = queue.Queue(maxsize=1)             # run() 循环 state 单次 push 同机制
+        e3 = de.DataEngine(q3)
+        q3.put("stale")
+        e3.snap.state = "idle"
+        with e3.snap_lock:
+            e3._push()
+        check("满队列 state 单次 push 不丢(idle 快照送达)",
+              q3.get_nowait().state == "idle", "")
+        e.stop(); e3.stop()
+    finally:
+        zsrc.DB_PATH = de.DB_PATH = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_claude_blind_no_dead_resurrect():
+    """P1(2026-10-08):_scan 盲轮合并只并 last —— 已被健康轮裁决消失的
+    死文件陈旧 date_agg 不得复活(与 #60『已删文件陈旧条目不得复活』同
+    纪律);活着但未被盲 walk 列出的文件仍按 last-good 保守并入(#82
+    语义不回归)。两形态:唯一 mid(死文件全额复活)、共享 mid(双计)。"""
+    import datetime as dtmod
+    import json as jsonmod
+    import os as osmod
+    import shutil
+    import tempfile
+    from zcode_meter.data_engine import ClaudeSource
+
+    ts = dtmod.datetime.now(dtmod.timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def wj(path, mid, i, o):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(jsonmod.dumps({"type": "assistant", "message": {"id": mid,
+                    "usage": {"input_tokens": i, "cache_read_input_tokens": 0,
+                              "cache_creation_input_tokens": 0,
+                              "output_tokens": o}}, "timestamp": ts}) + "\n")
+
+    def rescan(src):
+        src._entries, src._scanned_at = None, 0.0
+        return src.today_usage()
+
+    real_walk = osmod.walk
+
+    def blind_walk(top, topdown=True, onerror=None, followlinks=False):
+        if onerror:
+            onerror(OSError(13, "simulated scandir blindness"))
+        return iter([])
+
+    def blind(src):
+        osmod.walk = blind_walk
+        try:
+            return rescan(src)
+        finally:
+            osmod.walk = real_walk
+
+    # S1 唯一 mid:死文件用量在盲轮不得复活
+    d1 = tempfile.mkdtemp(prefix="zm_blindfix1_")
+    try:
+        wj(osmod.path.join(d1, "z.jsonl"), "a1", 100, 10)
+        wj(osmod.path.join(d1, "b.jsonl"), "b1", 40, 10)
+        s1 = ClaudeSource(projects_dir=d1)
+        alive = rescan(s1)
+        osmod.remove(osmod.path.join(d1, "b.jsonl"))
+        vanish = rescan(s1)                    # 健康轮裁决消失:110
+        b = blind(s1)
+        heal = rescan(s1)
+        check("盲轮:死文件(唯一 mid)不复活",
+              (alive, vanish, b, heal) == (160, 110, 110, 110),
+              f"alive={alive} vanish={vanish} blind={b} heal={heal}")
+    finally:
+        shutil.rmtree(d1, ignore_errors=True)
+    # S2 共享 mid:盲轮不得双计
+    d2 = tempfile.mkdtemp(prefix="zm_blindfix2_")
+    try:
+        wj(osmod.path.join(d2, "a.jsonl"), "X", 80, 20)
+        wj(osmod.path.join(d2, "z.jsonl"), "X", 80, 20)
+        s2 = ClaudeSource(projects_dir=d2)
+        alive = rescan(s2)
+        osmod.remove(osmod.path.join(d2, "a.jsonl"))
+        vanish = rescan(s2)
+        b = blind(s2)
+        check("盲轮:共享 mid 不双计",
+              (alive, vanish, b) == (100, 100, 100),
+              f"alive={alive} vanish={vanish} blind={b}")
+    finally:
+        shutil.rmtree(d2, ignore_errors=True)
+    # S3 对照:无删除时盲轮仍 last-good 保守(#82 不回归)
+    d3 = tempfile.mkdtemp(prefix="zm_blindfix3_")
+    try:
+        wj(osmod.path.join(d3, "z.jsonl"), "a1", 100, 10)
+        s3 = ClaudeSource(projects_dir=d3)
+        alive = rescan(s3)
+        b = blind(s3)
+        check("盲轮:活文件 last-good 并入(#82 语义保留)",
+              (alive, b) == (110, 110), f"alive={alive} blind={b}")
+    finally:
+        shutil.rmtree(d3, ignore_errors=True)
+
+
 if __name__ == "__main__":
     print("== test_fetch_total_usage =="); test_fetch_total_usage()
     print("== test_active_session_not_subagent =="); test_active_session_not_subagent()
@@ -4690,6 +4823,9 @@ if __name__ == "__main__":
     print("== test_claude_walk_blind_lastgood ==");         test_claude_walk_blind_lastgood()
     print("== test_claude_nested_scope_isolation ==");      test_claude_nested_scope_isolation()
     print("== test_claude_deep_nesting_poison ==");         test_claude_deep_nesting_poison()
+    # ---- 2026-10-08 P1 修复回归:满队列丢最旧+_push_fp 真实推进/盲轮死文件不复活 ----
+    print("== test_push_full_queue_drop_oldest ==");         test_push_full_queue_drop_oldest()
+    print("== test_claude_blind_no_dead_resurrect ==");      test_claude_blind_no_dead_resurrect()
     if FAILED:
         print(f"\nFAILED: {FAILED}")
         sys.exit(1)

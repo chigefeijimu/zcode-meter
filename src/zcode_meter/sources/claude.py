@@ -392,9 +392,17 @@ class ClaudeSource(UsageSource):
             walk_blind = bool(walk_errs)
             if walk_blind and last is not None:
                 # 目录级瞬盲:未被列出的已知文件按 last-good 保守并入
-                # present(聚合继续用其 date_agg;判定延后到健康轮)
-                present |= {k for k in last | set(bucket)
-                            if k not in present}
+                # present(聚合继续用其 date_agg;判定延后到健康轮)。
+                # P1(2026-10-08):『已知』只认 last(_scope_files),不再并
+                # set(bucket) —— bucket−last 恰为已被健康轮裁决消失的死文件
+                # (条目按 #19 只增不删而存活,携带释放归属前的旧 date_agg),
+                # 并回 present 会把死文件旧值原样加回聚合:今日用量虚增其
+                # 全额、共享 mid 与幸存文件双计,持续整个瞬盲期。与 #60 在
+                # note_changes 立下的『已删文件陈旧条目不得复活』同纪律。
+                # last 必要完备:活着/瞬错的文件上轮都在 present(=keys∪
+                # errored,含 #59 记入的 note_changes 新文件),盲轮并入后
+                # _scope_files 只增不减,无需桶键补漏。
+                present |= {k for k in last if k not in present}
             # 消失判定只认 walk(且本轮 walk 无瞬盲):上轮在册而本轮 walk
             # 未列出才是真消失。旧判据 not last.issubset(keys) 把瞬时失败
             # 也当消失:当轮聚合丢 last-good 已违反 _ingest 的 error 契约,

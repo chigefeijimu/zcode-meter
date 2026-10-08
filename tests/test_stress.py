@@ -664,6 +664,66 @@ def main() -> int:
           m.skins.REGISTRY["glass"].deco is None
           and all(callable(m.skins.REGISTRY[_s].deco)
                   for _s in m.skins.SKIN_IDS if _s != "glass"))
+    # chalk 标题可见性(P1,2026-10-08):『今 日 账 目』曾被 board clip 整体
+    # 裁没(基线 h-3 的字形全高落在 clip 底缘 h-fw-0.5 之下,离屏实测 0 个
+    # 可见粉笔字像素,该装饰从不出现)。修复=标题移出 clip(restore 后画,
+    # 落在底部无控件带)。断言:有/无标题两次渲染有差异(标题有贡献),且
+    # 差异行全部 ≥ h-12(底部边距带,不叠模型行尾行);条形态零差异不回归。
+    from PySide6.QtGui import QImage, QPainter
+    _CHALK_TITLE = "今 日 账 目"
+
+    class _ChalkWin:
+        def width(self):
+            return m.MeterWindow.CARD_W
+
+        def height(self):
+            return m.MeterWindow.CARD_H
+
+    def _render_chalk(form, suppress):
+        img = QImage(m.MeterWindow.CARD_W, m.MeterWindow.CARD_H,
+                     QImage.Format_ARGB32)
+        img.fill(0)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing)
+        orig = m.skins._text
+        if suppress:
+            def patched(pr, txt, x, y, px, color, families=None, spacing=0.0,
+                        bold=False):
+                if txt == _CHALK_TITLE:
+                    return
+                return orig(pr, txt, x, y, px, color, families=families,
+                            spacing=spacing, bold=bold)
+            m.skins._text = patched
+        try:
+            m.skins._deco_chalk(p, _ChalkWin(), form)
+        finally:
+            m.skins._text = orig
+        p.end()
+        return img
+
+    _cw, _ch = m.MeterWindow.CARD_W, m.MeterWindow.CARD_H
+    _with_t, _no_t = _render_chalk(None, False), _render_chalk(None, True)
+    _diffpx = sum(1 for _y in range(_ch) for _x in range(_cw)
+                  if _with_t.pixel(_x, _y) != _no_t.pixel(_x, _y))
+    _trows = [_y for _y in range(_ch)
+              if any(_with_t.pixel(_x, _y) != _no_t.pixel(_x, _y)
+                     for _x in range(_cw))]
+    check("皮肤:chalk 卡标题可见(不被 board clip 裁没)",
+          _diffpx > 0 and min(_trows) >= _ch - 12 and max(_trows) < _ch,
+          f"diff={_diffpx} rows={min(_trows) if _trows else -1}.."
+          f"{max(_trows) if _trows else -1}")
+    # 渲染必须提出像素循环外(每形态各渲染一次,与上方卡形态 :705 同式):
+    # 初版把 _render_chalk 写进逐像素生成器条件里 —— 每像素对全 deco 重渲染
+    # 两次(313×341×2×2 ≈ 42.7 万次 QImage+QPainter+字体整形),layout-stress
+    # 直接撞 90s 超时(TIMEOUT,2026-10-08 P1 修复轮的回归形态)。any 短路
+    # 在首个差异像素,零差异时全扫 —— 语义与『计数==0』等价。
+    _bar_clean = True
+    for _f in ("h", "v"):
+        _bf, _bt = _render_chalk(_f, False), _render_chalk(_f, True)
+        if any(_bf.pixel(_x, _y) != _bt.pixel(_x, _y)
+               for _y in range(_ch) for _x in range(_cw)):
+            _bar_clean = False
+    check("皮肤:chalk 条形态仍无标题(零差异)", _bar_clean, "")
 
     # ==== v0.9 T3 皮肤切换机制:_apply_skin 即时重建/子菜单/持久化守卫/丢键修复 ====
     # 满载快照(注入先例见前 :79-87)+ 套餐/倒计时注入:九皮肤×三形态全走

@@ -1371,8 +1371,13 @@ class DataEngine(threading.Thread):
         # 仍是 0 push。
         fp = self._volatile_fp()
         if woken or fp != self._push_fp:
-            self._push()
-            self._push_fp = fp
+            # P1(2026-10-08):_push_fp 仅在【真实入队】后推进 —— _push 满队列
+            # 丢最旧重试后仍可能失败(极端并发 refill),失败时基线不动,
+            # 下一拍 fp≠基线自然补推;旧『无条件推进』把满窗期最后的指纹
+            # 变化记账为已送达,排水后稳态拍 fp==基线 → 零补偿 push,该字段
+            # 对 UI 永久丢失(对 #76 自诺语义的兑现,见上注释)。
+            if self._push():
+                self._push_fp = fp
 
     def _poll_stats(self, gate_open: bool = True):
         """今日统计一轮(T4 拆两段,闸门只管 ZCode DB SQL 段)。
@@ -2684,18 +2689,35 @@ class DataEngine(threading.Thread):
                 tuple(s.today_by_source or ()),
                 tuple(tuple(r) for r in (s.speed_by_model or ())))
 
-    def _push(self):
+    def _push(self) -> bool:
         """#28:推浅拷贝(dataclasses.replace)而非活引用 —— 三个 worker 线程
         无锁直写 snap 字段、UI 侧也回写 plan_remaining_pct(已 deprecated),
         活引用进队列等于跨线程共享黑板,UI 单帧可读到跨 tick 的撕裂组合
-        (docstring『一份快照』名不副实)。浅拷即安全:列表字段
+        (docstring『一份快照』名存实亡)。浅拷即安全:列表字段
         (speed_by_model/today_by_source/recent_speeds)本就每拍整体重赋值,
-        无人原地修改既有列表,拷贝后的引用与引擎后续重赋值互不干扰。"""
+        无人原地修改既有列表,拷贝后的引用与引擎后续重赋值互不干扰。
+        P1(2026-10-08):满则丢最旧腾位重试,返回是否真实入队 —— 消费侧
+        _poll_queue 每 200ms 排干整队列、末值胜出,中间快照从不被逐条
+        消费,积压期(UI 拖动:startSystemMove 模态循环里 timer 停摆,
+        app.py moveEvent 注释的一手实证)丢最旧零损失;而旧『静默丢自己』
+        会把满窗期内最后变化且此后不再变化的字段(典型:state→idle,
+        run() 循环单次 push 无第二条路)对 UI 永久丢失 —— 卡片停在
+        旧快照『生成中』冻结直到下次真实活动。"""
         self.snap.updated = time.time()
-        try:
-            self.out.put_nowait(replace(self.snap))
-        except queue.Full:
-            pass
+        snap = replace(self.snap)
+        # 有界重试:逐出一次只腾一个位,最多 maxsize 次逐出 + 1 次成功
+        # put,故 maxsize+1 轮内必收敛(maxsize=1 时正是『失败→逐出→重试
+        # 成功』的三步;maxsize=0 无界队列首轮即成,不进 Full 分支)。
+        for _ in range((self.out.maxsize or 1) + 1):
+            try:
+                self.out.put_nowait(snap)
+                return True
+            except queue.Full:
+                try:
+                    self.out.get_nowait()   # 丢最旧;Empty 仅并发排水竞态下出现
+                except queue.Empty:
+                    pass
+        return False
 
     def stop(self):
         self.stop_flag.set()

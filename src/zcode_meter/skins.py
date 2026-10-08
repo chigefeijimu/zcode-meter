@@ -436,6 +436,7 @@ def _deco_chalk(p, win, form) -> None:
         dust.setColorAt(0.0, QColor(255, 255, 255, a))
         dust.setColorAt(1.0, QColor(255, 255, 255, 0))
         p.fillRect(0, 0, w, h, dust)
+    p.restore()
     if form is None:
         # 『今 日 账 目』(:358):HTML 在卡顶,但玻璃全量信息集 + 冻结
         # 341 高下顶部边距带只有 14px 且被状态行(y≈14 起)顶满 —— 落在
@@ -443,6 +444,15 @@ def _deco_chalk(p, win, form) -> None:
         # descent 2,基线 h-3 恰容下且不叠模型行尾行);『入/出同一行』
         # (:361)为标签重排,需 _build_card 皮肤分支(app.py,非 T4 文件)
         # —— 未落,卡片 grid 维持玻璃 3 列×2 带结构,特此记录不算已交付。
+        # P1(2026-10-08):标题必须画在 restore(板面 clip)之后 —— clip
+        # 底缘 h-fw-0.5(卡形态 331.5),而底部边距带(app.py root 底边距
+        # 12,内容止于 h-12=329)与板面交集只有 ~3px,基线 h-3 的字形
+        # (≈[h-10, h-1])全高落在 clip 之外:原实现标题经 setClipPath
+        # 整体裁没,离屏实测整卡 0 个粉笔字像素,该装饰从不出现。移出
+        # clip 后墨迹落在无子控件地带(内容区底 329 与字顶 ~331 不叠),
+        # 底部 9px 压在木框上 —— 粉笔白字落在木框即铭牌观感,可接受;
+        # 板内另无 ≥8px 空带(顶部边距带 4.5px 同样放不下)是冻结 341
+        # 高下的几何事实。
         # 标题装订 families=['Segoe Print'](#72,2026-10-06):模块头
         # 『手写感由 deco 侧粉笔字标题承接』的补偿机制此前不存在 ——
         # 装订不传族实测落系统默认 YaHei,声明是空话;装饰文本不经
@@ -454,7 +464,6 @@ def _deco_chalk(p, win, form) -> None:
         _text(p, t, (w - tw) / 2.0, h - 3.0, 8,
               QColor(232, 230, 223, 210), families=["Segoe Print"],
               spacing=3.0)
-    p.restore()
     # HTML 木框为 border(无外描边),框即边
 
 

@@ -43,11 +43,26 @@ def connect_ro() -> sqlite3.Connection:
     字符时打开的是错误的库或打不开,上层 except sqlite3.Error 一律吞成
     0/[](ZCode 源静默清零)。as_uri() 对相对路径抛 ValueError,而测试会
     monkeypatch 相对形态的 DB_PATH,先 abspath 归一(与 sqlite 相对 cwd
-    解析的旧行为一致)。"""
+    解析的旧行为一致)。
+    UNC 家目录(P1,2026-10-08):USERPROFILE/HOME 为 \\\\server\\share\\...
+    形态(终端服务/VDI/漫游配置文件)时 as_uri() 产出 file://server/...,
+    授权组件=主机名 —— SQLite 只接受空或 'localhost'(uri.html §authority,
+    3.50.4 实测 OperationalError: invalid uri authority),且 file://localhost/
+    形态会把路径映射成 /share/...(本地盘根,库不存在):整个源永远打不开、
+    is_available() 仍 True,静默 0/[],与 '#'/'%' 同族且属 9b6d00a as_uri 化
+    的回归(修复前原生反斜杠直拼可开)。改写为空授权 + 前导 // 形态
+    (file:////server/share/...):URI 解析层接受,win32 VFS 把前导 // 的
+    路径按 UNC 打开(实测 \\localhost\\d$ 真库 SELECT 成功);server/share
+    段沿用 as_uri 的百分号编码,'#'/'%' 防线不受影响。"""
     p = Path(DB_PATH)
     if not p.is_absolute():
         p = Path(os.path.abspath(p))
-    return sqlite3.connect(p.as_uri() + "?mode=ro", uri=True, timeout=2)
+    uri = p.as_uri()
+    # UNC 判据:as_uri 对盘符产出 file:///C:/...,UNC 产出 file://server/...
+    # (两斜杠后非 '/')。仅做授权段改写,不动 as_uri 编码过的路径段。
+    if uri.startswith("file://") and not uri.startswith("file:///"):
+        uri = "file:////" + uri[len("file://"):]
+    return sqlite3.connect(uri + "?mode=ro", uri=True, timeout=2)
 
 
 def today0_ms() -> int:

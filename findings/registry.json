@@ -63,6 +63,38 @@
   {
    "title": "类 docstring 宣称的防漂移护栏『单测 test_today_by_source 对账防漂移』在 #20 单查询双用后已恒真失效:引擎对 ZCode 源行不再调 ZCodeSource.today_usage(缓存直填引擎自己的 today 变量),该测试实为引擎 today 与自身比对,twin SQL 任一侧漂移都不会红——zcode.py:80-83 与 data_engine.py:1437-1440 两份逐字孪生 SQL 从此零护栏,#20『复用即无损』的等价性依据退化为无人核验的注释约定(data_engine.py:1500 同句宣称『单测 test_today_by_source 双值对账钉死』)(sources/zcode.py:63;变异实验:猴补 today_usage→424242424 后 diff 仍 0、毒方法 0 次调用、测试照 PASS)",
    "date": "2026-10-07"
+  },
+  {
+   "title": "_apply_skin 分支头注释仍以现在时态宣称『液态玻璃皮肤开 Windows 亚克力(真背景模糊),离开该皮肤关掉恢复普通不透明窗口』,而该机制(方案 A)已撤——紧邻的 :2101-2103 注释自述『亚克力方案已撤(2026-09-29)…DXcam 管线是当前唯一可用路线』,实际代码走 _ensure_glass_timer/_stop_glass_pipeline:同函数块内两份矛盾叙事,读者只读外层注释会带着错误机制模型(ACCENT 层在 liquid 上启用)去调试玻璃管线,与本仓多次清偿的 paintEvent『activate() 不存在』、模块头节拍声明同款 doc-机制漂移(app.py:2097-2099;grep _enable_acrylic/_try_acrylic_or_fallback 全文件零命中,SetWindowCompositionAttribute 仅存于 _disable_acrylic 的 ACCENT 0 复位 :1102——外层注释描述的『开亚克力』在现管线中无对应代码路径,纯注释残留)",
+   "date": "2026-10-08"
+  },
+  {
+   "title": "json.load 的 RecursionError 未纳入 except——load_config(:207-210)与 BudgetAlerts._load(:448-454)是在册 load_prices 项同族 RecursionError 的两个未扫尾站点:深嵌套的 zm_config.json/zm_alerts.json 让 RecursionError(非 ValueError/OSError/JSONDecodeError 任何一者的子类)穿透两函数『缺文件/坏 JSON/非 dict 一律回退默认,不抛错』的自声明契约,DataEngine.__init__(:1041 裸调 load_config 无 try)直接炸穿→MeterWindow.__init__(app.py:793 裸调)→main()(app.py:3171 无 try/except),pythonw 形态下 faulthandler 只捕致命信号不捕 Python 异常,表现为应用静默不启动(data_engine.py:209;探针:两站点均 RecursionError ESCAPED,端到端 CONFIG_PATH 指向 2 万层嵌套 JSON 后构造 DataEngine 直接传出构造器;本机 3.14.2 最小触发深度 16917 层,正常用户配置嵌套 ≤1 层需刻意构造)",
+   "date": "2026-10-08"
+  },
+  {
+   "title": "dbg() 的 open(DBG_PATH,'a') 无任何自护——ZM_DEBUG=1 且 zm_debug.log 不可写(frozen exe 放只读目录,恰是本模块 :70-76 为 _CRASH_LOG 明文设防『exe 可能被放进只读目录』的同一部署场景)时 OSError 从 except 处理器内部二次逃逸:QuotaMonitor._fetch_once 的『网络失败→dbg』(:802-803)杀 quota 线程(run() :762-780 注释自认『本循环无 try』),引擎 #17 源守卫的 _src_guard_note→dbg(:1546,经 :1517-1521/:1610-1611 两个 per-source except 处理器调出)穿透 _poll_stats 外层唯一的 except sqlite3.Error 杀死零防护的 _db_loop(:1272-1281)——app.py 已修的『except 内裸 open 二次逃逸』(fixed 2026-09-29/T4)同款机理在 data_engine 侧的存活站点,同文件 _log_parse_fail 的 open 自套 except OSError(:819-824)独漏 dbg(data_engine.py:90;探针:dbg PermissionError 无防护逃逸/_poll_stats_tail 场景穿透双层 except『_db_loop would die』/DEBUG off 对照组正常收容,quota 探针复现 _fetch_once 线程死亡)",
+   "date": "2026-10-08"
+  },
+  {
+   "title": "_tail_loop 对同日日志文件无截断/原地重写检测:文件被截短(zcode 重启以 'w' 重开当日日志/清理工具)后 pos 停在旧 EOF 之上,readline() 恒返回空串,循环只在 0.25s 空转(:1179-1181),期间全部生命周期事件(started/completed/failed)静默丢失直到日期翻转 pos=0 才恢复——丢 started/completed 时 _running 状态机停摆(只能等下一请求或 2h GEN_WATCHDOG_S),与在册『日期翻转切文件丢旧尾』项同症状家族但机制不同(翻转 vs 同日截断);claude.py 增量尾读有 (mtime_ns,size) 截断防线(:318-320 size 减小即 reparse 归零重读),zcode tail 侧无对称防线(循环内唯一 pos 重置点是日期翻转分支 :1170-1173,无任何同路径 stat 对比;真实代码线程探针:追平后同日截断重写 2 条新事件,2.0s(8 个轮询周期)consumed=0『STALL IN REAL _tail_loop』,对照纯追加 1.2s 内消费;真实日志目录实测 append-only,触发依赖外部写者行为未证)",
+   "date": "2026-10-08"
+  },
+  {
+   "title": "液态皮肤药丸移除后的死代码残留:_deco_liquid 内 `path = _liquid_bg(p, win, form)` 赋值后全函数无任何引用(:586-589 全为注释),_liquid_bg 的返回值(QPainterPath,:520)全仓零消费;连带 _lens_edge 的 form 形参函数体从不读取——调用本身有副作用(画 veil 暗幕),死的只是赋值绑定/返回值/form 死参,无运行期触发路径,但注释与死绑定同在易误导后人以为 path 可再挂 clip(:564-565 注释自述『clip 用独立路径(不依赖 _liquid_bg 的返回值)』)(skins.py:585;AST 探针:_deco_liquid 中 path 读取行=[]、_lens_edge 函数体 Name 集不含 form、_liquid_bg 全模块调用点仅此一处;chalk 修复后现行树行号 ≈:594)",
+   "date": "2026-10-08"
+  },
+  {
+   "title": "单个忘覆写 name 的第三方源继承基类默认 'source' 静默通过发现层,卡片 today_by_source 出现占位行名 'source'——base.py:36-38 契约『name(类属性,str)必须覆写且全局唯一』的『必须覆写』半句零强制(纯 docstring);fixed#30 修复只落了同名碰撞闸:两个忘覆写源会撞 duplicate 闸,但单个忘覆写+内置 ZCode/Claude 共存的现实形态(占位行名与真名同列上卡)静默放行,是在册『name 非 str/空串』半边缺口之外的另一半边(sources/__init__.py:85 isinstance(name,str) and name 对 base.py:54 默认值 'source' 恒真;独立探针:A 单个忘覆写 no-raise [('source',…)]、B 与正常命名源共存 no-raise 两行同列、C 两个忘覆写 raise duplicate;下游 data_engine.py:1601-1612 rows.append((s.name,…))→app.py:2671-2673 多源拆分行渲染;行值仍是该源自身 today_usage 非张冠李戴,故 P2)",
+   "date": "2026-10-08"
+  },
+  {
+   "title": "#74 运行时假设段只申报 today_usage 每秒现调,漏掉 is_available 同样每秒现调,且括注『非 DB 源无缓存路径』与引擎实际判据不符——尾段 :1601-1604 对全部源先 s.is_available()、:1605-1609 非 ZCode 源再 s.today_usage(),分界是类身份 isinstance(s, ZCodeSource)(:1607)而非『DB 属性』:包装另一 CLI SQLite 的第三方 DB 型源同样落入每秒现调路径,却按契约文本『非 DB 源』括注可自认豁免(连接+SELECT 1 形态的 is_available 每秒新开连接)(sources/base.py:42 契约只点名 today_usage,is_available 仅在失败语义段出现不讲频率;动态探针:伪造非 ZCode 的 UsageSource 子类连跑 3 拍 _poll_stats_tail,avail=3/today=3 双方法每秒现调;内置源 is_available 均为廉价 stat 调用故现役无触发,属契约完备性缺口)",
+   "date": "2026-10-08"
+  },
+  {
+   "title": "契约无条件断言『today_usage 恒等于 daily_usage 里「今天」那个键的值』,但 #22 落地后 ZCode 侧两查询单侧加 MAX_SCAN_ROWS rowid floor(daily_usage :101-102,today_usage :80-83 无 floor),等式降级为有条件成立——今日 completed 行之上插入 100,001+ 行即被 daily_usage 裁而 today_usage 照计(基线日增 ~1.3k,77 倍日负载即触发);且全测试目录对该契约等式零护栏:ZCode 侧从不做 tie(test_zcode_daily_usage_floor 只调 z.daily_usage 手算对账),today==daily[今天] 的对账全部在 Claude 侧(结构性同读一个 _scan date_agg 字典不可能分叉,恰是无需护栏的一侧;ZCode 侧是两条独立维护的 SQL 才是真风险面)(sources/base.py:26;daily_usage 的今日值全仓零调用方,当前无用户可见面,属契约真值性+护栏缺口)",
+   "date": "2026-10-08"
   }
  ],
  "fixed": [
@@ -848,6 +880,30 @@
    "date": "2026-10-07",
    "fixed": "2026-10-07",
    "fix": "存在性判据换锚 _rebuildable(claude.py:54-66 新增;note_changes 重建集 :494-495 两处改用):仅 FileNotFoundError/NotADirectoryError(ENOENT/ENOTDIR,确已消亡)返回 False 保住 #60『陈旧条目不复活』意图,其余 OSError(瞬锁/权限/IO 抖动)按『仍在盘』保守 True 并入重建——_rebuild_scope 只读缓存条目不碰盘,放行侧零代价,与 _scan 侧重建集并入 errored 同纪律;docstring(:456-461/:491-493)载明旧判据的归属翻转双计链与『由下次全量重建自愈』已证伪。跑 _fix5_rkeys_verify.py:8 断言 ALL PASS(瞬锁在盘 today 恒 100 归属不翻/追加 130 不翻倍;真删后陈旧条目不复活);回归 tests/run_all.py ALL PASS"
+  },
+  {
+   "title": "UI 队列满时 _push 静默丢自己而 _db_tick 仍无条件推进 _push_fp——fixed#76『_push_fp 仅真实 push 后推进』的未覆盖变体:连续拖动卡片 ≥~7s(生成活跃期 2-3 push/s 填满 maxsize=20;startSystemMove 模态循环里 timer 停摆、_poll_queue 零排水,app.py:1197-1200 注释一手实证)后,落在满窗期且之后不再变化的字段(典型:state→idle 的 run() 循环单次 push,_volatile_fp 刻意不含 state 故无第二条送达路)对 UI 永久丢失,松手后卡片停在旧快照:『生成中 Ns』冻结+脉冲点不停+今日/燃速数字冻结,直到下一次真实活动或 60min 燃速窗滑出才自愈(app.py:792 队列 maxsize=20/唯一排水方 _poll_queue :2355-2360;记账缺陷 data_engine.py:1373-1375 与 :2695-2697;探针:满队列 tick push 被丢(队列仍 2 项、222 缺席)而 _push_fp 照推进→OK,排水后安静拍 pushes=0,对照组 today=333 正常送达)",
+   "date": "2026-10-08",
+   "fixed": "2026-10-08",
+   "fix": "_push() 改返回 bool 且满则丢最旧腾位重试(data_engine.py:2692-2717):queue.Full 时 get_nowait() 逐出最旧再 put,有界 (maxsize or 1)+1 轮内必收敛(maxsize=0 无界队列首轮即成;Empty 仅并发排水竞态下出现)——消费侧 _poll_queue 每 200ms 排干整队列、末值胜出,中间快照从不被逐条消费,积压期丢最旧零损失;_db_tick 仅在 _push() 真实入队后推进 _push_fp(:1379-1380,失败时基线不动、下一拍 fp≠基线自然补推),兑现 #76 自诺语义;docstring 载明 P1 根因(旧『静默丢自己』把满窗期最后变化且此后不再变化的字段对 UI 永久丢失,卡片停在旧快照『生成中』冻结)。test_data_engine 新增 test_push_full_queue_drop_oldest;回归 tests/run_all.py ALL PASS(2026-10-08 本轮实跑)"
+  },
+  {
+   "title": "chalk 皮肤卡片标题『今 日 账 目』被 board clip 整体裁没:基线 h-3.0 的 8px 字形全高(≈[h-10,h-1])落在 clip 底缘 h-fw-0.5(卡形态 331.5)之下,离屏实测整卡 0 个可见粉笔字像素——有/无标题双渲染逐位对比差异像素=0,标题对最终画面零贡献,该款皮肤的标题装饰从不出现;#72 字族装订修复只验了 families 生效、未验整链可见性(skins.py:432-456;产线路径 app.py:944-952 卡形态 _bar_form=None 必经,真实卡尺寸 CARD_W/CARD_H=313×341 与探针一致,DPR 缩放下基线与 clip 同比缩放相对几何不变)",
+   "date": "2026-10-08",
+   "fixed": "2026-10-08",
+   "fix": "标题绘制移到 p.restore() 之后(出板面 clip;skins.py:439 restore 提前、:461-466 标题绘制基线 h-3/families=['Segoe Print'] 不动):clip 底缘与底部边距带(app.py root 底边距 12,内容止于 h-12=329)交集仅 ~3px、板内无 ≥8px 空带(顶部边距带 4.5px)是冻结 341 高下的几何事实;移出 clip 后墨迹落在无子控件地带(字顶 ~331 与内容区底 329 不叠),底部 9px 压在木框上成铭牌观感可接受,注释 :447-455 载明 P1 根因。test_stress 新增 chalk 卡标题可见性断言(:711,有/无标题双渲染 diff>0 且差异行全部 ≥ h-12 不叠模型行尾行)+条形态零差异不回归;回归 tests/run_all.py ALL PASS(2026-10-08 本轮实跑)"
+  },
+  {
+   "title": "_scan 盲轮合并集 `last | set(bucket)` 把『已被健康轮裁决消失』文件的陈旧 date_agg 复活进聚合——今日用量虚增死文件全额、共享 mid 与幸存文件双计,持续整个瞬盲期,下一健康轮经 vanished 判定重建自愈;与 #60 在 note_changes 立下的『已删文件陈旧条目不得复活』纪律同文件内不对等(claude.py:393-397;bucket−last 恰为死文件集:条目按 #19 只增不删、携带释放归属前的旧 date_agg 存活,note_changes 新文件经 #59 记入 _scope_files 即在 last、冷失败在建条目前返回 error 不留桶键;探针:全盲 vanish=110/blind=160 复活、共享 mid blind=200 双计,部分瞬盲异构探针证明树内任一处 scandir 报错即触发(#82 AV/OneDrive/网络盘真实场景);test_claude_walk_blind_lastgood 的盲轮断言在删除之前,『盲轮中的死文件』路径无测试覆盖)",
+   "date": "2026-10-08",
+   "fixed": "2026-10-08",
+   "fix": "盲轮合并集收窄为只并 last、不再并 set(bucket)(claude.py:396-405,新 :405 present |= {k for k in last if k not in present}):『已知』只认 _scope_files——bucket−last 恰为已被健康轮裁决消失的死文件,并回 present 会原样加回其旧 date_agg(今日虚增全额+共享 mid 双计);last 必要完备(活着/瞬错文件上轮都在 present=keys∪errored,#59 记入的 watcher 新文件也在 last,盲轮并入后 _scope_files 只增不减,无需桶键补漏),与 #60『已删文件陈旧条目不复活』同纪律;注释 :396-404 载明 P1 根因与 last 完备性论证。test_data_engine 新增 test_claude_blind_no_dead_resurrect;回归 tests/run_all.py ALL PASS(2026-10-08 本轮实跑)"
+  },
+  {
+   "title": "connect_ro 的 as_uri() 化使 UNC 家目录形态(终端服务/VDI/强制漫游配置文件等 USERPROFILE/HOME 为 \\\\server\\share\\... 的环境)永远打不开库:as_uri() 把 UNC 转成 file://server/share/...(授权组件=主机名),sqlite3 对非空且非 localhost 的授权组件语法级拒绝(OperationalError: invalid uri authority),异常被上层 except sqlite3.Error 一律吞成 0/[]——is_available()=True(os.path.exists 对 UNC 正常)行不消失,卡片『ZCode 0』+历史图表空(data_engine fetch 走 connect_ro 同病),恰是 2026-09-29 已修的 '#'/'%' 静默清零项同族的未覆盖站点,且属回归:修复前原生反斜杠直拼形态不触发授权解析、UNC 可正常打开(zcode.py:50;探针:UNC 形态恒 invalid uri authority 与服务器是否存在无关,可达 UNC \\\\localhost\\c$ 实测修复前可开 SELECT 成功、修复后 today_usage()=0,git 9b6d00a 即 as_uri 化提交)",
+   "date": "2026-10-08",
+   "fixed": "2026-10-08",
+   "fix": "授权段改写为空授权+前导 // 形态(zcode.py:60-65):as_uri 产出 file://server/...(两斜杠后非 '/')时改写为 file:////server/share/...——URI 解析层接受(空授权),win32 VFS 把前导 // 的路径按 UNC 打开(\\\\localhost\\d$ 真库实测 SELECT 成功);server/share 段沿用 as_uri 的百分号编码,'#'/'%' 防线不受影响;docstring :47-56 载明 P1 根因(含 file://localhost/ 把路径映射成 /share/... 本地盘根的第二失败形态与 9b6d00a 回归链)。test_cli 新增 test_connect_ro_uri_forms('#'/'%' 路径照常打开读值/'#' 截断路径无新空库落盘/UNC 错误为 VFS 级而非授权级 authority 不再挡路);回归 tests/run_all.py ALL PASS(2026-10-08 本轮实跑)"
   }
  ],
  "proposed": [
