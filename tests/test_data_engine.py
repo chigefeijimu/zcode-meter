@@ -4465,8 +4465,9 @@ def test_claude_reparse_stale_entries():
 
 def test_claude_walk_blind_lastgood():
     """#82:目录级瞬盲(os.walk scandir 错误)按 last-good 保守 —— 当轮聚合
-    不清零(盲区文件沿用旧 date_agg)、vanished/returning 判定跳过;恢复
-    后数值稳定;真删除仍照常触发 vanished(健康轮裁决力不减)。"""
+    不清零(盲区文件沿用旧 date_agg)、vanished 判定跳过一轮(returning 不
+    跳:候选必被本轮列出,2026-10-09,见 test_claude_blind_returning_rebuild);
+    恢复后数值稳定;真删除仍照常触发 vanished(健康轮裁决力不减)。"""
     import os as osmod
     import shutil
     import tempfile
@@ -4732,6 +4733,123 @@ def test_claude_blind_no_dead_resurrect():
         shutil.rmtree(d3, ignore_errors=True)
 
 
+def test_claude_blind_returning_rebuild():
+    """P1(2026-10-09):归来者(returning)重建不得被 walk_blind 抑制 ——
+    候选必在本轮被 walk 列出(present=keys∪errored),列出即存在,与树内
+    别处子目录瞬盲无关。旧代码盲轮抑制 returning 却照常把归来文件提交进
+    _scope_files,下一健康轮 `k not in last` 恒假 → 判定永久失效,消失轮
+    翻给幸存文件的共享 mid 与归来文件未重导的旧 date_agg 持久并存 → 今日
+    用量持久双计(2026-10-03 已修 P1 在 #82/#122 盲轮路径上的复活形态)。
+    三条进入路径全覆盖:unchanged(原样恢复)/errored(盲轮 stat 瞬败)/
+    append(恢复带追加)。"""
+    import datetime as dtmod
+    import json as jsonmod
+    import os as osmod
+    import shutil
+    import tempfile
+    from zcode_meter.data_engine import ClaudeSource
+
+    ts = dtmod.datetime.now(dtmod.timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def wj(path, mid, i, o):
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(jsonmod.dumps({"type": "assistant", "message": {"id": mid,
+                    "usage": {"input_tokens": i, "cache_read_input_tokens": 0,
+                              "cache_creation_input_tokens": 0,
+                              "output_tokens": o}}, "timestamp": ts}) + "\n")
+
+    def rescan(src):
+        src._entries, src._scanned_at = None, 0.0
+        return src.today_usage()
+
+    real_walk, real_stat = osmod.walk, osmod.stat
+
+    def blind_walk(top, topdown=True, onerror=None, followlinks=False):
+        # #82 形态:文件全列出,但兄弟子目录 scandir 报一处瞬盲
+        if onerror:
+            onerror(OSError(13, "simulated scandir blindness"))
+        return real_walk(top, topdown=topdown, onerror=None,
+                         followlinks=followlinks)
+
+    def setup(d):
+        a = osmod.path.join(d, "a.jsonl")
+        z = osmod.path.join(d, "z.jsonl")
+        wj(a, "X", 80, 20)                  # sorted 序 a 首 claim X → 100
+        wj(z, "X", 30, 10)                  # 同 mid 被抑制
+        s = ClaudeSource(projects_dir=d)
+        alive = rescan(s)                   # 100
+        st = real_stat(a)
+        content = open(a, encoding="utf-8").read()
+        osmod.remove(a)
+        vanish = rescan(s)                  # 健康轮裁决 vanish:重建翻给 z → 40
+        return s, a, z, st, content, alive, vanish
+
+    def restore(a, st, content, extra=None):
+        with open(a, "w", encoding="utf-8") as f:
+            f.write(content)
+        if extra:
+            wj(a, *extra)                   # 恢复带追加(append 路径)
+        osmod.utime(a, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+    # S1 unchanged:原样恢复落在盲轮 → 盲轮即重建(100),健康轮稳定
+    d1 = tempfile.mkdtemp(prefix="zm_blindret1_")
+    try:
+        s, a, z, st, content, alive, vanish = setup(d1)
+        restore(a, st, content)
+        osmod.walk = blind_walk
+        try:
+            blind = rescan(s)
+        finally:
+            osmod.walk = real_walk
+        heal1 = rescan(s)
+        heal2 = rescan(s)
+        check("盲轮归来(unchanged):盲轮即重建不双计",
+              (alive, vanish, blind, heal1, heal2) == (100, 40, 100, 100, 100),
+              f"alive={alive} vanish={vanish} blind={blind} "
+              f"heal1={heal1} heal2={heal2}")
+    finally:
+        shutil.rmtree(d1, ignore_errors=True)
+    # S2 errored:归来文件盲轮 stat 瞬败(经 errored 并入 present)同判
+    d2 = tempfile.mkdtemp(prefix="zm_blindret2_")
+    try:
+        s, a, z, st, content, alive, vanish = setup(d2)
+        restore(a, st, content)
+        a_key = osmod.path.normcase(a)
+
+        def blind_stat(p):
+            if osmod.path.normcase(p) == a_key:
+                raise PermissionError(5, "simulated transient lock")
+            return real_stat(p)
+
+        osmod.walk, osmod.stat = blind_walk, blind_stat
+        try:
+            blind = rescan(s)
+        finally:
+            osmod.walk, osmod.stat = real_walk, real_stat
+        heal = rescan(s)
+        check("盲轮归来(errored):stat 瞬败同路径不双计",
+              (alive, vanish, blind, heal) == (100, 40, 100, 100),
+              f"alive={alive} vanish={vanish} blind={blind} heal={heal}")
+    finally:
+        shutil.rmtree(d2, ignore_errors=True)
+    # S3 append:恢复带追加(正确 115=100+15)落在盲轮 → 不 155、持续 115
+    d3 = tempfile.mkdtemp(prefix="zm_blindret3_")
+    try:
+        s, a, z, st, content, alive, vanish = setup(d3)
+        restore(a, st, content, extra=("Y", 10, 5))
+        osmod.walk = blind_walk
+        try:
+            blind = rescan(s)
+        finally:
+            osmod.walk = real_walk
+        heal = rescan(s)
+        check("盲轮归来(append):恢复带追加不双计",
+              (alive, vanish, blind, heal) == (100, 40, 115, 115),
+              f"alive={alive} vanish={vanish} blind={blind} heal={heal}")
+    finally:
+        shutil.rmtree(d3, ignore_errors=True)
+
+
 if __name__ == "__main__":
     print("== test_fetch_total_usage =="); test_fetch_total_usage()
     print("== test_active_session_not_subagent =="); test_active_session_not_subagent()
@@ -4826,6 +4944,8 @@ if __name__ == "__main__":
     # ---- 2026-10-08 P1 修复回归:满队列丢最旧+_push_fp 真实推进/盲轮死文件不复活 ----
     print("== test_push_full_queue_drop_oldest ==");         test_push_full_queue_drop_oldest()
     print("== test_claude_blind_no_dead_resurrect ==");      test_claude_blind_no_dead_resurrect()
+    # ---- 2026-10-09 P1 修复回归:盲轮归来者(returning)即裁决重建 ----
+    print("== test_claude_blind_returning_rebuild ==");      test_claude_blind_returning_rebuild()
     if FAILED:
         print(f"\nFAILED: {FAILED}")
         sys.exit(1)

@@ -347,8 +347,11 @@ class ClaudeSource(UsageSource):
         网络盘瞬锁子目录),部分列举曾被当『真消失』触发空集/部分重建,
         今日聚合清零骤降。现在 onerror 收集:当轮有错 ⇒ 未被列出的已知
         文件按 last-good 保守 —— 并回 present 与聚合键集(与文件级
-        errored 同纪律),vanished/returning 判定跳过一轮(下轮 walk
-        健康时再裁决:真删了照样触发,瞬盲则自愈,无窗口)。"""
+        errored 同纪律)。vanished 判定跳过一轮(下轮 walk 健康时再裁决:
+        真删了照样触发,瞬盲则自愈);returning 刻意不跳(2026-10-09 P1):
+        候选必在本轮被 walk 列出,列出即存在,与别处瞬盲无关 —— 盲轮抑制
+        returning 却照常提交 _scope_files 会让判定原料被污染而永久失效
+        (持久双计),见下方 returning 注释。"""
         now = time.time()
         if self._entries is not None and now - self._scanned_at < self.SCAN_TTL:
             return self._entries
@@ -426,7 +429,18 @@ class ClaudeSource(UsageSource):
             # 归来(条目本轮才建,归属已由 _claim_rows 即时落定,重建是白工);
             # 仅被 note_changes 预摄取过、从未进过 scope_files 的文件会命中同
             # 判据 → 多一次无害重建(重建幂等,结果与冷扫一致),可接受。
-            returning = (last is not None and not walk_blind
+            # returning 刻意【不】带 not walk_blind 守卫(P1 2026-10-09):
+            # 与 vanished 不同,returning 候选必须在本轮 present(=被 walk
+            # 列出的 keys/errored)里 —— 列出即存在,树内别处子目录瞬盲不
+            # 影响『上轮不在册、缓存里却有旧条目』这份判定原料。反之,盲轮
+            # 抑制 returning 却仍在下方把归来文件提交进 _scope_files 的话,
+            # 下一健康轮 `k not in last` 恒假、returning 永不再触发 —— 消失
+            # 轮翻给幸存文件的共享 mid 与归来文件未重导的旧 date_agg 持久
+            # 并存,今日/按天用量持久双计(2026-10-03 已修 P1 在 #82/#122
+            # 盲轮路径上的复活形态;探针实测 unchanged/errored/append 三条
+            # 进入路径全中,跨多轮健康轮不愈)。盲轮即刻重建亦安全:present
+            # 已并入 last-good 保守集(:405),重建集完备,且重建幂等。
+            returning = (last is not None
                          and any(k not in last and k in pre_cached
                                  for k in present))
             if reparse or returning \

@@ -612,25 +612,6 @@ def _deco_industrial(p, win, form) -> None:
     p.save()
     p.setClipPath(path)
     if form is None:
-        # 四角螺丝(:144 radial #9aa2ab→#4a5058,高光偏左上)
-        for sx, sy in ((11, 11), (w - 19, 11), (11, h - 19), (w - 19, h - 19)):
-            sg = QRadialGradient(sx + 3, sy + 2.4, 5.2)
-            sg.setColorAt(0.0, QColor("#9aa2ab"))
-            sg.setColorAt(1.0, QColor("#4a5058"))
-            p.setPen(QPen(QColor(0, 0, 0, 0)))
-            p.setBrush(sg)
-            p.drawEllipse(sx, sy, 8, 8)
-        # 绿灯 + 辉光(:146 #4ade80 + glow)与 SYSTEM NOMINAL(:435):底部
-        # 边距带 —— 顶部同位被状态行占用(玻璃全量信息集,顶行不空)
-        lg = QRadialGradient(20.5, h - 9.0, 9.0)
-        lg.setColorAt(0.0, QColor(74, 222, 128, 110))
-        lg.setColorAt(1.0, QColor(74, 222, 128, 0))
-        p.fillRect(0, h - 22, 44, 22, lg)
-        p.setPen(QPen(QColor(0, 0, 0, 0)))
-        p.setBrush(QColor("#4ade80"))
-        p.drawEllipse(16, h - 13, 9, 9)
-        _text(p, "SYSTEM NOMINAL", 31, h - 5.0, 8, QColor("#9aa2ab"),
-              families=["Consolas"], spacing=2.0)
         # readout 暗屏(:148 #101614):锚主数字行(tps+unit,spark 在外)
         # #55a:getattr 守卫与其余六款同纪律 —— paintEvent 可能早于首次
         # _build_card(app.py 自述),锚件缺席跳过绘制(此前直接属性访问
@@ -660,6 +641,16 @@ def _deco_industrial(p, win, form) -> None:
         # (行中心带口径)延伸后全场最坏 half≈4.9(铭牌顶缘最亮 #151b18
         # 上)、≥4.5 达标,contrast_bg #101614 维持(其在铭牌渐变
         # #151b18~#0e1411 区间内,复核结论记于 SkinDef 申报注释)。
+        # P1(2026-10-09)底缘钳制+绘制序:#89 向下延伸后铭牌底(模型行底
+        # +6≈h-6)恒伸进底部状态带 —— 不透明铭牌同 painter 后画,把先画的
+        # 绿灯(y=h-13..h-4)、SYSTEM NOMINAL 字形(基线 h-5)、两颗底角螺丝
+        # (y=h-19..h-11)整套盖死(探针实测绿灯仅剩 2px 绿条/文本墨迹行全 0/
+        # 底螺丝中心=铭牌暗色)。修法两半:① 铭牌底缘钳到 h-14:模型行墨迹
+        # (末行 label 底=h-13,10px 字墨迹实测≤h-14)仍全落暗材,#89 对比度
+        # 闸不回退,黄铜边不再压绿灯/文本;② 底角螺丝与绿灯/SYSTEM
+        # NOMINAL 挪到铭牌【之后】绘制 —— 螺丝带 y=h-19..h-11 与模型行末行
+        # label(y=h-22..h-13)同高,任何覆盖末行墨迹的铭牌几何上必然压到
+        # 螺丝,后画让状态指示结构性不可被铭牌覆盖,不再依赖 ① 的钳制常数。
         _cells = _card_grid_vs(win)
         _plate_rects = []
         if _cells:
@@ -671,12 +662,39 @@ def _deco_industrial(p, win, form) -> None:
             _plate_rects.append(_models.geometry().adjusted(-14, -4, 14, 6))
         if _plate_rects:
             plate = _union(_plate_rects)
+            if plate.bottom() > h - 14:            # ① 底缘钳制(见上)
+                plate.setBottom(h - 14)
             pg = QLinearGradient(0.0, plate.top(), 0.0, float(plate.bottom()))
             pg.setColorAt(0.0, QColor("#151b18"))
             pg.setColorAt(1.0, QColor("#0e1411"))
             p.setPen(QPen(QColor("#8a7d5c"), 1.0))
             p.setBrush(pg)
             p.drawRoundedRect(plate, 6, 6)
+        # 四角螺丝(:144 radial #9aa2ab→#4a5058,高光偏左上)。P1(2026-
+        # 10-09)从铭牌前挪到铭牌后(见上②):底角两颗上半落在铭牌暗材、
+        # 下半在金属,跨铭牌底缘 = 面板压在螺丝上的工业形态,且永不被铭牌
+        # 盖死;顶角两颗与铭牌无交集,先后无差,随整组搬移保持一处代码。
+        for sx, sy in ((11, 11), (w - 19, 11), (11, h - 19), (w - 19, h - 19)):
+            sg = QRadialGradient(sx + 3, sy + 2.4, 5.2)
+            sg.setColorAt(0.0, QColor("#9aa2ab"))
+            sg.setColorAt(1.0, QColor("#4a5058"))
+            p.setPen(QPen(QColor(0, 0, 0, 0)))
+            p.setBrush(sg)
+            p.drawEllipse(sx, sy, 8, 8)
+        # 绿灯 + 辉光(:146 #4ade80 + glow)与 SYSTEM NOMINAL(:435):底部
+        # 边距带 —— 顶部同位被状态行占用(玻璃全量信息集,顶行不空)。
+        # 同 P1(2026-10-09)② 挪到铭牌后:绿灯/文本字形顶=h-13,钳制后
+        # 铭牌本已够不着,后画是把『状态带不可被铭牌覆盖』钉成绘制序事实
+        # (辉光是灯光,压在铭牌底缘上也符合物理)。
+        lg = QRadialGradient(20.5, h - 9.0, 9.0)
+        lg.setColorAt(0.0, QColor(74, 222, 128, 110))
+        lg.setColorAt(1.0, QColor(74, 222, 128, 0))
+        p.fillRect(0, h - 22, 44, 22, lg)
+        p.setPen(QPen(QColor(0, 0, 0, 0)))
+        p.setBrush(QColor("#4ade80"))
+        p.drawEllipse(16, h - 13, 9, 9)
+        _text(p, "SYSTEM NOMINAL", 31, h - 5.0, 8, QColor("#9aa2ab"),
+              families=["Consolas"], spacing=2.0)
     elif form == "h":
         _nbs = [getattr(win, n, None) for n in ("tps_lbl", "tps_unit_lbl")]
         _nbs = [lb for lb in _nbs if lb is not None]
