@@ -95,6 +95,62 @@
   {
    "title": "契约无条件断言『today_usage 恒等于 daily_usage 里「今天」那个键的值』,但 #22 落地后 ZCode 侧两查询单侧加 MAX_SCAN_ROWS rowid floor(daily_usage :101-102,today_usage :80-83 无 floor),等式降级为有条件成立——今日 completed 行之上插入 100,001+ 行即被 daily_usage 裁而 today_usage 照计(基线日增 ~1.3k,77 倍日负载即触发);且全测试目录对该契约等式零护栏:ZCode 侧从不做 tie(test_zcode_daily_usage_floor 只调 z.daily_usage 手算对账),today==daily[今天] 的对账全部在 Claude 侧(结构性同读一个 _scan date_agg 字典不可能分叉,恰是无需护栏的一侧;ZCode 侧是两条独立维护的 SQL 才是真风险面)(sources/base.py:26;daily_usage 的今日值全仓零调用方,当前无用户可见面,属契约真值性+护栏缺口)",
    "date": "2026-10-08"
+  },
+  {
+   "title": "『与 README 目录树互为镜像,单一事实』的自声明不变式在模块清单层面已破:__init__.py:8 列 glass_effect 为包组件,而 README 架构目录树(src/zcode_meter/ 子树,实际行 209-229)恰列 __init__/data_engine/sources/skins/app/__main__/legacy_tk 七项、无 glass_effect.py(grep 全文唯一命中 :237 的 tests/test_glass_effect.py,架构节 205-240 零命中)——镜像单向缺一门;glass_effect 是活核心模块而非死代码(app.py:57 顶层 from zcode_meter import glass_effect,另 :888/:1045/:1046/:1065/:1073/:1202 多处调用,skins.py:20/:567 函数级消费),README 树列了测试文件却不列包内被测模块,纯文档漂移零运行时影响(src/zcode_meter/__init__.py:3;独立复核:物理目录 ls 确认 glass_effect.py 存在,两侧清单交集 6 项,核心缺口即 glass_effect 单向缺一;README 是读者理解包结构的第一入口,P2 可维护性)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "CLI 的 stdout/stderr reconfigure(errors='replace')兜底排在 parser.parse_args 之后,argparse 自身的 stderr/stdout 写入(usage/错误消息内嵌用户原始参数、--help 帮助文本的中文 description『无界面用量速查』)未被覆盖:重定向+非 UTF-8 locale 下非法参数或 --help 让 UnicodeEncodeError 裸穿 main()(traceback+rc=1),击穿『参数非法打印错误并返回 2』契约(:189-192 docstring 自诺)——UnicodeEncodeError 是 ValueError 子类,:203 except SystemExit 接不住,write 发生在 parse_args 内 exit(2) 之前(src/zcode_meter/__main__.py:202,reconfigure 在 :216-219;探针:cp936 strict+非法参数 𝕏→gbk codec can't encode U+1D54F 裸穿、仅 44 字节落盘,cp1252 strict+--help→charmap codec 7 个 CJK 位置裸穿;对照合法参数 cp936 重定向 rc=0 全量落盘、utf-8 非法参数 rc=2 契约正常;触发面窄于已修 ¥-P1(参数错误/--help 边缘路径 vs 任意重定向必崩主路径),与注册表先例分级逻辑一致故 P2)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "菜单侧两条配置持久化路径忽略 save_config 的 False 返回值:_save_config_segments(app.py:2065-2067)与 _save_config_skin(:2075-2077)裸调不接收返回值(grep 全文件 save_config 调用点 4 处,另两处均有处理),违反 data_engine.py:237-298『失败语义是返回 bool、绝不抛错』(:242)且 docstring :247-248 明确把报错责任压给调用方『既不抛也不静默当成功』——这两条调用方未履行:配置目录不可写(frozen exe 放只读目录→app_dir() 返回 exe 目录,CONFIG_PATH 落同目录,PermissionError⊂OSError→return False :290-297)时皮肤/段开关当场生效(toggle 先改内存 :2015/:2096 重建 UI 后才落盘)但静默不落盘,重启即回退零反馈;对照 _apply_config(app.py:2299-2300 if not save_config 即 return)与 SettingsDialog._on_save(:515-518 红字报错)均有防护;原子写失败旧文件完好、仅偏好回退,非破坏性故 P2(_no_persist 返回 False 的忽略是有意设计 app.py:2063-2064,缺陷仅限 OSError 真实用户路径)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "卡片头行宽度防线注释宣称『布局侧只给它(model_name_lbl)Ignored 水平策略,防长名反推撑宽卡片』,但该 setSizePolicy 调用不存在(grep 全文件仅 :691/:1542/:1615 三处;model_name_lbl 经 _mk_lbl(:1450-1466)创建保留 QLabel 缺省 Preferred,sizeHint 直接计入布局最小宽——正是 190px elide 文本能顶宽卡片的原因)——实际防线只剩 190px elide 预算,而该预算在 gen_elapsed 达 4 位数(请求进行 ≥~17min,GEN_WATCHDOG_S=2h 窗口内非纯理论)时超出头行真实剩余宽:布局最小宽 316>CARD_W 313(:768),卡片被 Qt 顶宽 3px、idle 时收回,周期性几何跳动,与 :757-759『三态收敛 313』自述矛盾;注释算式(:2655-2656『内容宽 289−速度列 87−间距 6』)也与真实头行预算(内容宽 281−dot−间距 6×2−state 宽,速度列实在下一行大数字行)错位(app.py:1498-1499 假声明/:2655-2657 预算;win32 探针:'生成中 3599s/7199s' 时 188-190px 宽名字 minimumWidth=316、resize(313,341) 被 Qt 钳到 316,文本回『空闲』后收回 313;典型拉丁模型 id 182-187px 不触发,仅 CJK 为主或📌前缀长名(188-190px)+4 位数 elapsed 双条件命中——恰是 elide 预算设计针对的长名场景;影响=3px 视觉漂移+误导注释,无数据丢失故 P2)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "_set_dock 存在死赋值与死计算:sg(:1349)/g(:1350)两个几何读取赋值后无任何消费(对照 _unset_dock app.py:1427-1440 同款 sg/g 在 :1438-1439 被真实消费,证实系旧版手动定位模板残留),w,h = self._bar_size(vertical)(:1361)的全控件 sizeHint 聚合结果被丢弃(:1313 _apply_dock_geometry 自行重算,行尾注释自认『此处不再自设几何』;_bar_size :1379-1424 仅只读查询无副作用,该次调用纯白跑);_paint_h 的 fm_val = QFontMetrics(f_val)(:2893)构造后全函数零引用(f_val 本身 :2907 消费,死的只是 metrics 对象)——纯死代码无运行期行为影响(grep 四方法均唯一定义无同名覆盖;AST 扫描遍历 Store/Load 上下文与人工读码交叉一致,P2 可维护性)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "zm_prices.json 被删除/改名对 #48 价格热刷新闸不可见:_stat_sig 对缺席文件按 except OSError return prev(:1289-1293,为 db 瞬时缺席设计的 N2 语义)使签名恒等旧基线→闸门(:1344-1345 prices_sig != gate)永不重开、load_prices(:337-341 删文件回 DEFAULT_PRICES 是既定语义)永不再调,今日金额/燃速¥/历史图表继续按已删除文件的覆盖价计价直到重启——『删掉自定义价回默认表』这一用户动作静默 no-op(zcode-meter/src/zcode_meter/data_engine.py:1332;探针直驱 _db_tick:删除后下一拍 sig_now==gate_before、prices.in 仍 1.0/today_cost 仍 2.0(应回默认 36.0),db 侧 os.utime 强制开闸再 3 拍仍不恢复,确证『直到重启』;反事实 load_prices 直调缺文件路径返回默认;grep 证全仓仅 :1042 构造/:1345 闸门两处调用;test_prices_hot_reload(:3852)只钉编辑→utime→重载路径,删除路径零断言;纯显示派生值错、不落盘、重启自愈故 P2)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "parse_quota_payload 对 nextResetTime 为 inf 时 int(inf) 抛 OverflowError 穿透 except (KeyError, TypeError, ValueError)(:577),违反自身『结构对不上→None…绝不抛错』契约(:544);json.loads 把合法 JSON 数字字面 1e999 解析为 float inf,字符串形态『1e999』经 _as_number float() 同样得 inf(:566-570,cycle number 分支同病;OverflowError 对三元组成员均非子类)——现役唯一消费方 _fetch_once(:806)有 except Exception 兜底故无崩溃路径,实际后果=降级 parse-fail 记 raw+整轨隐藏(且仅 cycle 条目 inf 时 5h 窗一并丢弃,较契约预期『仅省略 cycle 键』更粗),属契约违背+未来直接调用方隐患、不满足 P1 具体触发路径(zcode-meter/src/zcode_meter/data_engine.py:561;探针直调真实模块:数值 inf/字符串 '1e999'/cycle number=30 三分支全 ESCAPED OverflowError,有限值 1e15 对照正常返回;现有测试未喂 inf)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "引擎每次启动全量 SQL 批背靠背双跑:run() 序幕 _poll_stats()(:2634)不写 _gate_* 基线(_poll_stats/_poll_stats_gated 全程不触 _gate_ready/_gate_*_sig,穷举 grep 写点仅 __init__ :1006-1009 与 _db_tick :1359-1361),首个 _db_tick 因 not self._gate_ready(:1006 初始化 False,:1001 注释自认『首拍必开闸』)恒开闸(:1346-1351),把序幕 ~1s 前刚跑过的整批会话聚合 sums/speed/rlast+今日/金额/燃速+_refresh_completed_rows+_global_part_tps 原样重跑一遍——在册『手动切换消费拍双跑』项(:1315-1323/:1345)之外的第二个同族站点(启动序幕/首拍),纯后台冗余工作量、无数据错误/崩溃/泄露故 P2(zcode-meter/src/zcode_meter/data_engine.py:2634;探针:真实 e.start() 2.6s 内 gated 全量批恰跑 2 次(t_rel 0.005s 序幕/1.014s 首拍),~2.0s 第二拍零次(基线已消费即关门);对照手工按 :1359-1361 立基线后静止库连打 2 拍 gated runs=0、插新行后 1(纯冗余零数据损失);真实库 2.75GB 实测一整批冷 788.9ms/暖 143.8ms,超注册表 2026-09-30 复测段(库已增长);修复易=序幕后消费基线)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "_tail_loop 序言 pos = os.path.getsize(path) if os.path.exists(path) else 0 位于 while/try 之外(:1166):exists 与 getsize 之间当日日志文件被删(TOCTOU)时 FileNotFoundError 无人捕直接穿出线程体——匿名 tail 线程(:2637-2638 daemon=True 无包装,grep 无存活检查/重启机制)启动即死,generating 状态机/FAIL_EVENTS 复位/_on_request_done 校准全停摆(_handle_log_line 全部状态迁移只由本循环喂入,只能等 2h GEN_WATCHDOG_S(:926,run() :2655-2657 消费)或重启),循环体 :1197 自己钉死的 except OSError 纪律不覆盖序言这两行;pythonw 无控制台(:70 自述)下 threading 默认 excepthook 无处落,线程死亡不可见(zcode-meter/src/zcode_meter/data_engine.py:1166;受控探针:patch exists→True/getsize→FileNotFoundError,traceback 精确钉 :1166『ESCAPED out of _tail_loop』,对照组同异常在循环体内被 :1197 吞掉存活 3 轮;触发窗=单次启动 µs 级一次、无确定性现实触发路径,按『P1 需具体触发路径』标准定 P2;修复=挪进循环 try 或就地 except OSError,与 :1197/#86/#93 同款纪律)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "_SIG_CHANGES 跨线程读-改-写竞态部分击穿 #77 拖动清零防线:后台线程的 _SIG_CHANGES += 1(:557,无锁,在 with _BUF_LOCK :559 之前)与主线程 set_region 的 _SIG_CHANGES = 0(:672,无锁)可交错,清零被 increments 覆盖丢失,残值 ≥10 时 needs_blink 误判连续动画→mute 15s(:143-146),洞区真背景刷新被推迟——结构性缺陷真实(dis 证 += 为 LOAD/STORE 两步 RMW;旧版逐字节码 ticker 或 free-threaded 3.13t/3.14t 上交错为真),但『与 #77 完全同症状的残余复发』后果实测不可达:拖动中环带仅因窗口移动而变(DXcam 静止帧返回 None :536-538 早退),每次移动必发 moveEvent→清零,清→计相消计数震荡 0-2;确定性注入吞掉末 K 次清零残值=K+1,达阈值 10 需连续吞 9 次(联合 ~5e-43);3.14.2 检查点式 GIL 下 2 线程各 +=2,000,000 零丢更新、2,000,000 次清零零丢失(0.5s 实测 38,484 次 GIL 交替证切换在发生)——修复方向(待清零标志由线程侧消费,单写者归一)正确且廉价,作 P2 硬化,但『#77 复发』应从影响描述剔除(无具体可达触发路径)(zcode-meter/src/zcode_meter/glass_effect.py:557/:672/:143-146;tests/test_glass_effect.py:268-274 单线程复刻计数无法捕跨线程交错)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "order 声明无类型校验:第三方源写非 int 的 order(如 order='20' 字符串 typo,base.py:33 契约明说 int)在 found.sort(key=lambda t:(t[0],t[1]))(:94)处炸 TypeError 且错误消息不含模块名——四个守卫(形态 :77-80/再导出/同名 :87-90/order 语义 #73)中唯独 order 键(:93 原样取值零类型检查)完全无校验,与本函数 #38/#81 立下的『ValueError 带 sources.{mod.name} 上下文』诊断纪律脱节,契约守护测试 test_discover_sources_contract_guards 只测 int 形态、该缺口零护栏;内置源 zcode.py:83 order=0/claude.py:109 order=10(__init__.py:25 字面导入保证恒参与排序,任何非数值 order 必触发比较);启动链 discover_sources(data_engine.py:1051)←MeterWindow(app.py:793)←main(app.py:3171)即死(响亮失败符合 loudly-fail 设计语义,缺陷仅在可诊断性:N 个源模块中 traceback 只指向 __init__.py:94 不指肇事模块,纯可维护性故 P2)(src/zcode_meter/sources/__init__.py:93-94;动态复现:临时拷注入 order='20' 源模块→TypeError '<' not supported between instances of int and str,LAST-FRAME=discover_sources,MENTIONS-MODULE=False,与原报告逐字一致)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "贡献指南红线段残留『否则 exe 启动即 ImportError』假失败症状:fixed#15(2026-10-06)修正只清扫了 sources/__init__.py:16-24 注释(#15 修订:旧注释宣称『exe 启动即 ImportError』与实测不符——pkgutil.iter_modules 只枚举磁盘实际存在的文件,缺字面导入行的模块根本不进 exe,无 import 无从 ImportError,真实症状=exe 正常启动、该源被静默丢弃、dev 环境一切正常)+test_data_engine 对账断言(:4205-4235),README 同句副本未扫尾:README.md:320-322『需在 sources/__init__.py 的字面导入行补上模块名(或给打包命令加 --hiddenimport),否则 exe 启动即 ImportError』——同一句话仓内两处一真一假直接矛盾;且注册表 fixed#15 标题本身点名『注释与 README 宣称的失败症状…与实测不符』,fix 字段却未含 README(明知 README 是同款载体却漏扫尾);与已修『connect_ro 修复未清扫 legacy_tk 副本』单独立项的同款先例;grep 证 README 全文仅 :322 把 ImportError 绑到漏字面导入行机制(:187 --paths src/:189 watchdog/:203 --exclude-module tkinter 为另三条真实场景不涉本项);纯文档漂移零运行时影响,但位于贡献者红线清单,误导贡献者期待响亮失败、实际撞上的是项目自认最坏的静默数据缺失类别(:43『数据缺失比报错更难被发现』)(两项独立复核均 confirmed=yes/dedup=new,一项引 #15 修订注释+机制链,一项引 registry fixed 节 fix 字段实测不含 README;open/proposed/maintained 三节扫描无覆盖条目)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "红线机制句『反向导入会造成…双模块实例,data_engine 会被加载成两份、QuotaMonitor 与缓存身份分裂(v0.6.0 src 布局迁移踩过的同类坑)』把 v0.6.0 双路径共存事故的失效机理错挂到反向导入上——反向导入在任何现实导入序下都不会产出两份模块实例:独立探针(3.14.2,临时目录忠实复刻结构,每场景独立子进程)S1 引擎先导(生产序,app.py:49 先导 data_engine)→单一实例静默成功(部分初始化回退绑定,sources.base 绑定的 data_engine 与 sys.modules 同一对象)、S2 sources 先导/S3 名字导入变体→响亮 ImportError(count=0)、S5 bare import→ModuleNotFoundError,实例数恒 1 或 0 永不 2;正面对照 S4(sys.path=[src,根]+根放扁平 data_engine.py 复刻 v0.6.0 前双路径布局)→两份实例+QUOTA_CLASS_SPLIT+isinstance 跨库失败——『两份/身份分裂』症状确由双路径机理产出,与 CHANGELOG.md:606-607(v0.6.0 条目把两实例明文归属于『src/zcode_meter 与根目录双路径共存』)一致;错挂叙事复述于三处(base.py:7-9/README.md:316/data_engine.py:40-41,后者引『v0.6.0 双路径 import 红线』为据却把两实例归因循环导入,自相矛盾);红线本身成立(循环导入半句真实,S2/S3 即响亮失败路径,tests/test_package.py:18-20 子进程断言钉死),纯注释机理误导:实际最隐蔽形态是 S1 静默成功而非注称的双实例,误导维护者对失败形态的预期,P2(src/zcode_meter/sources/base.py:7-9)",
+   "date": "2026-10-09"
+  },
+  {
+   "title": "计量语义句『in 口径含缓存命中部分,与 ZCode 的 input_tokens 已含 cache_read 对齐,勿双计』只覆盖 cache_read(命中)漏 cache_creation(写入)——自称『计量语义…现全部收拢于此』(:20-21,#57)的唯一契约面在缓存口径上仍与参照实现分叉:claude.py:78-80『in = input_tokens + cache_read_input_tokens + cache_creation_input_tokens——Anthropic 口径 input_tokens 不含 cache,ZCode 口径已含,补齐后两源才可比』三分量写全且代码 :203-206 实际求和三分量,README.md:98 口径表三分量写全,而 base.py 契约句括注只点名 cache_read、全文件无 cache_creation 字样(grep src 内 cache_creation 仅 claude.py:78/:194/:205)——按契约句实现的新 Anthropic 形态源会漏计 cache_creation(src/zcode_meter/sources/base.py:24-25;该三分量口径现仅被 ClaudeSource 专属测试钉死(tests/test_data_engine.py:382-384/:406-410),契约本体纯 docstring 无运行时/测试约束新源;现役唯一 Anthropic 形态源 ClaudeSource 实现正确,缺口属契约完备性/误导未来新源,不满足 P1 触发路径要求)",
+   "date": "2026-10-09"
   }
  ],
  "fixed": [
@@ -904,6 +960,18 @@
    "date": "2026-10-08",
    "fixed": "2026-10-08",
    "fix": "授权段改写为空授权+前导 // 形态(zcode.py:60-65):as_uri 产出 file://server/...(两斜杠后非 '/')时改写为 file:////server/share/...——URI 解析层接受(空授权),win32 VFS 把前导 // 的路径按 UNC 打开(\\\\localhost\\d$ 真库实测 SELECT 成功);server/share 段沿用 as_uri 的百分号编码,'#'/'%' 防线不受影响;docstring :47-56 载明 P1 根因(含 file://localhost/ 把路径映射成 /share/... 本地盘根的第二失败形态与 9b6d00a 回归链)。test_cli 新增 test_connect_ro_uri_forms('#'/'%' 路径照常打开读值/'#' 截断路径无新空库落盘/UNC 错误为 VFS 级而非授权级 authority 不再挡路);回归 tests/run_all.py ALL PASS(2026-10-08 本轮实跑)"
+  },
+  {
+   "title": "工业皮肤 #89 暗材铭牌向下延伸覆盖模型行后,铭牌底缘(模型行容器底+6≈内容底+6,离屏探针实测 y=307)伸进底部状态带,把同函数内先绘制的绿灯(9px 圆仅剩 2px 绿条)、SYSTEM NOMINAL 文本(墨迹行 301-304 全 0,整段不可见)、两颗底角螺丝(中心像素=铭牌暗色 (14,20,17))全部盖死——工业皮肤卡形态每次 paint 确定性发生,属 #89 修复(2026-10-06 延伸)引入的回归(P1;结构恒定:root 底边距 12、model_rows 为最末控件→铭牌底=内容底+6 恒入 12px 底带,全位于 if form is None 卡形态分支;A/B 探针以 null-geometry 垫片还原 #89 前铭牌=仅 grid:对照 B 组 SYSTEM NOMINAL 墨迹 {301:40,302:20,303:20,304:40}/底螺丝 (112,129,130) 可见,现状 A 组全被盖死,回归确由 #89 延伸确定性引入、无数据/时序依赖;图像模型独立复核 _rev_sk_industrial_now.png 一致;zcode-meter/src/zcode_meter/skins.py:671)",
+   "date": "2026-10-09",
+   "fixed": "2026-10-09",
+   "fix": "两半修复(skins.py:644-653 注释载明 P1 根因):① 铭牌底缘钳制——plate.bottom()>h-14 即 setBottom(h-14)(:665-666):模型行墨迹(末行 label 底=h-13,10px 字墨迹实测≤h-14)仍全落暗材,#89 对比度闸不回退,黄铜边不再压绿灯/文本;② 绘制序钉死——四角螺丝(:677)与绿灯辉光+SYSTEM NOMINAL(:689-697)整体挪到铭牌 drawRoundedRect(:672)【之后】绘制:螺丝带 y=h-19..h-11 与模型行末行 label 同高,任何覆盖末行墨迹的铭牌几何上必然压到螺丝,后画让状态指示结构性不可被铭牌覆盖、不再依赖①的钳制常数(顶角两颗与铭牌无交集随整组搬移保持一处代码;辉光压铭牌底缘=灯光压面板符合物理,注释 :673-676/:684-688 载明)。回归 tests/run_all.py ALL PASS(2026-10-09 本轮实跑,data-engine/pkg/ui-verify/layout-stress/glass-effect/cli 六组全绿)"
+  },
+  {
+   "title": "归来者(returning)重建在盲轮里被 walk_blind 抑制的同时,盲轮仍把归来文件经 keys/errored 提交进 _scope_files(:438),下一健康轮『k not in last』恒假、returning 判定永不触发——消失轮翻给幸存文件的共享 mid 与归来文件未重导的旧 date_agg 并存,今日/按天用量持久双计,重蹈 2026-10-03 已修 P1(666 vs 116)在 #82/#122 盲轮路径上的复活形态(P1;触发链:共享 mid 两文件→其一被删且健康轮已裁决 vanish(归属翻给幸存文件)→原样恢复(回收站还原/同卷 Ctrl+Z,代码自认的真实操作)→恢复后的 _scan 恰逢部分瞬盲(树内任一子目录 scandir 报错即 walk_blind,AV/OneDrive/网络盘瞬锁正是 #82/#122 设防场景)→持久双计落成且 append-only 树内无自愈点(仅剩 reparse/vanish/returning 事件可救);探针:病灶(恢复落盲轮)alive/vanish/reappear/heal1/heal2=100/40/140/140/140 双计且跨两轮健康轮不愈,unchanged/errored/append 三条进入路径全中;test_claude_walk_blind_lastgood/test_claude_blind_no_dead_resurrect 均无归来者×盲轮组合用例;sources/claude.py:429)",
+   "date": "2026-10-09",
+   "fixed": "2026-10-09",
+   "fix": "returning 判定摘除 not walk_blind 守卫(claude.py:443-445;vanished 判定 :447 保留 not walk_blind 不动,真删裁决仍延后到健康轮):候选必在本轮 present(=被 walk 列出的 keys/errored)——列出即存在,与树内别处子目录瞬盲无关;反之盲轮抑制 returning 却照常提交 _scope_files 会让『k not in last』恒假、判定原料被永久污染(持久双计);盲轮即刻重建亦安全:present 已并入 last-good 保守集(:408,2026-10-08 P1 修复落位)重建集完备且重建幂等(重建即冷扫语义);docstring :351-354 与注释 :432-442 载明 P1 根因与三条进入路径探针实测。test_data_engine 新增 test_claude_blind_returning_rebuild(:4736)+盲轮回归组 docstring 同步(:4468-4469);回归 tests/run_all.py ALL PASS(2026-10-09 本轮实跑,六组全绿)"
   }
  ],
  "proposed": [
