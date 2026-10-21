@@ -177,30 +177,50 @@ python src/zcode_meter/__main__.py cost --days 7   # 脚本直跑形态（仓库
 - `zm_error.log` —— 仅两处 UI 异常兜底路径写入 traceback（不含密钥），与上述六文件同锚 `app_dir()`（开发模式=仓库根，frozen=exe 同目录；open 自身再套防护，落盘失败不吞原始异常）；
 - 以上即本工具运行期写出的全部持久文件（配置保存的瞬态临时文件写完即原子改名，不残留）。
 
-## 打包（单文件 exe）
+## 打包（onedir）
 
-```bash
+Windows 发布只走 `pack\build.cmd`。脚本用 PyInstaller 打 **onedir**（默认文件夹构建）：打包入口是 `pack\entry.py`（转发 `zcode_meter.app.main`）。源码运行仍用 `src\zcode_meter\app.py`。onedir 冷启动更快，适合常驻托盘。`build.cmd` 注释里记下的本机验证版本是 PyInstaller 6.22.3。
+
+在已经能跑起本工具的环境里（见「快速开始」）执行：
+
+```bat
 pip install pyinstaller
-pyinstaller --onefile --noconsole --name zcode-meter --paths src --exclude-module tkinter src/zcode_meter/app.py
+pack\build.cmd
 ```
 
-- `--paths src` 必须带上:PyInstaller 静态分析要能解析 `zcode_meter` 包,缺了会打包成功但 exe 一启动即 `ImportError`
-- 入口文件为 `src/zcode_meter/app.py`
-- **watchdog 为可选依赖**(v0.9 起引擎侧 Claude jsonl watcher 使用,`pip install watchdog` 后再打包才带入;缺它 exe 仍完全可用 —— watcher 在函数内 import,`ImportError` 时落一条 dbg 后优雅降级,Claude 行回退既有的 15s TTL 扫描节奏,**数据永不错只是慢**;不装它打包则省一个运行时依赖)
+脚本会自己 `cd` 到仓库根。它调用的是 `python -m PyInstaller`，参数如下（对照用；发布就运行上面的脚本）：
 
-产物：`dist/zcode-meter.exe`。体积量级 **约 40–70MB**（PySide6 运行时打包的正常水平，与"轻量"无关）。
+- `--noconfirm --clean --windowed`（无控制台窗口）
+- `--name zcode-meter`
+- `--paths src` 必须保留：PyInstaller 静态分析要能解析 `zcode_meter` 包，缺了会打包成功但 exe 一启动即 `ImportError`
+- `--collect-all dxcam`、`--collect-submodules comtypes`
+- `--exclude-module`：`tkinter`、`PyQt5`、`PyQt6`、`IPython`、`matplotlib`
+- 入口：`pack/entry.py`
+- 成功后删除 `dist\zcode-meter\_internal\cv2\opencv_videoio_ffmpeg*.dll` 与 `dist\zcode-meter\_internal\PySide6\opengl32sw.dll`（体积瘦身：opencv 只用图像处理；QPainter 走光栅，不需要 Qt 的软件 OpenGL 回退库）
+
+**watchdog 为可选依赖**（v0.9 起引擎侧 Claude jsonl watcher 使用，`pip install watchdog` 后再打包才带入；缺它 exe 仍完全可用 —— watcher 在函数内 import，`ImportError` 时落一条 dbg 后优雅降级，Claude 行回退既有的 15s TTL 扫描节奏，**数据永不错只是慢**；不装它打包则省一个运行时依赖）。与 `build.cmd` 注释一致：装了自动进包，不装则运行时降到 15s TTL。
+
+产物是目录：
+
+```
+dist\zcode-meter\
+├── zcode-meter.exe
+└── _internal\          # 运行时依赖，必须与 exe 留在同一目录
+```
+
+启动、分发和快捷方式都用 `dist\zcode-meter\zcode-meter.exe`。拷走时带走整个 `zcode-meter` 目录。体积见实际构建（PySide6 运行时进包后目录不小，与「轻量」无关）。
 
 frozen 模式（exe）注意事项：
 
-- `zm_crash.log` / `zm_debug.log` / `zm_state.json` 落在 **exe 同目录**，不再是仓库根（开发模式落点）；exe 放只读目录（如未提权的 Program Files）时崩溃日志会静默放弃（不致启动失败），建议放可写目录
-- 开机自启注册表值应改为直接指向 exe：
+- `zm_config.json` / `zm_crash.log` / `zm_debug.log` / `zm_state.json` 以及其余锚定 `app_dir()` 的文件落在 **exe 同目录**（与 `_internal` 并列），不再是仓库根（开发模式落点）；exe 放只读目录（如未提权的 Program Files）时崩溃日志会静默放弃（不致启动失败），建议放可写目录
+- 开机自启注册表值指向 onedir 目录里的 exe（构建产物即 `dist\zcode-meter\zcode-meter.exe`；若把整个目录挪走，路径仍以 `\zcode-meter\zcode-meter.exe` 结尾）：
 
 ```powershell
 Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name zcode-meter `
-  -Value '"<你的路径>\zcode-meter.exe"'
+  -Value '"<你的路径>\dist\zcode-meter\zcode-meter.exe"'
 ```
 
-- `--exclude-module tkinter` 必须保留：数据层已移除 tkinter 依赖（`src/zcode_meter/app.py` 不再经 `data_engine` 间接引入），不排除则体积翻倍；反之若未来恢复 tk 依赖而仍排除，exe 一启动即 `ImportError`
+- `--exclude-module tkinter` 必须保留（已写在 `pack\build.cmd`）：数据层已移除 tkinter 依赖（`src/zcode_meter/app.py` 不再经 `data_engine` 间接引入），不排除则体积翻倍；反之若未来恢复 tk 依赖而仍排除，exe 一启动即 `ImportError`
 
 ## 架构
 
@@ -228,6 +248,9 @@ zcode-meter/
 │   │                    #   用量速查,零 Qt,不启轮询线程(见「CLI 用量速查」)
 │   └── legacy_tk.py     # 旧 tkinter 版(弃用,仅留档)
 ├── zcode_meter.py       # 兼容 shim:旧命令转发到 src/zcode_meter/app.py(v0.6.0 过渡)
+├── pack/
+│   ├── build.cmd        # Windows 唯一打包命令(PyInstaller onedir)
+│   └── entry.py         # frozen 入口:转发 zcode_meter.app.main(见「打包」)
 ├── README.md / CHANGELOG.md / LICENSE / .gitignore
 └── tests/
     ├── run_all.py            # 一键回归(六组:data/pkg/ui/stress/glass/cli)
@@ -319,7 +342,7 @@ Source = MyCliSource   # 发现约定:模块级 Source 属性 = 本模块的源�
   不要并入金额（见 `sources/base.py` 的 `UsageSource` docstring）
 - **frozen（exe）包新增源必须重新打包**，且 PyInstaller 静态分析发现不了
   pkgutil 动态导入的模块 —— 需在 `sources/__init__.py` 的字面导入行补上模块
-  名（或给打包命令加 `--hiddenimport`），否则 exe 启动即 `ImportError`
+  名（或在 `pack\build.cmd` 的 PyInstaller 参数里加 `--hiddenimport`），否则 exe 启动即 `ImportError`
 - 新源请配单测（合成数据手算对账，参考 `test_claude_source_synthetic` /
   `test_discover_sources`）
 
@@ -328,7 +351,7 @@ Source = MyCliSource   # 发现约定:模块级 Source 属性 = 本模块的源�
 - [x] 位置记忆（重启回到上次位置/形态）
 - [x] 历史用量图表（按天/按会话）
 - [x] 多会话手动切换（当前自动跟随最近活跃）
-- [x] 打包单文件 exe（PySide6 + PyInstaller，见「打包」章节）
+- [x] 打包 onedir（PySide6 + PyInstaller，`pack\build.cmd`，见「打包」章节）
 - [x] 成本估算 + 双轨预算告警 + 燃速预估（v0.4.0，见「配置」与口径表）
 - [x] 5 小时计费块视角（v0.4.0）
 - [x] 多 CLI 聚合：用量源抽象 + Claude Code 源（v0.4.0，更多源按 `UsageSource` 接口扩展；现走 `sources/` 包自动发现，见「如何贡献一个源」）

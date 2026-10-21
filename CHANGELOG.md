@@ -613,9 +613,10 @@
 - **测试**:新增 `tests/test_package.py` 五项守卫(包可导入/版本号/`zcode_meter.app`
   可导入/`app_dir()==仓库根` 钉死落点不变式/shim `--verify` 链路),run_all.py
   新增 pkg 组并纳入默认组列表(漏加则「全绿」静默漏跑)
-- **文档**:README「快速开始」/自检/开机自启注册表命令/打包命令(改
-  `pyinstaller --onefile --noconsole --name zcode-meter --paths src
-  --exclude-module tkinter src/zcode_meter/app.py`,`--paths src` 缺了会打包成功
+- **文档**:README「快速开始」/自检/开机自启注册表命令/打包命令(v0.6.0 当时
+  写入的是 PyInstaller `--onefile`、入口 `src/zcode_meter/app.py`;该写法已废,
+  现行发布只走 onedir `pack\build.cmd`,产物 `dist\zcode-meter\zcode-meter.exe`,
+  见 README「打包」;`--paths src` 缺了会打包成功
   但 exe 启动即 ImportError;`--exclude-module tkinter` 红线保留)/架构树/开发指南
   全部同步;「配置」章节注明 zm_* 文件落点(开发模式=仓库根,frozen=exe 目录);
   .gitignore 补锚定说明(现有 basename 模式移动后仍全部命中,无需改规则)
@@ -793,7 +794,8 @@
   RLock→session_id→Snapshot 重建→`_last_len=None`→`_prev_max_rowid` 重置→title→
   poll→init_tps→push），并把 manual 检查与 `_latest_session` 查询整体包进
   `snap_lock`（RLock 可重入），消除「UI 固定与引擎 check-then-act」竞态
-- 打包：PyInstaller 单文件命令与 frozen 注意事项写入 README「打包」章节；
+- 打包：当时把 PyInstaller 单文件命令与 frozen 注意事项写入 README「打包」章节
+  （现行发布为 onedir `pack\build.cmd`，见该章）；
   新增模块级 `app_dir()`（frozen 取 exe 目录），`zm_crash.log`/`zm_debug.log`/
   `zm_state.json` 在打包版落 exe 同目录；`faulthandler.enable` 包 try/except
   （只读目录不再启动即崩）；删除数据层遗留的 tkinter 死导入

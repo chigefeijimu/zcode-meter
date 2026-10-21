@@ -2822,7 +2822,7 @@ class BarChart(QWidget):
     用户实测竖柱不便阅读;竖柱形态保留供未来切换)。
     水平条左侧标签超长省略,悬停 tooltip 显示全量 label+数值补偿;
     数值区预留防顶出窗口,extra(¥金额)拼在数值后,高亮下标条变警示色。
-    刻意不引 matplotlib 等第三方库 —— 单文件 exe 的体积与启动速度。"""
+    刻意不引 matplotlib 等第三方库 —— 打包体积与启动速度。"""
 
     def __init__(self, horizontal: bool = True, label_angle: int = 0, parent=None):
         super().__init__(parent)
